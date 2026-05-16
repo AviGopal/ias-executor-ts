@@ -17,6 +17,10 @@
     "./bundles": {
       "types": "./dist/bundles/index.d.ts",
       "import": "./dist/bundles/index.js"
+    },
+    "./browser": {
+      "types": "./dist/browser/index.d.ts",
+      "import": "./dist/browser/index.js"
     }
   },
   "files": [
