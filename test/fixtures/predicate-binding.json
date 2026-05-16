@@ -1,0 +1,46 @@
+{
+  "description": "Shared fixture for predicate-aware binding parity tests (Phase 20.2.6). Both ias-executor-ts and repos/minibob must produce identical bindings from this template given the same impulse pool.",
+  "template": {
+    "id": "fixture:predicate-binding",
+    "name": "Predicate binding parity fixture",
+    "outputShapes": ["result"],
+    "tasks": [
+      {
+        "id": "step1",
+        "description": "Consume a plain-string shape — all instances passed",
+        "resolver": "capture",
+        "inputShapes": ["goal"],
+        "outputShapes": []
+      },
+      {
+        "id": "step2",
+        "description": "Consume a predicate-filtered shape — only task_a origin",
+        "resolver": "capture",
+        "inputShapes": [
+          { "shape": "shellOutput", "producedBy": "task_a" }
+        ],
+        "outputShapes": []
+      },
+      {
+        "id": "step3",
+        "description": "Consume exactly one config impulse",
+        "resolver": "capture",
+        "inputShapes": [
+          { "shape": "config", "cardinality": "exactly_one" }
+        ],
+        "outputShapes": ["result"]
+      }
+    ]
+  },
+  "seed_impulses": [
+    { "id": "goal-1",   "shape": "goal",        "producedBy": null },
+    { "id": "out-a",    "shape": "shellOutput",  "producedBy": "task_a" },
+    { "id": "out-b",    "shape": "shellOutput",  "producedBy": "task_b" },
+    { "id": "cfg-1",    "shape": "config",       "producedBy": null }
+  ],
+  "expected_bindings": {
+    "step1": ["goal-1"],
+    "step2": ["out-a"],
+    "step3": ["cfg-1"]
+  }
+}

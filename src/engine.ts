@@ -1,4 +1,4 @@
-import type { ActivityTemplate, ExecutionTaskRecord, ExecutionTrace, FailureMode, Impulse, LifecycleEvent } from "./ontology";
+import type { ActivityTemplate, ExecutionTaskRecord, ExecutionTrace, FailureMode, Impulse, InputShapeRef, LifecycleEvent } from "./ontology";
 import { getImpulseShape } from "./ontology";
 import type { CreateImpulseInput } from "./impulses";
 import type { ResolverContext } from "./resolvers";
@@ -77,7 +77,7 @@ export class ActivityExecutor {
         });
 
         const taskStart = this.runtime.clock.now();
-        const inputImpulses = this.resolveInputs(task.inputShapes ?? []);
+        const inputImpulses = this.resolveInputs(task.inputShapes ?? [], task.id);
 
         let storedOutputs: Impulse[];
         let taskCostUsd: number | undefined;
@@ -281,13 +281,33 @@ export class ActivityExecutor {
     return { outputs, childTrace };
   }
 
-  private resolveInputs(shapes: string[]): Impulse[] {
-    return shapes.flatMap((shape) => {
-      const matches = this.runtime.store.findByShape(shape);
-      if (matches.length === 0) {
-        throw new Error(`Task requires shape '${shape}' but no matching impulses were found`);
+  private resolveInputs(shapes: (string | InputShapeRef)[], taskId: string): Impulse[] {
+    return shapes.flatMap((entry) => {
+      const ref: InputShapeRef = typeof entry === "string"
+        ? { shape: entry, cardinality: "any" }
+        : { cardinality: "any", ...entry };
+
+      const byShape = this.runtime.store.findByShape(ref.shape);
+
+      // Predicate filter: producedBy narrows to impulses with matching metadata
+      const candidates = ref.producedBy
+        ? byShape.filter((imp) => imp.metadata.producedBy === ref.producedBy || imp.metadata.produced_at_task_id === ref.producedBy)
+        : byShape;
+
+      if (candidates.length === 0) {
+        const predDesc = ref.producedBy ? ` (producedBy=${ref.producedBy})` : "";
+        throw new Error(
+          `Task '${taskId}' requires shape '${ref.shape}'${predDesc} but no matching impulses were found`,
+        );
       }
-      return matches;
+
+      if (ref.cardinality === "exactly_one" && candidates.length > 1) {
+        throw new Error(
+          `Task '${taskId}' requires exactly one '${ref.shape}' impulse but found ${candidates.length}`,
+        );
+      }
+
+      return candidates;
     });
   }
 

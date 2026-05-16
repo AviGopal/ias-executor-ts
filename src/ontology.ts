@@ -22,11 +22,28 @@ export interface Impulse {
   priority?: ImpulsePriority;
 }
 
+/**
+ * Predicate-constrained input shape reference.
+ * Plain strings in inputShapes are equivalent to { shape, cardinality: "any" }.
+ */
+export interface InputShapeRef {
+  shape: string;
+  /** Filter candidates to those produced by this task id */
+  producedBy?: string;
+  /** "any" = pass all matching instances (default); "all" = pass full filtered list;
+   *  "exactly_one" = error if filtered list has > 1 candidate */
+  cardinality?: "any" | "all" | "exactly_one";
+  /** Advisory affinity — execution hint only, not enforced until H2 */
+  vessel_affinity?: string;
+}
+
 export interface ActivityTask {
   id: string;
   description: string;
   resolver: string;
-  inputShapes?: string[];
+  /** Accepts plain shape names or predicate-constrained InputShapeRef objects.
+   *  Plain strings behave as { shape: s, cardinality: "any" }. */
+  inputShapes?: (string | InputShapeRef)[];
   outputShapes?: string[];
   config?: Record<string, unknown>;
   /** When resolver is "compose", dispatch to this template id via the templateProvider */
