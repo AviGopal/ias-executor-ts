@@ -13,6 +13,10 @@
     "./adapters": {
       "types": "./dist/adapters/index.d.ts",
       "import": "./dist/adapters/index.js"
+    },
+    "./bundles": {
+      "types": "./dist/bundles/index.d.ts",
+      "import": "./dist/bundles/index.js"
     }
   },
   "files": [
