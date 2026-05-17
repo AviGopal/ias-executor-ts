@@ -65,14 +65,35 @@ export function makeWireAuthBlueprintResolver(
       const prompt = [
         "Edit the following TypeScript vessel entry-point to add identity-vessel-backed authentication.",
         "",
-        "Requirements:",
-        "- Add a requireAuth() middleware that validates API keys against identity-vessel",
-        "- Read IDENTITY_VESSEL_ENDPOINT from environment (default: http://identity-vessel:8080)",
-        "- Read JWT_SECRET from environment for JWT validation",
-        "- Unauthenticated requests to non-public routes must return 401",
-        "- Wire requireAuth() on all /v2/* routes",
-        "- Keep the health endpoint public (no auth required)",
-        "- Use fetch() for identity-vessel calls; no new imports",
+        "EXACT REQUIREMENTS — follow these precisely:",
+        "- Read IDENTITY_VESSEL_ENDPOINT from environment: const identityVesselEndpoint = process.env.IDENTITY_VESSEL_ENDPOINT ?? 'http://identity-vessel:8080';",
+        "- Accept Authorization header in TWO forms: 'ApiKey <key>' and 'Bearer <token>'",
+        "- For ApiKey auth: extract the key (everything after 'ApiKey '), POST to `${identityVesselEndpoint}/v1/keys/validate` with body { api_key: '<extracted_key>' }, check response.data.valid === true",
+        "- For Bearer auth: if JWT_SECRET is set, validate JWT locally; otherwise call identity-vessel",
+        "- If Authorization header is missing or invalid, return 401 immediately",
+        "- Wire requireAuth() as middleware on all /v2/* routes",
+        "- Keep GET /health public (no auth)",
+        "- Use fetch() for identity-vessel HTTP calls; do NOT import any new modules",
+        "",
+        "EXAMPLE requireAuth middleware (use this pattern exactly):",
+        "```",
+        "const requireAuth = async (c: any, next: any) => {",
+        "  const authHeader = c.req.header('Authorization');",
+        "  if (!authHeader) return c.json({ error: 'Unauthorized' }, 401);",
+        "  const [scheme, credential] = authHeader.split(' ');",
+        "  if (scheme === 'ApiKey' && credential) {",
+        "    const res = await fetch(`${identityVesselEndpoint}/v1/keys/validate`, {",
+        "      method: 'POST', headers: { 'Content-Type': 'application/json' },",
+        "      body: JSON.stringify({ api_key: credential })",
+        "    }).catch(() => null);",
+        "    if (!res?.ok) return c.json({ error: 'Unauthorized' }, 401);",
+        "    const data = await res.json();",
+        "    if (!data?.data?.valid) return c.json({ error: 'Unauthorized' }, 401);",
+        "    await next(); return;",
+        "  }",
+        "  return c.json({ error: 'Unauthorized' }, 401);",
+        "};",
+        "```",
         "",
         "Relevant auth patterns:",
         conceptsText,
@@ -85,10 +106,12 @@ export function makeWireAuthBlueprintResolver(
         "Return ONLY the updated TypeScript source. No markdown fences, no explanation.",
       ].join("\n");
 
-      const updated = await llm.generate({
+      const rawUpdated = await llm.generate({
         prompt,
         systemPrompt: "You are a TypeScript vessel auth wiring assistant. Output only valid TypeScript source code.",
       });
+      // Strip markdown code fences if LLM wrapped the output
+      const updated = rawUpdated.replace(/^```(?:typescript|ts)?\s*\n([\s\S]*?)\n?```\s*$/m, "$1").trim();
 
       // 4. Write updated src/index.ts
       await fs.write(indexPath, updated);

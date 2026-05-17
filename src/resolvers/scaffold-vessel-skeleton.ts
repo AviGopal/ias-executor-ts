@@ -53,19 +53,40 @@ export function makeScaffoldVesselSkeletonResolver(
       if (!specImpulse?.content) {
         throw new Error("scaffold_vessel_skeleton requires a vesselSpec impulse");
       }
-      const spec = specImpulse.content as VesselSpecContent;
+      // vesselSpec content may be a raw JSON string from the LLM resolver
+      let spec: VesselSpecContent;
+      if (typeof specImpulse.content === "string") {
+        try {
+          const stripped = (specImpulse.content as string).replace(/^```(?:json)?\s*\n?([\s\S]*?)\n?```\s*$/m, "$1").trim();
+          const parsed = JSON.parse(stripped) as Record<string, unknown>;
+          // unwrap { vesselSpec: { shape, ... } } → { shape, ... }
+          spec = ((parsed["vesselSpec"] as VesselSpecContent) ?? parsed) as VesselSpecContent;
+        } catch { spec = {} as VesselSpecContent; }
+      } else {
+        spec = specImpulse.content as VesselSpecContent;
+      }
+      // Fall back to missingShape variable if shape not present in spec
+      if (!spec.shape) {
+        spec = { ...spec, shape: (context.variables["missingShape"] as string) ?? "unknown" };
+      }
 
       // 1. Fetch construction concepts from concept-db
-      let conceptsText = "No construction concepts available.";
+      // conceptDbEndpoint may include ?apiKey=... for auth
+      let conceptsText = "";
       try {
-        const conceptRes = await fetch.request(
-          `${conceptDbEndpoint}/concepts/search?source_type=vessel_construction_pattern&limit=5`,
-        );
+        const endpointUrl = new URL(`${conceptDbEndpoint}/concepts/search`);
+        const apiKey = endpointUrl.searchParams.get("apiKey") ?? "";
+        endpointUrl.searchParams.delete("apiKey");
+        endpointUrl.searchParams.set("source_type", "vessel_construction_pattern");
+        endpointUrl.searchParams.set("limit", "8");
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (apiKey) headers["Authorization"] = `ApiKey ${apiKey}`;
+        const conceptRes = await fetch.request(endpointUrl.toString(), { headers });
         if (conceptRes.ok) {
-          const conceptData = (await conceptRes.json()) as { concepts?: Array<{ name: string; content?: string }> };
+          const conceptData = (await conceptRes.json()) as { concepts?: Array<{ metadata?: { name?: string }; content?: string }> };
           if (conceptData.concepts?.length) {
             conceptsText = conceptData.concepts
-              .map((c) => `- ${c.name}: ${c.content ?? ""}`)
+              .map((c) => `- ${c.metadata?.name ?? "concept"}: ${c.content ?? ""}`)
               .join("\n");
           }
         }
@@ -75,18 +96,30 @@ export function makeScaffoldVesselSkeletonResolver(
 
       // 2. LLM generates file tree
       const prompt = [
-        "Generate a minimal TypeScript vessel skeleton for the following spec.",
+        "Generate a minimal TypeScript/Bun vessel skeleton for the following spec.",
         "",
         `Shape: ${spec.shape}`,
         `Description: ${spec.description ?? "(none)"}`,
         `Output shapes: ${(spec.outputShapes ?? []).join(", ") || "(none)"}`,
         "",
-        "Relevant vessel-construction patterns:",
-        conceptsText,
+        "MANDATORY STACK: TypeScript, Bun runtime, Hono web framework. Use oven-sh/bun Docker image.",
+        "MANDATORY files: package.json (bun scripts), src/index.ts, Dockerfile (FROM oven/bun:1-alpine)",
+        "package.json must use bun as runtime: { \"scripts\": { \"start\": \"bun run src/index.ts\" }, \"dependencies\": { \"hono\": \"^4\" } }",
+        "Dockerfile must use: FROM oven/bun:1-alpine / WORKDIR /app / COPY package.json . / RUN bun install / COPY . . / CMD [\"bun\", \"run\", \"src/index.ts\"]",
+        "src/index.ts MUST start the server with: const port = parseInt(process.env.PORT ?? '8080', 10); const host = process.env.HOST ?? '0.0.0.0'; export default { port, hostname: host, fetch: app.fetch };",
+        "src/index.ts must implement:",
+        "  1. GET /health returning { version, status: 'healthy' }",
+        `  2. POST /v2/impulses/resolve that handles pointer.type === '${spec.shape}'`,
+        `     Input body: { pointer: { type: '${spec.shape}', schema: <JSONSchema object>, data: <any object> } }`,
+        `     NOTE: schema and data are direct fields on pointer (not nested under config)`,
+        `     Implement the actual ${spec.shape} logic based on the description`,
+        "     Return { shape: pointer.type, result: <output>, ok: true } on success with HTTP 200",
+        "     Return 400 only if pointer.schema or pointer.data is missing/null",
+        "     Return 500 for unexpected errors",
         "",
-        'Respond with EXACTLY a JSON object {"files": [{"path": "...", "content": "..."}]}',
-        "Include these files: package.json, src/index.ts, Dockerfile, helm/Chart.yaml, helm/values.yaml",
-        "No markdown fences, no explanation — only the JSON object.",
+        ...(conceptsText ? ["Vessel construction patterns to follow:", conceptsText, ""] : []),
+        'Respond with EXACTLY a JSON object: {"files": [{"path": "relative/path", "content": "file content as string"}]}',
+        "No markdown fences, no prose, no explanation — only the raw JSON object.",
       ].join("\n");
 
       const raw = await llm.generate({
@@ -96,7 +129,9 @@ export function makeScaffoldVesselSkeletonResolver(
 
       let tree: LLMFileTree;
       try {
-        tree = JSON.parse(raw) as LLMFileTree;
+        // Strip markdown code fences if present (LLMs often wrap JSON in ```json...```)
+        const stripped = raw.replace(/^```(?:json)?\s*\n?([\s\S]*?)\n?```\s*$/m, "$1").trim();
+        tree = JSON.parse(stripped) as LLMFileTree;
       } catch {
         throw new Error(`scaffold_vessel_skeleton: LLM output was not valid JSON: ${raw.slice(0, 200)}`);
       }

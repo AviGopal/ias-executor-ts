@@ -34,12 +34,24 @@ export function makeDockerBuildPushResolver(docker: DockerPort): Resolver {
       if (!specImpulse?.content) {
         throw new Error("docker_build_push requires a vesselSpec impulse");
       }
-      const spec = specImpulse.content as { shape: string };
+      // vesselSpec content may be raw LLM text (JSON string) or already-parsed object
+      let specObj: { shape?: string; vesselSpec?: { shape?: string } };
+      if (typeof specImpulse.content === "string") {
+        try {
+          const stripped = (specImpulse.content as string).replace(/^```(?:json)?\s*\n?([\s\S]*?)\n?```\s*$/m, "$1").trim();
+          specObj = JSON.parse(stripped);
+        } catch { specObj = {}; }
+      } else {
+        specObj = specImpulse.content as typeof specObj;
+      }
+      const specShape = specObj.shape ?? specObj.vesselSpec?.shape ?? context.variables["missingShape"] ?? "forged";
 
-      // Generate deterministic tag: metabobapp/forge-{shape}-{uuid}:{timestamp}
-      const uuid = context.random.id(spec.shape);
+      // Generate tag: metabobapp/forge-{shape}:{timestamp}-{short-uuid}
+      // Shape name sanitized: underscores → dashes, lowercase
+      const safeShape = specShape.replace(/_/g, "-").toLowerCase();
+      const uuid = context.random.id("v").split("_")[1] ?? context.random.id("v");
       const timestamp = context.clock.now();
-      const tag = `metabobapp/forge-${spec.shape}-${uuid}:${timestamp}`;
+      const tag = `metabobapp/forge-${safeShape}:${timestamp}-${uuid}`;
 
       // Build
       await docker.build(scaffold.path, tag);

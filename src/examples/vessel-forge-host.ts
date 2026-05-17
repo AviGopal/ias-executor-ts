@@ -12,6 +12,8 @@
 import { ActivityExecutor, ExecutionRuntime, type ActivityTemplate, type ExecutionTrace } from "../index";
 import { BunFileSystemAdapter, BunProcessAdapter } from "../adapters/index";
 import { FetchAdapter } from "../adapters/fetch-adapter";
+import type { Resolver } from "../resolvers";
+import type { ProcessPort, FileSystemPort } from "../ports";
 import { BunDockerAdapter } from "../adapters/docker-adapter";
 import { BunHelmfileAdapter } from "../adapters/helmfile-adapter";
 import { HttpDiscoveryAdapter } from "../adapters/discovery-adapter";
@@ -69,6 +71,63 @@ export interface VesselForgeHostOptions {
 }
 
 // ---------------------------------------------------------------------------
+// Built-in resolver factories (duplicated from bun-host.ts for self-containment)
+// ---------------------------------------------------------------------------
+
+function makeForgeFileReadResolver(fs: FileSystemPort): Resolver {
+  return {
+    id: "file-read",
+    tier: "deterministic",
+    async resolve(context) {
+      const path = context.task.config?.path;
+      if (typeof path !== "string") throw new Error(`file-read requires task.config.path`);
+      const content = await fs.read(path);
+      return [{ id: context.random.id("file"), pointer: { type: "file", path }, metadata: { shape: "fileContent" }, loaded: true, content }];
+    },
+  };
+}
+
+function makeForgeBashResolver(proc: ProcessPort): Resolver {
+  return {
+    id: "bash",
+    tier: "deterministic",
+    async resolve(context) {
+      const command = context.task.config?.command;
+      if (!Array.isArray(command)) throw new Error(`bash requires task.config.command (string[])`);
+      const cwd = typeof context.task.config?.cwd === "string" ? context.task.config.cwd : undefined;
+      const timeoutMs = typeof context.task.config?.timeoutMs === "number" ? context.task.config.timeoutMs : 30_000;
+      const result = await proc.run(command, { cwd, timeoutMs });
+      return [{ id: context.random.id("bash"), pointer: { type: "memo" }, metadata: { shape: "commandResult", summary: `exit=${result.exitCode}` }, loaded: true, content: result }];
+    },
+  };
+}
+
+function makeForgeShellResolver(proc: ProcessPort): Resolver {
+  // Alias: some templates use "shell" as resolver id
+  const bash = makeForgeBashResolver(proc);
+  return { ...bash, id: "shell" };
+}
+
+function makeForgeLLMResolver(llm: LLMPort): Resolver {
+  return {
+    id: "llm",
+    tier: "llm",
+    async resolve(context) {
+      let prompt = context.task.config?.prompt;
+      const systemPrompt = typeof context.task.config?.systemPrompt === "string" ? context.task.config.systemPrompt : undefined;
+      if (typeof prompt !== "string") throw new Error(`llm requires task.config.prompt`);
+      // Interpolate {{variableName}} placeholders from context.variables
+      prompt = prompt.replace(/\{\{(\w+)\}\}/g, (_match: string, key: string) => {
+        const val = context.variables[key];
+        return val !== undefined ? String(val) : `{{${key}}}`;
+      });
+      const text = await llm.generate({ prompt, systemPrompt });
+      return [{ id: context.random.id("llm"), pointer: { type: "memo" }, metadata: { shape: "llmText", summary: text.slice(0, 120) }, loaded: true, content: text }];
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // VesselForgeHost
 // ---------------------------------------------------------------------------
 
@@ -103,7 +162,7 @@ export class VesselForgeHost {
       traceSink: options.traceSink,
       attachedVessels: [
         { id: "bun-fs", kind: "filesystem", resolverIds: ["file-read"] },
-        { id: "bun-proc", kind: "process", resolverIds: ["bash"] },
+        { id: "bun-proc", kind: "process", resolverIds: ["bash", "shell"] },
         { id: "llm-vessel", kind: "llm", resolverIds: ["llm"] },
         { id: "docker-vessel", kind: "docker", resolverIds: ["docker_build_push"] },
         {
@@ -127,6 +186,12 @@ export class VesselForgeHost {
         },
       ],
     });
+
+    // Register built-in resolvers (required by the forge template's bash + llm tasks)
+    this.runtime.resolvers.register(makeForgeFileReadResolver(this.fs));
+    this.runtime.resolvers.register(makeForgeBashResolver(this.proc));
+    this.runtime.resolvers.register(makeForgeShellResolver(this.proc));
+    this.runtime.resolvers.register(makeForgeLLMResolver(options.llm));
 
     // Register forge resolvers
     this.runtime.resolvers.register(

@@ -166,7 +166,7 @@ export interface DockerPort {
  * Both methods forward stderr to the thrown error for debuggability.
  */
 export interface HelmfilePort {
-  applyOverlay(overlayPath: string): Promise<void>;
+  applyOverlay(overlayPath: string, cwd?: string): Promise<void>;
   waitForReady(release: string, namespace: string, timeoutMs: number): Promise<void>;
 }
 

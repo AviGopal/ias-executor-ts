@@ -39,6 +39,22 @@ export function makeWireDiscoveryRegistrationResolver(
       }
       const scaffold = scaffoldImpulse.content as { path: string };
 
+      // Extract shape from vesselSpec (for advertising the correct shapes)
+      const specImpulse = findImpulseByShape(context.inputImpulses, "vesselSpec");
+      let vesselShape = context.variables["missingShape"] as string ?? "unknown";
+      if (specImpulse?.content) {
+        let specObj: { shape?: string; vesselSpec?: { shape?: string } };
+        if (typeof specImpulse.content === "string") {
+          try {
+            const stripped = (specImpulse.content as string).replace(/^```(?:json)?\s*\n?([\s\S]*?)\n?```\s*$/m, "$1").trim();
+            specObj = JSON.parse(stripped);
+          } catch { specObj = {}; }
+        } else {
+          specObj = specImpulse.content as typeof specObj;
+        }
+        vesselShape = specObj.shape ?? specObj.vesselSpec?.shape ?? vesselShape;
+      }
+
       // 1. Read current src/index.ts
       const indexPath = `${scaffold.path}/src/index.ts`;
       const existingIndex = await fs.read(indexPath);
@@ -64,14 +80,20 @@ export function makeWireDiscoveryRegistrationResolver(
       // 3. LLM edits src/index.ts to inject discovery registration + heartbeat
       const prompt = [
         "Edit the following TypeScript vessel entry-point to add non-blocking discovery registration",
-        "and a 60-second heartbeat, following TYPESCRIPT_VESSEL_TEMPLATE.md conventions.",
+        "and a 60-second heartbeat.",
         "",
-        "Requirements:",
-        "- Discovery registration must be non-blocking (fire-and-forget, wrapped in .catch())",
-        "- 60s heartbeat via setInterval, also non-blocking",
-        "- Read DISCOVERY_ENDPOINT from environment (default: http://discovery-vessel:8080)",
-        "- Use fetch() for HTTP calls",
-        "- Do not import any new dependencies beyond what is standard in Bun/Node",
+        `This vessel provides the shape: ${vesselShape}`,
+        "",
+        "EXACT REQUIREMENTS — follow these precisely:",
+        "- Read DISCOVERY_ENDPOINT from environment: const discoveryEndpoint = process.env.DISCOVERY_ENDPOINT ?? 'http://discovery-vessel:8080';",
+        `- On startup, register with discovery by POSTing to \`\${discoveryEndpoint}/register\` with body:`,
+        `  { id: process.env.VESSEL_ID ?? '${vesselShape}-vessel', name: '${vesselShape}-vessel', version, shapes: ['${vesselShape}'], endpoint: \`http://\${host}:\${port}\`, resolve_endpoint: \`http://\${host}:\${port}/v2/impulses/resolve\`, auth_scheme: 'ApiKey' }`,
+        "- Registration must be non-blocking: call registerWithDiscovery().catch(() => {}); (no await at top level)",
+        "- Send heartbeat every 60s via setInterval to `${discoveryEndpoint}/heartbeat`",
+        "  with body: { id: process.env.VESSEL_ID ?? '<shape>-vessel', shapes: ['<shape>'] }",
+        "- Heartbeat must be non-blocking (wrapped in .catch())",
+        "- Do not import any new dependencies",
+        "- Do not use await at the top level for registration or heartbeat setup",
         "",
         "Relevant concepts:",
         conceptsText,
@@ -84,10 +106,11 @@ export function makeWireDiscoveryRegistrationResolver(
         "Return ONLY the updated TypeScript source. No markdown fences, no explanation.",
       ].join("\n");
 
-      const updated = await llm.generate({
+      const rawUpdated = await llm.generate({
         prompt,
         systemPrompt: "You are a TypeScript vessel wiring assistant. Output only valid TypeScript source code.",
       });
+      const updated = rawUpdated.replace(/^```(?:typescript|ts)?\s*\n([\s\S]*?)\n?```\s*$/m, "$1").trim();
 
       // 4. Write updated src/index.ts
       await fs.write(indexPath, updated);

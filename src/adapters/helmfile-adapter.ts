@@ -16,9 +16,10 @@ export class HelmfileTimeoutError extends Error {
 export class BunHelmfileAdapter implements HelmfilePort {
   constructor(private readonly process: ProcessPort) {}
 
-  async applyOverlay(overlayPath: string): Promise<void> {
+  async applyOverlay(overlayPath: string, cwd?: string): Promise<void> {
     const { exitCode, stderr } = await this.process.run(
       ["helmfile", "--file", overlayPath, "sync"],
+      cwd ? { cwd } : undefined,
     );
     if (exitCode !== 0) throw new Error(`helmfile sync failed (exit ${exitCode}): ${stderr}`);
   }

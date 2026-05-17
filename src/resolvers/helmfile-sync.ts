@@ -36,7 +36,20 @@ export function makeHelmfileSyncResolver(
       if (!specImpulse?.content) {
         throw new Error("helmfile_sync requires a vesselSpec impulse");
       }
-      const spec = specImpulse.content as { shape: string };
+      // vesselSpec content may be raw LLM text (JSON string) or already-parsed object
+      let spec: { shape?: string; vesselSpec?: { shape?: string; name?: string } };
+      if (typeof specImpulse.content === "string") {
+        try {
+          const stripped = (specImpulse.content as string).replace(/^```(?:json)?\s*\n?([\s\S]*?)\n?```\s*$/m, "$1").trim();
+          spec = JSON.parse(stripped);
+        } catch {
+          spec = {};
+        }
+      } else {
+        spec = specImpulse.content as typeof spec;
+      }
+      // Flatten: LLM often returns {"vesselSpec": {"shape": ...}}
+      const specShape = spec.shape ?? spec.vesselSpec?.shape ?? context.variables["missingShape"] ?? "forged";
 
       // Derive image tag from the URI (last colon-separated segment)
       const colonIdx = imageUri.lastIndexOf(":");
@@ -49,16 +62,21 @@ export function makeHelmfileSyncResolver(
           : process.cwd();
 
       const uuid = context.random.id("overlay");
-      const releaseName = `forge-${spec.shape}`;
-      const overlayPath = `${workingDir}/repos/deployment/overlays/forged-vessels/${releaseName}-${uuid}.yaml`;
+      const releaseName = `forge-${specShape.replace(/_/g, "-")}`;
+      const overlayPath = `${workingDir}/repos/deployment/helmfiles/forged-vessels/${releaseName}-${uuid}.yaml`;
+      // Chart path must be absolute — helmfile resolves relative paths from the overlay file's dir
+      const chartPath = `${workingDir}/repos/deployment/charts/forged-vessel`;
 
       const overlayYaml = [
         "releases:",
         `  - name: ${releaseName}`,
-        "    chart: ./charts/generic-vessel",
+        `    chart: ${chartPath}`,
         "    namespace: activity-system",
         "    values:",
-        "      - image:",
+        "      - fullnameOverride: " + releaseName,
+        "        imagePullSecrets:",
+        "          - name: docker-hub-pull",
+        "        image:",
         `          repository: ${imageRepo}`,
         `          tag: "${imageTag}"`,
       ].join("\n") + "\n";
@@ -66,8 +84,10 @@ export function makeHelmfileSyncResolver(
       // 1. Write overlay file
       await fs.write(overlayPath, overlayYaml);
 
+      // Run helmfile from the deployment repo root so `./charts/forged-vessel` resolves correctly
+      const deploymentRoot = `${workingDir}/repos/deployment`;
       // 2. Apply overlay
-      await helmfile.applyOverlay(overlayPath);
+      await helmfile.applyOverlay(overlayPath, deploymentRoot);
 
       // 3. Wait for release to become ready (5 min)
       await helmfile.waitForReady(releaseName, "activity-system", 300_000);
