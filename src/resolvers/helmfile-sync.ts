@@ -67,6 +67,7 @@ export function makeHelmfileSyncResolver(
       // Chart path must be absolute — helmfile resolves relative paths from the overlay file's dir
       const chartPath = `${workingDir}/repos/deployment/charts/forged-vessel`;
 
+      const serviceEndpoint = `http://${releaseName}.activity-system.svc.cluster.local:8080`;
       const overlayYaml = [
         "releases:",
         `  - name: ${releaseName}`,
@@ -79,6 +80,11 @@ export function makeHelmfileSyncResolver(
         "        image:",
         `          repository: ${imageRepo}`,
         `          tag: "${imageTag}"`,
+        "        env:",
+        "          - name: VESSEL_ENDPOINT",
+        `            value: "${serviceEndpoint}"`,
+        "          - name: VESSEL_ID",
+        `            value: "${specShape}-vessel"`,
       ].join("\n") + "\n";
 
       // 1. Write overlay file
