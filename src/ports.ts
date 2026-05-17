@@ -141,3 +141,63 @@ export interface CapabilityIndex {
 export interface AttachedVesselRegistry {
   list(): Promise<AttachedVessel[]> | AttachedVessel[];
 }
+
+// ── Phase 22 forge ports ──────────────────────────────────────────────────────
+
+/**
+ * Build and push Docker images for forged vessels.
+ * Implement with `BunDockerAdapter` (shells to `docker` via ProcessPort).
+ * Registry auth is read from the `DOCKER_REGISTRY_AUTH` environment variable
+ * (base64-encoded `user:password` — same format as `.docker/config.json`).
+ * `build` throws on non-zero docker exit; `push` throws on auth failure or
+ * registry unavailability. Both methods propagate stderr as the error message.
+ */
+export interface DockerPort {
+  build(contextPath: string, tag: string, opts?: { buildArgs?: Record<string, string>; dockerfile?: string }): Promise<void>;
+  push(tag: string, registry?: string): Promise<void>;
+}
+
+/**
+ * Apply Helmfile overlays and wait for Kubernetes releases to become ready.
+ * Implement with `BunHelmfileAdapter` (shells to `helmfile` + `kubectl` via ProcessPort).
+ * `applyOverlay` runs `helmfile --file <overlayPath> sync`; throws on non-zero exit.
+ * `waitForReady` polls `kubectl rollout status deployment/<release> -n <namespace>`
+ * until ready or timeoutMs elapsed; throws `HelmfileTimeoutError` on timeout.
+ * Both methods forward stderr to the thrown error for debuggability.
+ */
+export interface HelmfilePort {
+  applyOverlay(overlayPath: string): Promise<void>;
+  waitForReady(release: string, namespace: string, timeoutMs: number): Promise<void>;
+}
+
+/** Minimal vessel summary returned by DiscoveryPort.lookupShapeProducers. */
+export interface VesselSummary {
+  id: string;
+  resolveEndpoint: string;
+  healthScore?: number;
+  orgId?: string;
+}
+
+/** Minimal vessel registration payload for DiscoveryPort.registerVessel. */
+export interface VesselRegistration {
+  id: string;
+  shapes: string[];
+  resolveEndpoint: string;
+  authScheme?: string;
+  orgId?: string;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Query discovery-vessel for shape producers and register new vessels.
+ * Implement with `HttpDiscoveryAdapter` (wraps FetchPort against discovery-vessel).
+ * Results are cached for 30s to avoid thrashing; the cache is invalidated when
+ * `registerVessel` completes successfully (new producers become immediately visible).
+ * `lookupShapeProducers` returns an empty array (not a throw) when no producers
+ * are registered — callers use this to gate the forge branch in slot-binding.
+ * `registerVessel` throws on 4xx/5xx from discovery-vessel.
+ */
+export interface DiscoveryPort {
+  lookupShapeProducers(shape: string, orgIds?: string[]): Promise<VesselSummary[]>;
+  registerVessel(payload: VesselRegistration): Promise<void>;
+}
