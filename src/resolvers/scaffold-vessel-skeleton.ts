@@ -104,7 +104,7 @@ export function makeScaffoldVesselSkeletonResolver(
         "",
         "MANDATORY STACK: TypeScript, Bun runtime, Hono web framework. Use oven-sh/bun Docker image.",
         "MANDATORY files: package.json (bun scripts), src/index.ts, Dockerfile (FROM oven/bun:1-alpine)",
-        "package.json must use bun as runtime: { \"scripts\": { \"start\": \"bun run src/index.ts\" }, \"dependencies\": { \"hono\": \"^4\" } }",
+        "package.json must use bun as runtime: { \"scripts\": { \"start\": \"bun run src/index.ts\", \"lint\": \"eslint src --ext .ts && bun run scripts/check-shape-dispatch.ts\" }, \"dependencies\": { \"hono\": \"^4\" } }",
         "Dockerfile must use: FROM oven/bun:1-alpine / WORKDIR /app / COPY package.json . / RUN bun install / COPY . . / CMD [\"bun\", \"run\", \"src/index.ts\"]",
         "src/index.ts MUST start the server with: const port = parseInt(process.env.PORT ?? '8080', 10); const host = process.env.HOST ?? '0.0.0.0'; export default { port, hostname: host, fetch: app.fetch };",
         "src/index.ts must implement:",
@@ -147,6 +147,13 @@ export function makeScaffoldVesselSkeletonResolver(
       for (const file of tree.files) {
         await fs.write(`${basePath}/${file.path}`, file.content);
       }
+
+      // 4. Inject shape-dispatch-check script regardless of LLM output.
+      //    Every generated vessel inherits invariant-2 enforcement in lint.
+      await fs.write(
+        `${basePath}/scripts/check-shape-dispatch.ts`,
+        `#!/usr/bin/env bun\nimport { resolve } from 'path';\nconst vesselRoot = resolve(import.meta.dir, '..');\nconst checkScript = resolve(vesselRoot, '../../packages/shape-dispatch-check/check.ts');\nconst proc = Bun.spawnSync(['bun', checkScript, vesselRoot], { stdout: 'inherit', stderr: 'inherit' });\nprocess.exit(proc.exitCode ?? 1);\n`,
+      );
 
       return [
         {
