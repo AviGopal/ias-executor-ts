@@ -68,6 +68,15 @@ export function makeHelmfileSyncResolver(
       const chartPath = `${workingDir}/repos/deployment/charts/forged-vessel`;
 
       const serviceEndpoint = `http://${releaseName}.activity-system.svc.cluster.local:8080`;
+      // 2026-05-19 fix: previously the overlay only set VESSEL_ENDPOINT and
+      // VESSEL_ID. The scaffolded vessel's registerWithDiscovery call thus
+      // got 401 from discovery (no Authorization header) and 0.0.0.0 endpoint
+      // fallbacks the cluster couldn't reach back to. Add DISCOVERY_ENDPOINT
+      // explicitly, plus METABOB_API_KEY as plain env (chart doesn't yet
+      // support valueFrom: secretKeyRef — chart upgrade is a follow-up;
+      // forge demonstration prioritizes registration working over secret
+      // mechanism). See task 24 in tasks.md.
+      const apiKey = process.env["METABOB_API_KEY"] ?? "";
       const overlayYaml = [
         "releases:",
         `  - name: ${releaseName}`,
@@ -85,6 +94,10 @@ export function makeHelmfileSyncResolver(
         `            value: "${serviceEndpoint}"`,
         "          - name: VESSEL_ID",
         `            value: "${specShape}-vessel"`,
+        "          - name: DISCOVERY_ENDPOINT",
+        `            value: "http://discovery-vessel.activity-system.svc.cluster.local:8080"`,
+        "          - name: METABOB_API_KEY",
+        `            value: "${apiKey}"`,
       ].join("\n") + "\n";
 
       // 1. Write overlay file

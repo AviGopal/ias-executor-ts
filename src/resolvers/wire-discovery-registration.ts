@@ -78,6 +78,13 @@ export function makeWireDiscoveryRegistrationResolver(
       }
 
       // 3. LLM edits src/index.ts to inject discovery registration + heartbeat
+      // Prompt-design note (2026-05-19): the previous prompt produced code that
+      // POSTed to /register WITHOUT an Authorization header AND swallowed all
+      // errors via .catch(() => {}). Discovery requires API-key auth on
+      // mutations; the register call always 401'd and the silent-catch made
+      // it invisible. Pod logs only ever showed "Started development server".
+      // Fix: require the LLM to attach Authorization: ApiKey ${METABOB_API_KEY}
+      // and to log errors before swallowing them.
       const prompt = [
         "Edit the following TypeScript vessel entry-point to add non-blocking discovery registration",
         "and a 60-second heartbeat.",
@@ -87,12 +94,17 @@ export function makeWireDiscoveryRegistrationResolver(
         "EXACT REQUIREMENTS — follow these precisely:",
         "- Read DISCOVERY_ENDPOINT from environment: const discoveryEndpoint = process.env.DISCOVERY_ENDPOINT ?? 'http://discovery-vessel:8080';",
         `- Read VESSEL_ENDPOINT from environment: const vesselEndpoint = process.env.VESSEL_ENDPOINT ?? \`http://\${host}:\${port}\`;`,
-        `- On startup, register with discovery by POSTing to \`\${discoveryEndpoint}/register\` with body:`,
-        `  { id: process.env.VESSEL_ID ?? '${vesselShape}-vessel', name: '${vesselShape}-vessel', version, shapes: ['${vesselShape}'], endpoint: vesselEndpoint, resolve_endpoint: \`\${vesselEndpoint}/v2/impulses/resolve\`, auth_scheme: 'ApiKey' }`,
-        "- Registration must be non-blocking: call registerWithDiscovery().catch(() => {}); (no await at top level)",
-        "- Send heartbeat every 60s via setInterval to `${discoveryEndpoint}/heartbeat`",
-        "  with body: { id: process.env.VESSEL_ID ?? '<shape>-vessel', shapes: ['<shape>'] }",
-        "- Heartbeat must be non-blocking (wrapped in .catch())",
+        "- Read METABOB_API_KEY from environment: const apiKey = process.env.METABOB_API_KEY ?? '';",
+        `- On startup, register with discovery by POSTing to \`\${discoveryEndpoint}/register\` with:`,
+        "  headers: { 'Content-Type': 'application/json', 'Authorization': `ApiKey ${apiKey}` }",
+        `  body: { id: process.env.VESSEL_ID ?? '${vesselShape}-vessel', name: '${vesselShape}-vessel', version, shapes: ['${vesselShape}'], endpoint: vesselEndpoint, resolve_endpoint: \`\${vesselEndpoint}/v2/impulses/resolve\`, auth_scheme: 'ApiKey' }`,
+        "- Registration must be non-blocking but VISIBLY logged on failure:",
+        "  registerWithDiscovery().catch((err) => console.warn('[discovery] registration failed:', err?.message ?? err));",
+        "  (no await at top level; do NOT use .catch(() => {}) — silent failures are bugs)",
+        "- Send heartbeat every 60s via setInterval to `${discoveryEndpoint}/heartbeat` with the SAME Authorization header",
+        "  body: { id: process.env.VESSEL_ID ?? '<shape>-vessel', shapes: ['<shape>'] }",
+        "- Heartbeat must be non-blocking but VISIBLY logged on failure:",
+        "  .catch((err) => console.warn('[discovery] heartbeat failed:', err?.message ?? err))",
         "- Do not import any new dependencies",
         "- Do not use await at the top level for registration or heartbeat setup",
         "",
