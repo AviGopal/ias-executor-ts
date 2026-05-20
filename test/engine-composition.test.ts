@@ -316,3 +316,126 @@ describe("Composition chain", () => {
     expect(childTrace?.compositionChain).toEqual([parentTrace.id]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Retry semantics (task 1.6 — design §J.4)
+// ---------------------------------------------------------------------------
+
+describe("Retry semantics", () => {
+  test("succeeds on first attempt when no failure", async () => {
+    const runtime = new ExecutionRuntime({ random: new SequentialRandom(), clock: new SteppingClock() });
+    let callCount = 0;
+    runtime.resolvers.register({
+      id: "flaky",
+      tier: "deterministic",
+      async resolve(ctx) {
+        callCount++;
+        return [{ id: ctx.random.id("out"), pointer: { type: "memo" }, metadata: { shape: "result" }, loaded: true, content: null }];
+      },
+    });
+    const executor = new ActivityExecutor(runtime);
+    const template: ActivityTemplate = {
+      id: "retry-test",
+      name: "Retry Test",
+      tasks: [{ id: "t1", description: "task", resolver: "flaky", outputShapes: ["result"], retry: { max_attempts: 3 } }],
+    };
+    const trace = await executor.execute(template);
+    expect(trace.status).toBe("completed");
+    expect(callCount).toBe(1);
+  });
+
+  test("retries up to max_attempts on failure and succeeds", async () => {
+    const runtime = new ExecutionRuntime({ random: new SequentialRandom(), clock: new SteppingClock() });
+    let callCount = 0;
+    runtime.resolvers.register({
+      id: "flaky",
+      tier: "deterministic",
+      async resolve(ctx) {
+        callCount++;
+        if (callCount < 3) throw new Error(`attempt ${callCount} failed`);
+        return [{ id: ctx.random.id("out"), pointer: { type: "memo" }, metadata: { shape: "result" }, loaded: true, content: null }];
+      },
+    });
+    const executor = new ActivityExecutor(runtime);
+    const template: ActivityTemplate = {
+      id: "retry-test",
+      name: "Retry Test",
+      tasks: [{ id: "t1", description: "task", resolver: "flaky", outputShapes: ["result"], retry: { max_attempts: 3 } }],
+    };
+    const trace = await executor.execute(template);
+    expect(trace.status).toBe("completed");
+    expect(callCount).toBe(3);
+  });
+
+  test("exhausts all retries and returns failed trace", async () => {
+    const runtime = new ExecutionRuntime({ random: new SequentialRandom(), clock: new SteppingClock() });
+    let callCount = 0;
+    runtime.resolvers.register({
+      id: "always-fail",
+      tier: "deterministic",
+      async resolve() {
+        callCount++;
+        throw new Error("always fails");
+      },
+    });
+    const executor = new ActivityExecutor(runtime);
+    const template: ActivityTemplate = {
+      id: "retry-test",
+      name: "Retry Test",
+      tasks: [{ id: "t1", description: "task", resolver: "always-fail", retry: { max_attempts: 2 } }],
+    };
+    const trace = await executor.execute(template);
+    expect(trace.status).toBe("failed");
+    expect(callCount).toBe(2);
+    expect(trace.failureMode?.reason).toContain("always fails");
+  });
+
+  test("camelCase maxAttempts is also accepted", async () => {
+    const runtime = new ExecutionRuntime({ random: new SequentialRandom(), clock: new SteppingClock() });
+    let callCount = 0;
+    runtime.resolvers.register({
+      id: "flaky2",
+      tier: "deterministic",
+      async resolve(ctx) {
+        callCount++;
+        if (callCount < 2) throw new Error("first fails");
+        return [{ id: ctx.random.id("out"), pointer: { type: "memo" }, metadata: { shape: "result" }, loaded: true, content: null }];
+      },
+    });
+    const executor = new ActivityExecutor(runtime);
+    const template: ActivityTemplate = {
+      id: "retry-camel",
+      name: "Retry camelCase",
+      tasks: [{ id: "t1", description: "task", resolver: "flaky2", retry: { maxAttempts: 3 } }],
+    };
+    const trace = await executor.execute(template);
+    expect(trace.status).toBe("completed");
+    expect(callCount).toBe(2);
+  });
+
+  test("emits task.retry event for each failed attempt", async () => {
+    const sink = new EventSinkSpy();
+    const runtime = new ExecutionRuntime({ random: new SequentialRandom(), clock: new SteppingClock(), eventSink: sink });
+    let callCount = 0;
+    runtime.resolvers.register({
+      id: "flaky3",
+      tier: "deterministic",
+      async resolve(ctx) {
+        callCount++;
+        if (callCount < 3) throw new Error("fail");
+        return [{ id: ctx.random.id("out"), pointer: { type: "memo" }, metadata: { shape: "result" }, loaded: true, content: null }];
+      },
+    });
+    const executor = new ActivityExecutor(runtime);
+    const template: ActivityTemplate = {
+      id: "retry-events",
+      name: "Retry events",
+      tasks: [{ id: "t1", description: "task", resolver: "flaky3", retry: { max_attempts: 3 } }],
+    };
+    await executor.execute(template);
+    const retryEvents = sink.events.filter((e) => e.type === "task.retry");
+    expect(retryEvents).toHaveLength(2);
+    expect(retryEvents[0].data.attempt).toBe(1);
+    expect(retryEvents[1].data.attempt).toBe(2);
+  });
+});

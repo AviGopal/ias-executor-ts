@@ -159,7 +159,42 @@ export class ActivityExecutor {
             attachedVessels: this.runtime.attachedVessels,
           };
 
-          const outputs = await resolver.resolve(context);
+          // Retry semantics (design §J.4): read max_attempts (snake_case) or
+          // maxAttempts (camelCase) for parity with minibob template authors.
+          const retryConfig = task.retry as
+            | { max_attempts?: number; maxAttempts?: number; strategy?: string }
+            | undefined;
+          const maxAttempts = Math.max(
+            1,
+            retryConfig?.max_attempts ?? retryConfig?.maxAttempts ?? 1,
+          );
+
+          let outputs: Impulse[] = [];
+          let lastError: unknown;
+          for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+              outputs = await resolver.resolve(context);
+              lastError = undefined;
+              break;
+            } catch (err) {
+              lastError = err;
+              if (attempt < maxAttempts) {
+                await this.emit({
+                  type: "task.retry",
+                  timestamp: this.runtime.clock.now(),
+                  data: {
+                    executionId,
+                    taskId: task.id,
+                    attempt,
+                    maxAttempts,
+                    error: err instanceof Error ? err.message : String(err),
+                  },
+                });
+              }
+            }
+          }
+          if (lastError !== undefined) throw lastError;
+
           storedOutputs = outputs.map((impulse, index) => {
             const complete = this.ensureImpulse(task.outputShapes ?? [], impulse, index);
             this.runtime.store.put(complete);
