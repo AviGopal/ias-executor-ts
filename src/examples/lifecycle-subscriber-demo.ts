@@ -32,12 +32,19 @@ export async function runLifecycleSubscriberDemo(): Promise<{
   const dispatchedSubscribers: DispatchRecord[] = [];
   const forwardedEvents: LifecycleEvent[] = [];
 
-  // Subscriber template: fires on every activity.completed event.
+  // Subscriber template: fires on the spec-normative
+  // `lifecycle:execution:succeeded` event (emitted by engine.ts after a
+  // successful top-level activity). Filter requires the producing trace to
+  // have emitted a `noop` impulse — proves the `output_shapes_contains`
+  // filter and snake-case → camelCase resolution path work end-to-end.
   const ribosomeStub: ActivityTemplate = {
     id: "ribosome-extract-stub",
     name: "Ribosome Extract (stub)",
     tasks: [],
-    subscription: { shape: "activity.completed" },
+    subscription: {
+      shape: "lifecycle:execution:succeeded",
+      filter: { output_shapes_contains: "noop" },
+    },
   };
 
   const subscriber = new LifecycleSubscriberVessel({

@@ -99,7 +99,9 @@ describe("ExecutionRuntime + ActivityExecutor", () => {
       "activity.started",
       "task.started",
       "task.completed",
+      "lifecycle:task:completed",
       "activity.completed",
+      "lifecycle:execution:succeeded",
     ]);
   });
 

@@ -1,4 +1,4 @@
-import type { ActivityTemplate, ExecutionTaskRecord, ExecutionTrace, FailureMode, Impulse, InputShapeRef, LifecycleEvent } from "./ontology";
+import type { ActivityTask, ActivityTemplate, ExecutionTaskRecord, ExecutionTrace, FailureMode, Impulse, InputShapeRef, LifecycleEvent } from "./ontology";
 import { getImpulseShape } from "./ontology";
 import type { CreateImpulseInput } from "./impulses";
 import type { ResolverContext } from "./resolvers";
@@ -17,6 +17,11 @@ export interface ExecuteOptions {
   budget?: ExecutionBudget;
   parentExecutionId?: string;
   compositionChain?: string[];
+  /** Optional goal context forwarded into `lifecycle:*` payloads so subscribers
+   *  (e.g. slot-binding's escalate_unbindable → create-shape-provider-goal)
+   *  can read the parent goal without recomputing from variables. Matches
+   *  minibob's `currentGoalContext` plumbing. */
+  goalContext?: { goal?: string };
 }
 
 class BudgetExceededError extends Error {
@@ -68,6 +73,38 @@ export class ActivityExecutor {
         const elapsed = this.runtime.clock.now() - startedAt;
         if (budget?.maxDurationMs !== undefined && elapsed >= budget.maxDurationMs) {
           throw new BudgetExceededError("duration", elapsed, budget.maxDurationMs);
+        }
+
+        // Emit `lifecycle:task:preBinding` BEFORE `task.started` when the task
+        // declares inputShapes — slot-binding meta-activities enrich the
+        // impulse pool here (spec §E / 2026-04-26-impulse-binding-selection-layer).
+        // Mirrors minibob/src/activity.ts emit at line 4734.
+        const declaredInputShapeNames = (task.inputShapes ?? []).map((entry) =>
+          typeof entry === "string" ? entry : entry.shape,
+        );
+        if (declaredInputShapeNames.length > 0) {
+          const poolShapes = this.runtime.store
+            .all()
+            .map((imp) => getImpulseShape(imp));
+          const presentShapes = new Set(poolShapes);
+          const missingShapes = declaredInputShapeNames.filter(
+            (s) => !presentShapes.has(s),
+          );
+          await this.emit({
+            type: "lifecycle:task:preBinding",
+            timestamp: this.runtime.clock.now(),
+            data: {
+              taskId: task.id,
+              templateId: template.id,
+              executionId,
+              inputShapes: declaredInputShapeNames,
+              currentImpulseShapes: poolShapes,
+              missingShapes,
+              variables: options.variables ?? {},
+              parentDepth: compositionChain.length,
+              parentGoalText: options.goalContext?.goal,
+            },
+          });
         }
 
         await this.emit({
@@ -164,6 +201,28 @@ export class ActivityExecutor {
             childExecutionId,
           },
         });
+
+        // Mirror minibob/src/activity.ts:3200 — emit the lifecycle event so
+        // validator-dispatch + concept-db subscribers can fire on task
+        // boundaries. Additive to `task.completed`; the simpler event is kept
+        // for existing consumers.
+        await this.emit({
+          type: "lifecycle:task:completed",
+          timestamp: this.runtime.clock.now(),
+          data: {
+            taskId: task.id,
+            templateId: template.id,
+            executionId,
+            resolverId: task.resolver,
+            success: true,
+            durationMs: taskDurationMs,
+            costUsd: taskCostUsd ?? 0,
+            inputImpulseIds: inputImpulses.map((impulse) => impulse.id),
+            outputImpulseIds: storedOutputs.map((impulse) => impulse.id),
+            inputShapes: declaredInputShapeNames,
+            outputShapes: this.shapesOfImpulses(task, storedOutputs),
+          },
+        });
       }
 
       const totalDurationMs = this.runtime.clock.now() - startedAt;
@@ -187,6 +246,39 @@ export class ActivityExecutor {
         type: "activity.completed",
         timestamp: this.runtime.clock.now(),
         data: { executionId, templateId: template.id },
+      });
+
+      // Spec-normative event for audit-test-report + ribosome subscribers.
+      // Emitted ONLY on success (not in the failure branch below) so the
+      // `output_shapes_contains` filter on audit-test-report does not fire
+      // on partial / failed traces. parentDepth is exposed explicitly so the
+      // R5 depth-cap can short-circuit without recomputing from
+      // composition_chain (mirrors minibob/src/activity.ts:3862).
+      const outputShapes = [
+        ...new Set(
+          [...outputImpulseIds]
+            .map((id) => this.runtime.store.get(id))
+            .filter((imp): imp is Impulse => imp !== undefined)
+            .map((imp) => getImpulseShape(imp)),
+        ),
+      ];
+      await this.emit({
+        type: "lifecycle:execution:succeeded",
+        timestamp: this.runtime.clock.now(),
+        data: {
+          executionId,
+          templateId: template.id,
+          templateName: template.name,
+          status: "completed",
+          durationMs: totalDurationMs,
+          costUsd: totalCostUsd,
+          outputShapes,
+          outputImpulseIds: [...outputImpulseIds],
+          taskCount: template.tasks.length,
+          parentDepth: compositionChain.length,
+          compositionChain,
+          ...(options.goalContext ? { goalContext: options.goalContext } : {}),
+        },
       });
       return trace;
     } catch (error) {
@@ -309,6 +401,20 @@ export class ActivityExecutor {
 
       return candidates;
     });
+  }
+
+  /**
+   * Resolve the distinct output shapes for a completed task. Prefer the
+   * impulse's resolved shape (set by `ensureImpulse`); fall back to the
+   * declared `task.outputShapes` when an impulse carries no metadata.shape.
+   */
+  private shapesOfImpulses(task: ActivityTask, impulses: Impulse[]): string[] {
+    const declared = task.outputShapes ?? [];
+    const collected = impulses.map((imp, i) => {
+      const s = getImpulseShape(imp);
+      return s || declared[i] || imp.pointer.type;
+    });
+    return [...new Set(collected)];
   }
 
   private ensureImpulse(outputShapes: string[], impulse: Impulse, index: number): Impulse {
