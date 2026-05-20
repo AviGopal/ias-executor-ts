@@ -127,13 +127,25 @@ function mapTemplate(raw: RawTemplate): ActivityTemplate {
 }
 
 function mapTask(raw: RawTask): import("../ontology").ActivityTask {
-  const resolver = raw.resolver ?? (raw.prompt ? "llm" : "bash");
-  return {
+  // 2026-05-20: when raw.prompt is present, default resolver to "llm-prompt"
+  // (NOT "llm") — the llm-prompt resolver (src/resolvers/llm-prompt.ts)
+  // reads task.prompt.template and interpolates {{var}} placeholders, which
+  // is the canonical minibob template shape returned by activity-api's
+  // recommend endpoint. The plain "llm" resolver requires task.config.prompt
+  // as a string and would fail on these templates.
+  // ALSO preserve raw.prompt on the output ActivityTask — previously it was
+  // dropped, leaving the llm-prompt resolver with no template to read.
+  const resolver = raw.resolver ?? (raw.prompt ? "llm-prompt" : "bash");
+  const out: import("../ontology").ActivityTask = {
     id: raw.id ?? "",
     description: raw.description ?? "",
     resolver,
     config: raw.config as Record<string, unknown> | undefined,
   };
+  if (raw.prompt) {
+    (out as { prompt?: unknown }).prompt = raw.prompt;
+  }
+  return out;
 }
 
 function mapTraceToApiBody(trace: ExecutionTrace): Record<string, unknown> {
