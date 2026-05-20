@@ -53,6 +53,7 @@ import type {
   TraceSink,
 } from "../ports";
 import type { Resolver } from "../resolvers";
+import { makeLLMPromptResolver } from "../resolvers/llm-prompt";
 import {
   BunFileSystemAdapter,
   BunProcessAdapter,
@@ -345,6 +346,11 @@ export class GoalHost {
     this.runtime.resolvers.register(makeFileReadResolver(this.fs));
     this.runtime.resolvers.register(makeBashResolver(this.proc));
     this.runtime.resolvers.register(makeLLMResolver(options.llm));
+    // Minibob-template bridge: see src/resolvers/llm-prompt.ts. Enables
+    // GoalHost to run recommend-returned templates that use
+    // task.prompt.template + {{var}} interpolation (minibob's default-LLM
+    // path) without rewriting them.
+    this.runtime.resolvers.register(makeLLMPromptResolver(options.llm));
 
     this.executor = new ActivityExecutor(this.runtime);
     executor = this.executor; // close the loop for the dispatcher

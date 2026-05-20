@@ -22,6 +22,7 @@ import { ActivityExecutor, ExecutionRuntime, type ActivityTemplate, type Lifecyc
 import { BunFileSystemAdapter, BunProcessAdapter } from "../adapters/index";
 import type { FileSystemPort, ProcessPort, LLMPort, EventSink, TraceSink } from "../ports";
 import type { Resolver } from "../resolvers";
+import { makeLLMPromptResolver } from "../resolvers/llm-prompt";
 
 // ---------------------------------------------------------------------------
 // Built-in resolver implementations backed by Bun adapters
@@ -152,6 +153,11 @@ export class BunHost {
     this.runtime.resolvers.register(makeBashResolver(this.proc));
     if (options.llm) {
       this.runtime.resolvers.register(makeLLMResolver(options.llm));
+      // Minibob-template bridge: registers `llm-prompt` so templates with
+      // task.prompt.template + {{var}} interpolation (the recommend-route
+      // output shape) run through ias-executor-ts without rewriting them.
+      // See src/resolvers/llm-prompt.ts for the contract.
+      this.runtime.resolvers.register(makeLLMPromptResolver(options.llm));
     }
 
     this.executor = new ActivityExecutor(this.runtime);
