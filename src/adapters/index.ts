@@ -7,3 +7,12 @@ export { VesselResolver } from "./vessel-resolver";
 export { BunDockerAdapter } from "./docker-adapter";
 export { BunHelmfileAdapter, HelmfileTimeoutError } from "./helmfile-adapter";
 export { HttpDiscoveryAdapter } from "./discovery-adapter";
+export { ActivityApiAdapter } from "./activity-api-adapter";
+export type {
+  RecommendRequest,
+  RecommendCandidate,
+  RecommendResponse,
+  ActivityApiAdapterOptions,
+} from "./activity-api-adapter";
+export { TranslatingTraceSink } from "./activity-api-trace-sink";
+export type { TranslatingTraceSinkOptions } from "./activity-api-trace-sink";
