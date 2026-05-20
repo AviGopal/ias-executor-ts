@@ -51,6 +51,16 @@ export class TranslatingTraceSink implements TraceSink {
   }
 
   async record(trace: ExecutionTrace): Promise<void> {
+    // 2026-05-20 bug fix: StoreExecutionTraceRequestSchema's status enum is
+    // {"success","failure","partial"}, but the route's derivation logic at
+    // execution-traces.ts:1560 only treats body.status === "completed" OR
+    // body.success === true as actual success. Sending "success" alone
+    // falls through to `success = false → status = 'failure'`. Send both
+    // the schema-valid enum AND the explicit boolean so the route lands
+    // on the right answer regardless of which path it reads. Until the
+    // route + schema are aligned at the source, this dual-key write is
+    // the smallest defensible bridge.
+    const isSuccess = trace.status === "completed";
     const statusMap: Record<string, string> = {
       completed: "success",
       failed: "failure",
@@ -59,6 +69,7 @@ export class TranslatingTraceSink implements TraceSink {
       execution_id: trace.id,
       template_id: trace.templateId,
       status: statusMap[trace.status] ?? "partial",
+      success: isSuccess,
       duration_ms: trace.durationMs ?? 0,
       cost_usd: trace.costUsd ?? 0,
       execution_trace: {
