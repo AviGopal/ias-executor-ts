@@ -1,0 +1,332 @@
+{
+  "id": "evolve-activity-self-contained",
+  "name": "Evolve Activity Template (Self-Contained)",
+  "version": 2,
+  "description": "Improve existing activity templates based on execution metrics and learnings without requiring git history or local files - fully self-contained",
+  "category": "infrastructure",
+  "contextRequirements": [],
+  "tasks": [
+    {
+      "id": "fetch-template-and-metrics",
+      "subagent": "general",
+      "description": "Fetch template definition and execution metrics from backend API",
+      "dependencies": [],
+      "impulseRefs": [],
+      "prompt": {
+        "template": "Fetch the current template and its execution metrics from the backend.\n\n**Template ID**: {{templateId}}\n\n**Your Task**: Gather comprehensive data about this template's performance\n\n**Data to Collect**:\n\n1. **Template Definition**:\n   - Full template JSON structure\n   - Current version number\n   - Task definitions and dependencies\n   - Variables and validation rules\n   - Integration configuration\n\n2. **Execution Metrics** (Last 30 days):\n   - Total executions: [count]\n   - Success rate: [percentage]\n   - Average duration: [time]\n   - Average cost: [USD]\n   - Token usage distribution\n\n3. **Failure Analysis**:\n   - Common failure modes (grouped by error type)\n   - Tasks that fail most frequently\n   - Validation failures by pattern\n   - Timeout occurrences\n\n4. **Performance Trends**:\n   - Success rate over time (trending up/down?)\n   - Cost trends (increasing/decreasing?)\n   - Duration trends (getting faster/slower?)\n\n5. **Learning Data** (if available):\n   - Captured feedback from executions\n   - Improvement hints from agents\n   - User feedback (if any)\n   - Pattern recognition results\n\n**API Queries**:\n\nYou may need to query these endpoints (adapt to actual API):\n\n```bash\n# Get template definition\ncurl http://localhost:8082/v2/activities/templates/{{templateId}}\n\n# Get execution history\ncurl \"http://localhost:8082/v2/activities/executions?template_id={{templateId}}&limit=100\"\n\n# Get success rate statistics\ncurl http://localhost:8082/v2/activities/templates/{{templateId}}/stats\n\n# Get common failures\ncurl \"http://localhost:8082/v2/activities/executions?template_id={{templateId}}&status=failed&limit=50\"\n\n# Get learning data\ncurl http://localhost:8082/v2/activities/templates/{{templateId}}/learnings\n```\n\n**Output Format**:\n\nCreate `TEMPLATE_ANALYSIS.md`:\n\n```markdown\n# Template Analysis: {{templateId}}\n\n## Current Template\n\n**Name**: [name]  \n**Version**: [version]  \n**Category**: [category]  \n**Description**: [description]\n\n**Structure**:\n- Tasks: [count]\n- Total token budget: [sum of max_tokens]\n- Context requirements: [count]\n- Integration checks: [count]\n\n**Task Breakdown**:\n\n1. **task-1**: [description]\n   - Agent: [agent]\n   - Dependencies: [list]\n   - Token budget: [tokens]\n   \n2. **task-2**: [description]\n   - Agent: [agent]\n   - Dependencies: [list]\n   - Token budget: [tokens]\n\n[Continue for all tasks...]\n\n## Execution Metrics (Last 30 Days)\n\n**Summary**:\n- Total executions: [count]\n- Successful: [count] ([percentage]%)\n- Failed: [count] ([percentage]%)\n- Average duration: [time]\n- Average cost: $[amount]\n- Total cost: $[amount]\n\n**Success Rate Trend**:\n```\nWeek 1: XX%\nWeek 2: XX%\nWeek 3: XX%\nWeek 4: XX%\nTrend: [↗ Improving / → Stable / ↘ Declining]\n```\n\n**Cost Trend**:\n```\nWeek 1: $X.XX avg\nWeek 2: $X.XX avg\nWeek 3: $X.XX avg\nWeek 4: $X.XX avg\nTrend: [↗ Increasing / → Stable / ↘ Decreasing]\n```\n\n## Failure Analysis\n\n### Failure Distribution\n\n| Task | Failures | Percentage |\n|------|----------|------------|\n| task-1 | 5 | 10% |\n| task-2 | 25 | 50% |\n| task-3 | 20 | 40% |\n\n**Hotspot**: Task [id] accounts for [percentage]% of failures\n\n### Common Failure Modes\n\n#### 1. Validation Failures (40% of failures)\n\n**Pattern**: Required file not found\n\n**Affected tasks**: task-2, task-3\n\n**Example errors**:\n- \"Required file not found: output.json\"\n- \"Pattern not found: 'Success'\"\n\n**Root cause**: Ambiguous file paths in prompts\n\n#### 2. Token Limit Exceeded (30% of failures)\n\n**Pattern**: Agent response truncated\n\n**Affected tasks**: task-4\n\n**Example errors**:\n- \"Max tokens reached: 8000\"\n- \"Response incomplete\"\n\n**Root cause**: Insufficient token budget\n\n#### 3. Timeout (20% of failures)\n\n**Pattern**: Task execution exceeded time limit\n\n**Affected tasks**: task-5\n\n**Example errors**:\n- \"Timeout after 300s\"\n\n**Root cause**: Task too complex or slow API calls\n\n#### 4. Other (10% of failures)\n\n- Environment issues\n- Network failures\n- Transient errors\n\n### Validation Failure Patterns\n\n| Pattern | Occurrences | Tasks |\n|---------|-------------|-------|\n| \"output.json not found\" | 25 | task-2, task-3 |\n| \"TODO\" found (forbidden) | 10 | task-4 |\n| Command failed: \"npm test\" | 8 | task-5 |\n\n## Learning Data\n\n### Feedback Points (if captured)\n\n**Task task-2**:\n- `template_valid`: 80% yes, 20% no\n- `prompt_clarity`: Average 6/10\n- `example_usefulness`: Average 8/10\n\n**Improvement hints**:\n- \"Prompt should specify file path more clearly\" (5 mentions)\n- \"Need example output structure\" (3 mentions)\n- \"Token budget too low\" (2 mentions)\n\n### Pattern Recognition\n\n**Success patterns identified**:\n- Executions with explicit file paths succeed 95% of time\n- Executions with examples in prompts succeed 90% of time\n- Tasks with 20% token margin rarely hit limits\n\n**Failure patterns identified**:\n- Vague prompts correlate with validation failures\n- Low token budgets correlate with truncation\n- Complex multi-step tasks correlate with timeouts\n\n## Performance Benchmarks\n\n**Compared to similar templates**:\n- Success rate: XX% (Category average: YY%)\n- Duration: Xm Ys (Category average: Ym Zs)\n- Cost: $X.XX (Category average: $Y.YY)\n\n**Ranking**: [N] out of [Total] templates in [category] category\n\n## Current Template JSON\n\n<details>\n<summary>Full template definition</summary>\n\n```json\n[Full JSON from API]\n```\n\n</details>\n```\n\n**Write the TEMPLATE_ANALYSIS.md file now with complete data.**",
+        "maxTokens": 12000,
+        "compressionStrategy": "filter"
+      },
+      "validation": {
+        "requiredFiles": [
+          "TEMPLATE_ANALYSIS.md"
+        ],
+        "requiredPatterns": [
+          "## Execution Metrics",
+          "## Failure Analysis",
+          "## Current Template"
+        ],
+        "forbiddenPatterns": [],
+        "commands": []
+      },
+      "retry": {
+        "maxAttempts": 2,
+        "strategy": "simple",
+        "fallbackPrompt": ""
+      },
+      "metrics": {
+        "successRate": 0,
+        "avgTokens": 0,
+        "avgDuration": 0,
+        "commonFailures": []
+      },
+      "tools": {
+        "required": [
+          "write",
+          "bash"
+        ],
+        "optional": [
+          "read"
+        ],
+        "disabled": []
+      }
+    },
+    {
+      "id": "identify-improvements",
+      "subagent": "general",
+      "description": "Analyze metrics to identify specific, high-impact improvements",
+      "dependencies": [
+        "fetch-template-and-metrics"
+      ],
+      "impulseRefs": [],
+      "prompt": {
+        "template": "Identify specific improvements based on template analysis.\n\n**Input**: Read TEMPLATE_ANALYSIS.md\n\n**Your Task**: Generate prioritized improvement recommendations\n\n**Improvement Categories**:\n\n### 1. High-Impact Quick Wins\n\nImprovements that:\n- Fix major failure modes (>20% of failures)\n- Require minimal changes (1-3 fields)\n- Have immediate measurable impact\n\n**Examples**:\n- Increase token budget by 20-30%\n- Add file path examples to prompts\n- Adjust validation patterns\n- Fix dependency cycles\n\n### 2. Performance Optimizations\n\nImprovements that:\n- Reduce cost (without sacrificing quality)\n- Reduce duration (parallel tasks, better agents)\n- Improve token efficiency\n\n**Examples**:\n- Use Haiku for simple tasks (cost reduction)\n- Run independent tasks in parallel\n- Remove unnecessary validation checks\n- Compress prompts more aggressively\n\n### 3. Quality Enhancements\n\nImprovements that:\n- Increase success rate\n- Improve output quality\n- Better error handling\n- More robust validation\n\n**Examples**:\n- Add retry strategies to fragile tasks\n- Provide more examples in prompts\n- Add defensive validation\n- Improve error messages\n\n### 4. Usability Improvements\n\nImprovements that:\n- Make template easier to use\n- Better documentation\n- More flexible variables\n- Better composition support\n\n**Examples**:\n- Add variable defaults\n- Improve variable descriptions\n- Add composition examples\n- Better usage documentation\n\n**Analysis Framework**:\n\n```\nFor each failure pattern in TEMPLATE_ANALYSIS.md:\n\n1. Identify root cause (why does this fail?)\n2. Propose fix (how to prevent it?)\n3. Estimate impact (% of failures prevented)\n4. Estimate effort (complexity: low/medium/high)\n5. Calculate ROI (impact / effort)\n\nPrioritize by ROI (high ROI = quick wins)\n```\n\n**Output Format**:\n\nCreate `IMPROVEMENTS.md`:\n\n```markdown\n# Improvement Plan: {{templateId}}\n\n## Executive Summary\n\n**Current State**:\n- Success rate: XX%\n- Average cost: $X.XX\n- Average duration: Xm Ys\n\n**Target State** (with improvements):\n- Success rate: YY% (+ZZ%)\n- Average cost: $Y.YY (ZZ% reduction)\n- Average duration: Ym Zs (ZZ% faster)\n\n**Total Improvements**: [N] changes proposed\n\n---\n\n## Priority 1: Quick Wins (High Impact, Low Effort)\n\n### Improvement 1.1: Increase token budget for task-4\n\n**Problem**: 30% of failures due to token limit exceeded in task-4\n\n**Current**: `maxTokens: 8000`\n\n**Proposed**: `maxTokens: 10000` (+25%)\n\n**Rationale**: \n- Agent responses frequently truncated at ~7800 tokens\n- 20% margin recommended for complex tasks\n- Prevents incomplete outputs\n\n**Impact**:\n- Prevents: 15 failures per 50 executions\n- Success rate: +30% for task-4\n- Cost increase: $0.001 per execution (minimal)\n\n**Effort**: LOW (1 field change)\n\n**ROI**: ⭐⭐⭐⭐⭐ (Very High)\n\n**Implementation**:\n```json\n{\n  \"tasks\": [\n    {\n      \"id\": \"task-4\",\n      \"prompt\": {\n        \"maxTokens\": 10000  // was: 8000\n      }\n    }\n  ]\n}\n```\n\n---\n\n### Improvement 1.2: Add file path example to task-2 prompt\n\n**Problem**: 40% of failures due to \"output.json not found\" validation error\n\n**Current**: Prompt says \"Create output.json\"\n\n**Proposed**: Add explicit path and example\n\n**Rationale**:\n- Ambiguous file paths cause agent confusion\n- Examples dramatically improve success rate (pattern analysis: 95% vs 60%)\n- No cost impact\n\n**Impact**:\n- Prevents: 20 failures per 50 executions\n- Success rate: +40% for task-2\n- No cost increase\n\n**Effort**: LOW (add 3-4 lines to prompt)\n\n**ROI**: ⭐⭐⭐⭐⭐ (Very High)\n\n**Implementation**:\n```json\n{\n  \"tasks\": [\n    {\n      \"id\": \"task-2\",\n      \"prompt\": {\n        \"template\": \"Create output.json in the current working directory.\\n\\nExample structure:\\n```json\\n{\\n  \\\"results\\\": [],\\n  \\\"timestamp\\\": \\\"2026-02-16T10:00:00Z\\\",\\n  \\\"status\\\": \\\"success\\\"\\n}\\n```\\n\\nWrite to: ./output.json\"\n      }\n    }\n  ]\n}\n```\n\n---\n\n### Improvement 1.3: Fix forbidden pattern in task-4\n\n**Problem**: 10 failures due to \"TODO\" appearing in output (forbidden pattern)\n\n**Current**: Prompt doesn't mention avoiding TODO comments\n\n**Proposed**: Add explicit instruction\n\n**Rationale**:\n- Agents often use TODO as placeholder\n- Validation fails when TODO appears\n- Simple prompt addition prevents this\n\n**Impact**:\n- Prevents: 10 failures per 50 executions\n- Success rate: +20% for task-4\n- No cost increase\n\n**Effort**: LOW (add 1 line to prompt)\n\n**ROI**: ⭐⭐⭐⭐ (High)\n\n**Implementation**:\n```json\n{\n  \"tasks\": [\n    {\n      \"id\": \"task-4\",\n      \"prompt\": {\n        \"template\": \"...existing prompt...\\n\\n**IMPORTANT**: Do not use TODO, FIXME, or placeholder comments. Complete all implementations.\"\n      }\n    }\n  ]\n}\n```\n\n---\n\n## Priority 2: Performance Optimizations (Medium Impact, Low Effort)\n\n### Improvement 2.1: Use Haiku for simple task-1\n\n**Problem**: Task-1 is simple (validation only) but uses Sonnet (expensive)\n\n**Current**: No complexity tier specified (defaults to Sonnet)\n\n**Proposed**: Add complexity tier \"simple\" to suggest Haiku\n\n**Rationale**:\n- Task-1 has clear criteria, no creativity needed\n- Haiku is 10x cheaper than Sonnet\n- Quality sufficient for simple tasks\n\n**Impact**:\n- Cost reduction: $0.015 → $0.0015 per execution (90% savings on this task)\n- No success rate impact (validated: simple tasks work with Haiku)\n- Slight speed improvement\n\n**Effort**: LOW (add complexity field)\n\n**ROI**: ⭐⭐⭐⭐ (High)\n\n**Implementation**:\n```json\n{\n  \"tasks\": [\n    {\n      \"id\": \"task-1\",\n      \"complexity\": {\n        \"tier\": \"simple\",\n        \"reasoning\": \"Straightforward validation with clear criteria\",\n        \"suggestedModels\": {\n          \"preferred\": \"anthropic/claude-haiku-4\",\n          \"fallback\": \"anthropic/claude-sonnet-4\"\n        }\n      }\n    }\n  ]\n}\n```\n\n---\n\n### Improvement 2.2: Enable task parallelization\n\n**Problem**: task-2 and task-3 run sequentially but have no shared dependencies\n\n**Current**: task-3 depends on task-2 (unnecessary)\n\n**Proposed**: Remove dependency, let tasks run in parallel\n\n**Rationale**:\n- Both tasks only depend on task-1\n- Can run simultaneously (no shared state)\n- Reduces total duration\n\n**Impact**:\n- Duration reduction: ~30% faster (tasks overlap)\n- No cost increase\n- No success rate impact\n\n**Effort**: LOW (remove one dependency)\n\n**ROI**: ⭐⭐⭐⭐ (High)\n\n**Implementation**:\n```json\n{\n  \"tasks\": [\n    {\n      \"id\": \"task-3\",\n      \"dependencies\": [\"task-1\"]  // was: [\"task-1\", \"task-2\"]\n    }\n  ]\n}\n```\n\n---\n\n## Priority 3: Quality Enhancements (High Impact, Medium Effort)\n\n### Improvement 3.1: Add progressive-context retry to task-2\n\n**Problem**: task-2 fails often but always uses simple retry (same prompt)\n\n**Current**: `retry.strategy: \"simple\"`\n\n**Proposed**: `retry.strategy: \"progressive-context\"`\n\n**Rationale**:\n- Failures often due to missing context\n- Progressive-context adds more info each retry\n- Higher success rate on retries\n\n**Impact**:\n- Success rate: +15% on task-2 (after retry)\n- Slight cost increase: $0.002 per execution (retry attempts)\n- Better recovery from transient failures\n\n**Effort**: MEDIUM (change strategy + add fallback prompt)\n\n**ROI**: ⭐⭐⭐ (Medium-High)\n\n**Implementation**:\n```json\n{\n  \"tasks\": [\n    {\n      \"id\": \"task-2\",\n      \"retry\": {\n        \"maxAttempts\": 3,\n        \"strategy\": \"progressive-context\",\n        \"fallback_prompt\": \"Previous attempt failed. Review the error and try a different approach. Focus on creating output.json in the correct location with valid JSON structure.\"\n      }\n    }\n  ]\n}\n```\n\n---\n\n## Priority 4: Usability Improvements (Low Impact, Low Effort)\n\n### Improvement 4.1: Add variable defaults\n\n**Problem**: Users must provide all variables even when sensible defaults exist\n\n**Current**: No defaults specified\n\n**Proposed**: Add defaults for optional variables\n\n**Rationale**:\n- Reduces friction for users\n- Fewer execution errors from missing variables\n- Better documentation\n\n**Impact**:\n- User experience: Better\n- Execution errors: -10% (missing variable errors)\n- No other impact\n\n**Effort**: LOW (add default values)\n\n**ROI**: ⭐⭐⭐ (Medium)\n\n**Implementation**:\n```json\n{\n  \"tasks\": [\n    {\n      \"prompt\": {\n        \"variables\": [\n          {\n            \"name\": \"outputDirectory\",\n            \"type\": \"string\",\n            \"required\": false,\n            \"default\": \"./output\",\n            \"description\": \"Directory for output files\"\n          }\n        ]\n      }\n    }\n  ]\n}\n```\n\n---\n\n## Summary of Changes\n\n| Priority | Improvement | Impact | Effort | ROI |\n|----------|-------------|--------|--------|-----|\n| P1 | Increase token budget (task-4) | +30% success | LOW | ⭐⭐⭐⭐⭐ |\n| P1 | Add file path example (task-2) | +40% success | LOW | ⭐⭐⭐⭐⭐ |\n| P1 | Fix forbidden pattern (task-4) | +20% success | LOW | ⭐⭐⭐⭐ |\n| P2 | Use Haiku (task-1) | -90% cost | LOW | ⭐⭐⭐⭐ |\n| P2 | Parallelize tasks | -30% duration | LOW | ⭐⭐⭐⭐ |\n| P3 | Progressive retry (task-2) | +15% success | MEDIUM | ⭐⭐⭐ |\n| P4 | Add defaults | Better UX | LOW | ⭐⭐⭐ |\n\n**Total Expected Impact**:\n- Success rate: XX% → YY% (+ZZ percentage points)\n- Average cost: $X.XX → $Y.YY (ZZ% reduction)\n- Average duration: Xm Ys → Ym Zs (ZZ% faster)\n\n---\n\n## Risks and Considerations\n\n### Risk 1: Token budget increase affects cost\n\n**Mitigation**: Cost increase is minimal ($0.001 per execution) and justified by 30% success rate improvement\n\n### Risk 2: Parallel execution may cause resource contention\n\n**Mitigation**: Monitor execution metrics after deployment; can revert if issues arise\n\n### Risk 3: Haiku may reduce quality for task-1\n\n**Mitigation**: Task-1 is simple validation with clear criteria; Haiku is sufficient (validated in similar templates)\n\n---\n\n## Implementation Plan\n\n### Phase 1: Apply Quick Wins (Day 1)\n\n1. Increase token budget (Improvement 1.1)\n2. Add file path example (Improvement 1.2)\n3. Fix forbidden pattern (Improvement 1.3)\n\n**Expected impact**: +40% success rate\n\n### Phase 2: Apply Performance Optimizations (Day 2)\n\n1. Add Haiku complexity tier (Improvement 2.1)\n2. Enable parallelization (Improvement 2.2)\n\n**Expected impact**: -30% cost, -30% duration\n\n### Phase 3: Apply Quality Enhancements (Day 3)\n\n1. Add progressive-context retry (Improvement 3.1)\n\n**Expected impact**: +15% success rate\n\n### Phase 4: Apply Usability Improvements (Day 4)\n\n1. Add variable defaults (Improvement 4.1)\n\n**Expected impact**: Better user experience\n\n### Phase 5: Test and Monitor (Days 5-7)\n\n1. Test template with improvements\n2. Execute with test variables\n3. Monitor success rate, cost, duration\n4. Adjust if needed\n\n---\n\n## Testing Strategy\n\n### Test Cases\n\n1. **Happy path**: Execute with valid variables\n2. **Edge cases**: Execute with minimal variables (test defaults)\n3. **Failure recovery**: Inject failure in task-2, verify retry works\n4. **Parallel execution**: Verify task-2 and task-3 run simultaneously\n5. **Cost validation**: Verify Haiku is used for task-1\n\n### Success Criteria\n\n- ✅ Success rate > YY% (target from executive summary)\n- ✅ Average cost < $Y.YY (target from executive summary)\n- ✅ Average duration < Ym Zs (target from executive summary)\n- ✅ No regressions in working tasks\n- ✅ All test cases pass\n\n---\n\n## Monitoring Plan\n\nAfter deployment, monitor for 7 days:\n\n**Daily**:\n- Success rate trend\n- Failure distribution (are failure modes shifting?)\n- Cost per execution\n- Duration per execution\n\n**Weekly**:\n- Compare to pre-improvement baseline\n- Identify new failure patterns\n- Assess if targets met\n- Plan next iteration if needed\n\n**Alerts**:\n- Success rate drops below baseline (roll back)\n- Cost increases >10% from target (investigate)\n- New failure mode emerges (diagnose)\n```\n\n**Write the IMPROVEMENTS.md file now with prioritized, specific improvements.**",
+        "maxTokens": 16000,
+        "compressionStrategy": "filter"
+      },
+      "validation": {
+        "requiredFiles": [
+          "IMPROVEMENTS.md"
+        ],
+        "requiredPatterns": [
+          "## Executive Summary",
+          "## Priority 1",
+          "## Summary of Changes"
+        ],
+        "forbiddenPatterns": [],
+        "commands": []
+      },
+      "retry": {
+        "maxAttempts": 2,
+        "strategy": "progressive-context",
+        "fallbackPrompt": ""
+      },
+      "metrics": {
+        "successRate": 0,
+        "avgTokens": 0,
+        "avgDuration": 0,
+        "commonFailures": []
+      },
+      "tools": {
+        "required": [
+          "read",
+          "write"
+        ],
+        "optional": [],
+        "disabled": []
+      }
+    },
+    {
+      "id": "create-improved-template",
+      "subagent": "general",
+      "description": "Generate new template variant with improvements applied",
+      "dependencies": [
+        "identify-improvements"
+      ],
+      "impulseRefs": [],
+      "prompt": {
+        "template": "Create an improved version of the template with changes applied.\n\n**Input**: Read TEMPLATE_ANALYSIS.md and IMPROVEMENTS.md\n\n**Your Task**: Apply all Priority 1 and Priority 2 improvements to create new template variant\n\n**Process**:\n\n1. **Load Current Template**: Extract full JSON from TEMPLATE_ANALYSIS.md\n\n2. **Apply Improvements**: For each Priority 1 and Priority 2 improvement:\n   - Locate the field to modify\n   - Apply the change as specified in IMPROVEMENTS.md\n   - Validate change doesn't break structure\n\n3. **Version Increment**: Increase version number by 1\n\n4. **Add Change Notes**: Document what changed in description or metadata\n\n**Improvements to Apply** (from IMPROVEMENTS.md):\n\n**Priority 1 (Must Apply)**:\n- All Quick Wins (highest ROI)\n\n**Priority 2 (Should Apply)**:\n- All Performance Optimizations\n\n**Priority 3 & 4 (Optional)**:\n- Skip for now (can be added in future iterations)\n\n**Validation Rules**:\n\n1. **Structure**: Maintain valid ActivityTemplate.Schema\n2. **Dependencies**: Preserve DAG (no cycles)\n3. **Variables**: Declare all used variables\n4. **Syntax**: Valid JSON\n5. **Completeness**: All required fields present\n\n**Output Format**:\n\nCreate `{{templateId}}-improved.json` with the new template variant:\n\n```json\n{\n  \"name\": \"[Original Name] (Improved)\",\n  \"version\": [N+1],\n  \"description\": \"[Original description]. Improvements v[N+1]: [list of changes]\",\n  \"category\": \"[original category]\",\n  ...[rest of template with improvements applied]\n}\n```\n\n**Change Documentation** (add to template metadata or description):\n\nSummarize changes in template description:\n```\nOriginal description. Improvements v[N+1]:\n- Increased token budget for task-4 (+25%)\n- Added file path examples to task-2\n- Fixed forbidden pattern in task-4\n- Enabled Haiku for task-1 (cost reduction)\n- Parallelized task-2 and task-3 (30% faster)\n```\n\n**Validation Steps** (run after creating file):\n\n```bash\n# 1. JSON syntax\ncat {{templateId}}-improved.json | jq empty\n\n# 2. Check version incremented\ncat {{templateId}}-improved.json | jq '.version'\n\n# 3. Check improvements applied (spot check)\ncat {{templateId}}-improved.json | jq '.tasks[] | select(.id==\"task-4\") | .prompt.max_tokens'\n# Should be: 10000 (was: 8000)\n\n# 4. Verify no circular dependencies\ncat {{templateId}}-improved.json | jq '.tasks[] | {id, dependencies}'\n```\n\n**Write the {{templateId}}-improved.json file now.**",
+        "maxTokens": 14000,
+        "compressionStrategy": "filter"
+      },
+      "validation": {
+        "requiredFiles": [
+          "{{templateId}}-improved.json"
+        ],
+        "requiredPatterns": [],
+        "forbiddenPatterns": [],
+        "commands": [
+          {
+            "name": "json-syntax",
+            "command": "cat {{templateId}}-improved.json | jq empty",
+            "required": true
+          },
+          {
+            "name": "version-check",
+            "command": "cat {{templateId}}-improved.json | jq -e '.version' > /dev/null",
+            "required": true
+          }
+        ]
+      },
+      "retry": {
+        "maxAttempts": 3,
+        "strategy": "progressive-context",
+        "fallbackPrompt": "Template generation failed. Common issues:\n1. Invalid JSON syntax\n2. Circular dependencies created\n3. Undeclared variables introduced\n4. Required fields removed\n\nReview the improvements and apply them carefully, preserving template structure."
+      },
+      "metrics": {
+        "successRate": 0,
+        "avgTokens": 0,
+        "avgDuration": 0,
+        "commonFailures": []
+      },
+      "tools": {
+        "required": [
+          "read",
+          "write",
+          "bash"
+        ],
+        "optional": [],
+        "disabled": []
+      }
+    },
+    {
+      "id": "document-evolution",
+      "subagent": "general",
+      "description": "Create evolution report documenting changes, rationale, and expected impact",
+      "dependencies": [
+        "create-improved-template"
+      ],
+      "impulseRefs": [],
+      "prompt": {
+        "template": "Document the template evolution for future reference.\n\n**Input**: Read all previous outputs\n- TEMPLATE_ANALYSIS.md\n- IMPROVEMENTS.md  \n- {{templateId}}-improved.json\n\n**Your Task**: Create comprehensive evolution report\n\n**Output Format**:\n\nCreate `EVOLUTION_REPORT.md`:\n\n```markdown\n# Template Evolution Report: {{templateId}}\n\n**Date**: [timestamp]  \n**Original Version**: [N]  \n**New Version**: [N+1]  \n**Status**: Ready for Testing ✅\n\n---\n\n## Executive Summary\n\n### Changes Applied\n\n**Total Improvements**: [count] changes\n\n**Categories**:\n- Quick Wins: [count] changes\n- Performance Optimizations: [count] changes\n- Quality Enhancements: [count] changes (deferred)\n- Usability Improvements: [count] changes (deferred)\n\n### Expected Impact\n\n**Before** (v[N]):\n- Success rate: XX%\n- Average cost: $X.XX\n- Average duration: Xm Ys\n\n**After** (v[N+1] - projected):\n- Success rate: YY% (+ZZ percentage points)\n- Average cost: $Y.YY (ZZ% reduction)\n- Average duration: Ym Zs (ZZ% faster)\n\n**Confidence**: [High/Medium/Low] based on similar improvements in other templates\n\n---\n\n## Detailed Changes\n\n### Change 1: Increased token budget for task-4\n\n**Reason**: 30% of failures due to token limit exceeded\n\n**Modification**:\n```diff\n{\n  \"tasks\": [\n    {\n      \"id\": \"task-4\",\n      \"prompt\": {\n-       \"maxTokens\": 8000\n+       \"maxTokens\": 10000\n      }\n    }\n  ]\n}\n```\n\n**Impact**:\n- Prevents: ~15 failures per 50 executions\n- Success rate: +30% for task-4\n- Cost increase: $0.001 per execution (minimal)\n\n**Risk**: LOW - Well-tested approach, minimal cost impact\n\n---\n\n### Change 2: Added file path example to task-2 prompt\n\n**Reason**: 40% of failures due to ambiguous file paths\n\n**Modification**:\n```diff\n{\n  \"tasks\": [\n    {\n      \"id\": \"task-2\",\n      \"prompt\": {\n-       \"template\": \"Create output.json\"\n+       \"template\": \"Create output.json in the current working directory.\\n\\nExample structure:\\n```json\\n{\\n  \\\"results\\\": []\\n}\\n```\\n\\nWrite to: ./output.json\"\n      }\n    }\n  ]\n}\n```\n\n**Impact**:\n- Prevents: ~20 failures per 50 executions\n- Success rate: +40% for task-2\n- Cost increase: None\n\n**Risk**: NONE - No downside to providing examples\n\n---\n\n[Continue for all changes...]\n\n---\n\n## Testing Plan\n\n### Pre-Deployment Testing\n\n**Test 1: Happy Path**\n```bash\nopencode activity \\\n  --activityId {{templateId}}-improved \\\n  --variables '{\"var1\":\"test-value\"}' \\\n  --reason \"Test improved template\"\n```\n\n**Expected**: Success with valid outputs\n\n**Test 2: Edge Case (Minimal Variables)**\n```bash\nopencode activity \\\n  --activityId {{templateId}}-improved \\\n  --variables '{\"var1\":\"test\"}' \\\n  --reason \"Test with minimal input\"\n```\n\n**Expected**: Success with defaults applied\n\n**Test 3: Failure Recovery**\n```bash\n# Inject failure condition\n# Verify retry strategy works\n```\n\n**Expected**: Graceful recovery with progressive-context retry\n\n### Deployment Strategy\n\n**Phase 1: Canary (10% traffic)**\n- Deploy improved template as new variant\n- Route 10% of executions to new variant\n- Monitor for 24 hours\n- Compare metrics to baseline\n\n**Phase 2: Gradual Rollout (50% traffic)**\n- If Phase 1 successful, increase to 50%\n- Monitor for 48 hours\n- Continue if metrics meet targets\n\n**Phase 3: Full Rollout (100% traffic)**\n- If Phase 2 successful, increase to 100%\n- Monitor for 7 days\n- Declare stable if targets met\n\n**Rollback Criteria**:\n- Success rate drops below baseline\n- Cost increases >10% from projection\n- New failure mode emerges\n\n### Monitoring Metrics\n\n**Track for 7 days post-deployment**:\n\n| Metric | Baseline | Target | Day 1 | Day 3 | Day 7 |\n|--------|----------|--------|-------|-------|-------|\n| Success Rate | XX% | YY% | | | |\n| Avg Cost | $X.XX | $Y.YY | | | |\n| Avg Duration | Xm Ys | Ym Zs | | | |\n| Failures (task-2) | 20/50 | <5/50 | | | |\n| Failures (task-4) | 15/50 | <5/50 | | | |\n\n---\n\n## Risk Assessment\n\n### High-Risk Changes\n\nNone identified - all changes are low-risk improvements\n\n### Medium-Risk Changes\n\n**Change: Parallelization of task-2 and task-3**\n\n**Risk**: Potential resource contention if both tasks access shared resources\n\n**Mitigation**: \n- Tasks reviewed - no shared state identified\n- Can revert dependency if issues arise\n- Monitor task execution order and conflicts\n\n### Low-Risk Changes\n\nAll other changes (token budgets, prompt examples, complexity tiers)\n\n---\n\n## Future Iterations\n\n### Deferred Improvements\n\n**Priority 3** (Quality Enhancements):\n- Progressive-context retry for task-2\n- Additional validation rules\n- Better error messages\n\n**Priority 4** (Usability):\n- Variable defaults\n- Better documentation\n- Composition examples\n\n**Reason for Deferral**: Focus on high-impact, low-risk changes first. Can add these in v[N+2] based on v[N+1] performance.\n\n### Next Evolution Trigger\n\nSchedule next evolution when:\n- 30 days of metrics collected (trend analysis)\n- OR success rate plateaus below target\n- OR new failure patterns emerge (>10% of failures)\n- OR cost increases unexpectedly\n\n---\n\n## Files Generated\n\n1. **TEMPLATE_ANALYSIS.md**: Original template analysis\n2. **IMPROVEMENTS.md**: Prioritized improvement recommendations  \n3. **{{templateId}}-improved.json**: New template variant with improvements\n4. **EVOLUTION_REPORT.md**: This document\n\n---\n\n## Approval and Deployment\n\n### Review Checklist\n\n- ✅ All Priority 1 improvements applied\n- ✅ All Priority 2 improvements applied\n- ✅ Template JSON is valid\n- ✅ No circular dependencies introduced\n- ✅ Version incremented\n- ✅ Change documentation complete\n- ✅ Testing plan defined\n- ✅ Monitoring plan defined\n- ✅ Rollback criteria defined\n\n### Deployment Command\n\n```bash\n# Register improved template as new variant\n# (Assuming registration tool is available)\nopencode register-template {{templateId}}-improved.json\n\n# Verify registration\nopencode search-activities --verbose | grep {{templateId}}\n```\n\n### Success Criteria\n\n**Deployment is considered successful when**:\n\n1. ✅ Success rate reaches YY% (target)\n2. ✅ Cost is ≤$Y.YY (target)\n3. ✅ Duration is ≤Ym Zs (target)\n4. ✅ No regressions in working tasks\n5. ✅ 7 days of stable metrics\n\n**If successful**: Mark as stable, deprecate old version\n\n**If unsuccessful**: Roll back, analyze failures, plan v[N+2]\n\n---\n\n## Conclusion\n\nTemplate {{templateId}} has been evolved from v[N] to v[N+1] with [count] improvements focusing on success rate and performance. Expected impact is +ZZ% success rate and -ZZ% cost. Template is ready for testing and gradual deployment.\n\n**Next Steps**:\n1. Test improved template\n2. Begin canary deployment (10%)\n3. Monitor metrics\n4. Proceed with rollout if successful\n\n---\n\n**Generated by**: evolve-activity-self-contained v2  \n**Template ID**: {{templateId}}  \n**Analysis Duration**: [time]  \n```\n\n**Write the EVOLUTION_REPORT.md file now.**",
+        "maxTokens": 14000,
+        "compressionStrategy": "filter"
+      },
+      "validation": {
+        "requiredFiles": [
+          "EVOLUTION_REPORT.md"
+        ],
+        "requiredPatterns": [
+          "## Executive Summary",
+          "## Detailed Changes",
+          "## Testing Plan",
+          "## Conclusion"
+        ],
+        "forbiddenPatterns": [],
+        "commands": []
+      },
+      "retry": {
+        "maxAttempts": 2,
+        "strategy": "simple",
+        "fallbackPrompt": ""
+      },
+      "metrics": {
+        "successRate": 0,
+        "avgTokens": 0,
+        "avgDuration": 0,
+        "commonFailures": []
+      },
+      "tools": {
+        "required": [
+          "read",
+          "write",
+          "bash"
+        ],
+        "optional": [],
+        "disabled": []
+      }
+    }
+  ],
+  "integration": {
+    "preChecks": [],
+    "postChecks": [],
+    "qualityGates": [
+      {
+        "name": "improved-template-valid",
+        "command": "cat {{templateId}}-improved.json | jq empty",
+        "required": true
+      },
+      {
+        "name": "evolution-documented",
+        "command": "test -f EVOLUTION_REPORT.md && grep -q '## Executive Summary' EVOLUTION_REPORT.md",
+        "required": true
+      }
+    ]
+  },
+  "metabob": {
+    "enabled": false,
+    "learningMode": true,
+    "targetContextTokens": 5000,
+    "annotationStrategy": "key-components"
+  },
+  "composition": {
+    "standalone": true,
+    "composesWith": [
+      {
+        "templateId": "debug-activity-self-contained",
+        "relationship": "complement",
+        "description": "Debug failures before evolving template to understand issues"
+      }
+    ],
+    "examples": [
+      {
+        "name": "Continuous Improvement Cycle",
+        "description": "Debug failures, evolve template, test, repeat",
+        "sequence": [
+          {
+            "template": "debug-activity-self-contained",
+            "variables": {
+              "executionId": "failed-exec-123"
+            },
+            "reason": "Understand why template is failing"
+          },
+          {
+            "template": "evolve-activity-self-contained",
+            "variables": {
+              "templateId": "problematic-template"
+            },
+            "reason": "Improve template based on diagnosis"
+          }
+        ],
+        "outcome": "Template improved with data-driven changes"
+      }
+    ]
+  },
+  "learning": {
+    "enabled": true,
+    "captureStrategy": "detailed",
+    "feedbackPoints": [
+      {
+        "taskId": "identify-improvements",
+        "metrics": {
+          "improvementsCount": "How many improvements identified?",
+          "highRoiCount": "How many high-ROI improvements?",
+          "impactAccuracy": "Were impact estimates accurate?"
+        },
+        "improvementHints": {
+          "prioritizationQuality": "Were improvements well-prioritized? (1-10)",
+          "roiCalculation": "Were ROI calculations helpful? (1-10)"
+        }
+      }
+    ],
+    "patterns": {
+      "successPatterns": [
+        "Agent queries metrics from backend API",
+        "Agent identifies high-ROI quick wins",
+        "Agent applies improvements systematically",
+        "Agent documents changes comprehensively"
+      ],
+      "failurePatterns": [
+        "Agent can't access backend metrics",
+        "Agent makes changes without data support",
+        "Agent introduces breaking changes",
+        "Agent doesn't increment version number"
+      ],
+      "optimizationOpportunities": [
+        "Add automated impact prediction model",
+        "Include A/B testing framework",
+        "Add automated rollback on regression",
+        "Integrate with continuous learning system"
+      ]
+    }
+  },
+  "hooks": {
+    "preActivity": {
+      "workingDirectory": {
+        "type": "temporary",
+        "prefix": "evolve-activity-",
+        "cleanup": "never"
+      },
+      "environment": {
+        "EVOLUTION_MODE": "true",
+        "NO_FILESYSTEM_DEPS": "true"
+      },
+      "commands": []
+    },
+    "postActivity": {
+      "cleanup": false,
+      "createSummary": true,
+      "extractFiles": {
+        "pattern": "*-improved.json",
+        "destination": "./templates",
+        "action": "copy"
+      }
+    },
+    "onError": {
+      "captureEnvironment": true,
+      "captureLogs": {
+        "tail": 200
+      },
+      "createDiagnosticImpulse": true,
+      "cleanup": false
+    }
+  },
+  "variables": [
+    {
+      "name": "templateId",
+      "type": "string",
+      "required": true,
+      "description": "Activity template ID to analyze and improve"
+    }
+  ]
+}

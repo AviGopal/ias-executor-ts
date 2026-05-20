@@ -1,0 +1,257 @@
+{
+  "id": "audit-test-report",
+  "name": "Audit Test Report (test-audit-loop)",
+  "description": "Audits a test_report against the two-criterion contract from OpenSpec change 2026-05-18-test-audit-loop (design.md §A): (1) representativeness — decision record complete, witnesses present, sensitivity evidence varies as predicted; (2) goal alignment — LLM plausibility review of the discrimination_claim against the IAL success criteria. Subscribes to lifecycle:execution:succeeded filtered by output_shapes ∋ 'test_report'. Four tasks: three deterministic checks (check_decision_record_complete, check_witness_presence, check_sensitivity_evidence) plus one LLM resolver (review_alignment_claim, Haiku tier, ≤$0.05). A fifth deterministic task (compose_audit_report) aggregates the four ValidationResult impulses and emits a single test_audit_report via the test_audit_report_write resolver. Audit-specific failure modes are extensions of verifier_negative — failed_evidence carries audit_subtype ∈ {audit_insensitive, audit_noisy, audit_misaligned, audit_record_incomplete} rather than introducing a new top-level failure_mode.type (spec §F). Recursion cap (depth 2) is enforced via the standard composition_chain depth check; lifecycle.parentDepth ≥ 2 triggers a safety_breach short-circuit at compose_audit_report. Witness machinery is reused verbatim from multi-witness-verification (no test-specific witness types).",
+  "category": "meta",
+  "version": "0.1.0",
+  "tags": [
+    "lifecycle",
+    "meta",
+    "audit",
+    "test.audit.loop"
+  ],
+  "subscription": {
+    "shape": "lifecycle:execution:succeeded",
+    "filter": {
+      "output_shapes_contains": "test_report"
+    }
+  },
+  "input_shapes": [
+    "test_report",
+    "test_registration"
+  ],
+  "output_shapes": [
+    "test_audit_report"
+  ],
+  "variables": [
+    {
+      "name": "lifecycle",
+      "type": "object",
+      "required": false,
+      "description": "Set by the lifecycle dispatcher to the execution:succeeded payload (executionId, templateId, outputShapes, output_impulse_ids, parentDepth, composition_chain). audit-test-report reads parentDepth + composition_chain to enforce the depth-2 recursion cap declared in spec §K and Requirement R5 of specs/test-audit-loop/spec.md."
+    },
+    {
+      "name": "test_report_id",
+      "type": "string",
+      "required": false,
+      "description": "Impulse id of the test_report being audited. When invoked via lifecycle subscription, the dispatcher derives this from lifecycle.output_impulse_ids; when invoked directly (workbench, ad-hoc), pass explicitly."
+    },
+    {
+      "name": "test_registration_id",
+      "type": "string",
+      "required": false,
+      "description": "Test id of the corresponding test_registration. Derived from test_report.test_registration_id by fetch_test_report when not provided; required for the witness-presence and sensitivity-evidence checks."
+    },
+    {
+      "name": "auditLLMModel",
+      "type": "string",
+      "required": false,
+      "default": "claude-haiku-4-20250514",
+      "description": "Model used by review_alignment_claim. Haiku-tier default keeps the alignment check at ≤$0.05 per audit (design.md §A.2)."
+    }
+  ],
+  "tasks": [
+    {
+      "id": "fetch_test_report",
+      "description": "Fetch the test_report impulse and the matching test_registration. Both are required inputs for the downstream checks; if either is missing the audit short-circuits with audit_record_incomplete.",
+      "resolver": "impulse-resolve",
+      "config": {
+        "pointer": {
+          "type": "activityExecutionTrace",
+          "executionId": "{{lifecycle.executionId}}"
+        }
+      },
+      "inputShapes": [
+        "lifecycle:execution:succeeded"
+      ],
+      "outputShapes": [
+        "test_report",
+        "test_registration"
+      ],
+      "outputImpulses": [
+        "fetch_test_report_result"
+      ],
+      "notes": "Reads the trace that produced the test_report so the audit has the per-task assertions + tool calls + impulse ids to inspect for decision-record completeness. test_registration is fetched separately by the deterministic checks via discoverByShapesQuery / impulse-resolve when needed — keeping this task light (single trace read) means a missing registration manifests as a caveat at compose_audit_report time, not a fail-fast at fetch time."
+    },
+    {
+      "id": "check_decision_record_complete",
+      "description": "Deterministic schema check: every assertion in test_report references a trace event or impulse id. Re-uses the decision_record_completeness schema from multi-witness-verification spec §18-29.",
+      "resolver": "validation",
+      "config": {
+        "rule": "decision_record_completeness",
+        "target_shape": "test_report",
+        "required_fields_per_assertion": ["trace_event_id_or_impulse_id"],
+        "report_impulse": "fetch_test_report_result",
+        "validator_id": "audit-test-report.check_decision_record_complete",
+        "audit_subtype_on_fail": "audit_record_incomplete"
+      },
+      "dependencies": ["fetch_test_report"],
+      "inputImpulses": ["fetch_test_report_result"],
+      "inputShapes": [
+        "test_report"
+      ],
+      "outputShapes": [
+        "validation_result"
+      ],
+      "outputImpulses": [
+        "check_decision_record_complete_result"
+      ],
+      "notes": "On fail: emit validation_result with failure_mode = { type: 'verifier_negative', validator_id: 'audit-test-report.check_decision_record_complete', failed_evidence: [{ check_id: 'decision_record_complete', audit_subtype: 'audit_record_incomplete', details: '<missing-field summary>' }] }. The audit_subtype lives inside failed_evidence per spec §F — failure_mode.type stays as verifier_negative, preserving the closed five-type enumeration."
+    },
+    {
+      "id": "check_witness_presence",
+      "description": "Deterministic check: test_report carries ≥1 witness from test_registration.witness_types (subset of {differential_solve, oracle_label, validator_consensus} per multi-witness-verification spec §58-122). Single-witness reports are tagged passed_with_caveat: 'single_witness' rather than failing.",
+      "resolver": "validation",
+      "config": {
+        "rule": "witness_presence",
+        "report_impulse": "fetch_test_report_result",
+        "required_witness_set_from": "test_registration.witness_types",
+        "single_witness_caveat": "single_witness",
+        "validator_id": "audit-test-report.check_witness_presence",
+        "audit_subtype_on_fail": "audit_record_incomplete"
+      },
+      "dependencies": ["fetch_test_report"],
+      "inputImpulses": ["fetch_test_report_result"],
+      "inputShapes": [
+        "test_report",
+        "test_registration"
+      ],
+      "outputShapes": [
+        "validation_result"
+      ],
+      "outputImpulses": [
+        "check_witness_presence_result"
+      ],
+      "notes": "Witness types are referenced from multi-witness-verification verbatim — no test-specific witness machinery is introduced (spec §J). A test_report missing all declared witnesses fails with audit_subtype 'audit_record_incomplete'; reports carrying only one declared witness still pass but with caveat 'single_witness' surfaced in the aggregated test_audit_report.caveats[]."
+    },
+    {
+      "id": "check_sensitivity_evidence",
+      "description": "Queries sensitivity_evidence impulses for this test_registration over a ≥7-day, ≥3-runs-per-perturbation window. Classifies each perturbation as sensitive / insensitive (observed_delta ≈ 0 when expected_delta ≠ 0) / noisy (observed_delta high-variance across runs).",
+      "resolver": "impulse-resolve",
+      "config": {
+        "pointer": {
+          "type": "sensitivity_evidence",
+          "test_registration_id": "{{test_registration_id}}",
+          "since": "{{__sensitivity_window_start}}",
+          "limit": 200
+        },
+        "_post_process": {
+          "validator_id": "audit-test-report.check_sensitivity_evidence",
+          "min_runs_per_perturbation": 3,
+          "min_window_days": 7,
+          "missing_history_caveat": "missing_sensitivity_history",
+          "insensitive_audit_subtype": "audit_insensitive",
+          "noisy_audit_subtype": "audit_noisy"
+        }
+      },
+      "dependencies": ["fetch_test_report"],
+      "inputShapes": [
+        "test_registration"
+      ],
+      "outputShapes": [
+        "validation_result",
+        "sensitivity_evidence"
+      ],
+      "outputImpulses": [
+        "check_sensitivity_evidence_result"
+      ],
+      "notes": "Read-only query against the new sensitivity_evidence shape (Phase A). The _post_process block carries the validator parameters the deterministic post-step applies to the returned rows: history below min_runs/min_window emits a caveat 'missing_sensitivity_history' on a passing verdict; insensitive observed deltas emit audit_insensitive; high-variance observed deltas emit audit_noisy. compose_audit_report aggregates these into failed_evidence with the appropriate audit_subtype. The _post_process key sits inside config so the dispatcher passes it through to a validator-style consumer; if a deterministic post-process resolver isn't registered yet, a follow-up LLM task can synthesize the validation_result from the raw evidence rows."
+    },
+    {
+      "id": "review_alignment_claim",
+      "description": "LLM resolver (Haiku tier, ≤$0.05 budget) that reviews test_registration.discrimination_claim for plausibility against the declared IAL success criterion. The LLM verdict is one boolean (plausible: true|false) plus a one-sentence rationale — explicitly NOT a witness (spec §A.2).",
+      "resolver": "llm",
+      "prompt": {
+        "template": "You are reviewing a test's discrimination_claim for PLAUSIBILITY only — not for truth. Truth is established over time by the sensitivity probe; here you only check that the claim is coherent and reasonable.\n\nTest registration (JSON): {{impulse:fetch_test_report_result}}\nGoal-alignment entries: each has { criterion, discrimination_claim }. For each entry, evaluate whether the discrimination_claim PLAUSIBLY explains how the test discriminates system states satisfying the criterion vs states not.\n\nIAL success criteria (short ids):\n  #1-goals-succeed, #2-failed-goals-recover, #3-vessel-resolvers-only,\n  #4-improved-activities, #5-composition-via-features, #6-reuse-up-improvise-down\n\nEmit EXACTLY this JSON object (no markdown, no prose):\n{\n  \"plausible\": <true if EVERY entry is plausible, else false>,\n  \"rationale\": \"<one-sentence summary of the evaluation>\",\n  \"entries\": [\n    { \"criterion\": \"<criterion-id>\", \"plausible\": <bool>, \"rationale\": \"<≤30 words>\" }\n  ]\n}",
+        "model": "{{auditLLMModel}}",
+        "maxTokens": 600,
+        "budgetUsd": 0.05
+      },
+      "dependencies": ["fetch_test_report"],
+      "inputImpulses": ["fetch_test_report_result"],
+      "inputShapes": [
+        "test_registration"
+      ],
+      "outputShapes": [
+        "validation_result"
+      ],
+      "outputImpulses": [
+        "review_alignment_claim_result"
+      ],
+      "notes": "Plausibility-only review — the LLM verdict is NOT a witness for the multi-witness contract. On plausible=false, compose_audit_report aggregates this into failed_evidence with audit_subtype='audit_misaligned' (verifier_negative subtype per spec §F). Budget $0.05 keeps the audit cost-bounded per design.md §A.2."
+    },
+    {
+      "id": "compose_audit_report",
+      "description": "Aggregate the four ValidationResult impulses into a single test_audit_report and persist via the test_audit_report_write resolver. Enforces the depth-2 recursion cap: when lifecycle.parentDepth ≥ 2 the task emits a safety_breach failure_mode and skips audit-report emission. Carries composition_chain through to the persisted row so meta-audit detection works downstream.",
+      "resolver": "impulse-resolve",
+      "config": {
+        "pointer": {
+          "type": "test_audit_report_write",
+          "reportData": {
+            "test_registration_id": "{{test_registration_id}}",
+            "test_report_id": "{{test_report_id}}",
+            "passed": "__derived_from_validation_results__",
+            "caveats": "__derived__",
+            "validation_results": "__derived__",
+            "failed_evidence": "__derived__",
+            "composition_chain": "{{lifecycle.composition_chain}}"
+          }
+        },
+        "_aggregation": {
+          "input_validation_impulses": [
+            "check_decision_record_complete_result",
+            "check_witness_presence_result",
+            "check_sensitivity_evidence_result",
+            "review_alignment_claim_result"
+          ],
+          "audit_subtype_priority": [
+            "audit_record_incomplete",
+            "audit_insensitive",
+            "audit_noisy",
+            "audit_misaligned"
+          ],
+          "depth_cap": 2,
+          "depth_breach_failure_mode": {
+            "type": "safety_breach",
+            "reason": "audit chain exceeded depth cap of 2",
+            "breach_type": "depth",
+            "limit": 2,
+            "ancestor_chain_from": "lifecycle.composition_chain"
+          }
+        }
+      },
+      "dependencies": [
+        "check_decision_record_complete",
+        "check_witness_presence",
+        "check_sensitivity_evidence",
+        "review_alignment_claim"
+      ],
+      "inputImpulses": [
+        "check_decision_record_complete_result",
+        "check_witness_presence_result",
+        "check_sensitivity_evidence_result",
+        "review_alignment_claim_result"
+      ],
+      "inputShapes": [
+        "validation_result"
+      ],
+      "outputShapes": [
+        "test_audit_report"
+      ],
+      "outputImpulses": [
+        "compose_audit_report_result"
+      ],
+      "notes": "The _aggregation block declares (a) which validation_result impulses feed the report; (b) the priority order for picking the dominant audit_subtype when multiple checks fail (record_incomplete first because it invalidates downstream verdicts); (c) the depth-cap guard — when lifecycle.composition_chain length ≥ 2 (parentDepth >= 2 in dispatcher terms) the task emits failure_mode = { type: 'safety_breach', breach_type: 'depth', limit: 2, ancestor_chain: <chain> } and SHORT-CIRCUITS the write, per spec Requirement R5. The recursion cap mirrors create-shape-provider-goal.json's depth guard (compose_goal task); we keep it inline in this task's config rather than as a separate task so a single resolver call decides emit-or-breach. composition_chain on the persisted row enables observability of audit-of-audit chains in the workbench execution browser."
+    }
+  ],
+  "metadata": {
+    "created": "2026-05-18",
+    "author": "test-audit-loop",
+    "embedded": true,
+    "openSpec": "2026-05-18-test-audit-loop",
+    "subscriberContract": "subscription.shape = 'lifecycle:execution:succeeded' with filter output_shapes_contains = 'test_report'. The dispatcher fires this activity once per test_report emission with the executionId of the producing trace and parentDepth derived from the trace's composition_chain length. Spec Requirement R2: audit MUST begin within 10 minutes of the lifecycle event; harness-side dispatch SLA is enforced by the harness (Phase G), not by this template.",
+    "outputContract": "Emits exactly one test_audit_report impulse per dispatch via the test_audit_report_write resolver, or zero impulses when the depth-cap breach short-circuits emission. Caveats array carries 'single_witness' and/or 'missing_sensitivity_history' from the deterministic checks; failed_evidence carries the dominant audit_subtype per the aggregation priority. Spec Requirement R5: depth-cap breaches emit a safety_breach failure_mode trace observable in the standard executionTrace channel, no separate audit-failure surface.",
+    "auditSubtypeContract": "Audit-failure subtypes (audit_insensitive, audit_noisy, audit_misaligned, audit_record_incomplete) are extensions of verifier_negative — they live inside failed_evidence[].audit_subtype, NOT as new top-level failure_mode.type values. Spec §F preserves the closed five-type enumeration from validators-and-failure-modes/failure-mode-taxonomy/spec.md.",
+    "witnessReuse": "test_registration.witness_types references only multi-witness-verification's three witness types verbatim (differential_solve, oracle_label, validator_consensus). The check_witness_presence task validates that the report carries at least one of those types; no parallel test-witness machinery is introduced (spec §J, Requirement R7)."
+  }
+}

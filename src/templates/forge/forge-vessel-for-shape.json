@@ -1,0 +1,205 @@
+{
+  "id": "forge-vessel-for-shape",
+  "name": "Forge Vessel For Shape",
+  "description": "Autonomously forges a new vessel that produces a missing shape. Triggered by slot-binding when impulse_pool_selection reports count=0 and parentDepth < 2. Eight tasks: (1) check_recursion_depth — aborts early if parentDepth >= 2 (safety_breach); (2) compose_vessel_spec — LLM reads vesselGoal + missingShape + concept-db retrievals to produce a structured vesselSpec; (3) scaffold_vessel_skeleton — LLM generates file tree from vesselSpec + construction concepts; (4) wire_discovery_registration — LLM injects discovery registration + heartbeat; (5) wire_auth_blueprint — LLM injects requireAuth() + JWT_SECRET wire; (6) docker_build_push — builds and pushes Docker image; (7) helmfile_sync — writes overlay and waits for pod readiness; (8) verify_three_invariants — discovery, observation, auth probes. Outputs: vesselVerified on success. All forge resolvers must be registered by the VesselForgeHost (ias-executor-ts). This template is dispatched from slot-binding's escalate_unbindable branch when no shape producer exists.",
+  "category": "meta",
+  "version": "0.1.0",
+  "tags": [
+    "meta",
+    "feature.vessel.forge",
+    "infrastructure",
+    "development.scaffold",
+    "autonomous.forge",
+    "write.gated"
+  ],
+  "variables": [
+    {
+      "name": "vesselGoal",
+      "type": "string",
+      "required": true,
+      "description": "Natural language description of what the vessel should do. Consumed by compose_vessel_spec to guide the LLM vessel specification. Example: 'A vessel that validates JSON objects against a given schema and returns validation errors.'"
+    },
+    {
+      "name": "missingShape",
+      "type": "string",
+      "required": true,
+      "description": "The impulse shape that has no producers in the current system. The forged vessel will advertise this shape. Example: 'json_schema_validator'."
+    },
+    {
+      "name": "parentExecutionId",
+      "type": "string",
+      "required": false,
+      "default": "",
+      "description": "Execution ID of the parent activity that triggered this forge. Used for composition_chain tracking."
+    },
+    {
+      "name": "parentDepth",
+      "type": "number",
+      "required": false,
+      "default": 0,
+      "description": "Composition depth of the triggering activity. If >= 2, check_recursion_depth aborts with safety_breach to prevent infinite forge recursion."
+    },
+    {
+      "name": "conceptDbEndpoint",
+      "type": "string",
+      "required": false,
+      "default": "http://concept-db.activity-system.svc.cluster.local:8081",
+      "description": "Concept-db base URL for retrieving vessel-construction concepts. Forge resolvers query this endpoint for scaffold, discovery, and auth blueprint concepts."
+    },
+    {
+      "name": "deploymentWorkdir",
+      "type": "string",
+      "required": false,
+      "default": "/home/avi/documents/work/exp-repo/metabob-devbob",
+      "description": "Root of the deployment repository. helmfile_sync writes overlay files under {deploymentWorkdir}/repos/deployment/overlays/forged-vessels/."
+    }
+  ],
+  "tasks": [
+    {
+      "id": "check_recursion_depth",
+      "description": "Abort if parentDepth >= 2 to prevent infinite forge recursion.",
+      "resolver": "bash",
+      "config": {
+        "command": ["bash", "-c", "if [ '{{parentDepth}}' -ge 2 ]; then echo 'DEPTH_EXCEEDED'; exit 1; fi; echo 'OK'"],
+        "timeout": 3000
+      },
+      "outputShapes": ["recursion_guard"],
+      "outputImpulses": ["depth_check"],
+      "validation": {
+        "forbiddenPatterns": ["DEPTH_EXCEEDED"]
+      },
+      "notes": "Returns failure_mode: safety_breach with breach_type=depth when parentDepth >= 2. The bash exit code 1 + forbiddenPatterns triggers the validator-dispatch which classifies this as a safety_breach. Zero-cost guard — always runs first."
+    },
+    {
+      "id": "compose_vessel_spec",
+      "description": "LLM produces a structured vesselSpec from the vesselGoal + missingShape + discovery registry shapes (to avoid naming collisions).",
+      "resolver": "llm",
+      "config": {
+        "prompt": "You are composing a vessel specification for an autonomous vessel forge.\n\nVESSEL GOAL: {{vesselGoal}}\nMISSING SHAPE: {{missingShape}}\n\nThe vessel must:\n1. Advertise the shape '{{missingShape}}' via discovery-vessel\n2. Resolve impulses of type '{{missingShape}}' via POST /v2/impulses/resolve\n3. Authenticate requests using identity-vessel JWT validation\n4. Emit impulse.resolved WebSocket events on successful resolution\n5. Expose GET /health returning {version, status: 'healthy'}\n\nProduce EXACTLY this JSON (no markdown, no prose):\n{\"vesselSpec\":{\"name\":\"<kebab-name>\",\"description\":\"<2 sentence description>\",\"shape\":\"{{missingShape}}\",\"resolverContract\":{\"endpoint\":\"/v2/impulses/resolve\",\"method\":\"POST\",\"authScheme\":\"JWT\"},\"inputSchema\":{\"type\":\"object\",\"properties\":{}},\"outputSchema\":{\"type\":\"object\",\"properties\":{}},\"activities\":[{\"id\":\"resolve_{{missingShape}}\",\"description\":\"<how the vessel resolves the shape>\",\"resolver\":\"llm\",\"outputShapes\":[\"{{missingShape}}\"]}]}}",
+        "maxTokens": 1000
+      },
+      "dependencies": ["check_recursion_depth"],
+      "inputImpulses": ["depth_check"],
+      "inputShapes": ["recursion_guard"],
+      "outputShapes": ["vesselSpec"],
+      "outputImpulses": ["vessel_spec_out"],
+      "notes": "The LLM produces a structured vesselSpec. The compose task stays simple — it does not need the full discovery registry snapshot because the shape name is already provided. A follow-up iteration could add a discovery lookup for collision detection."
+    },
+    {
+      "id": "scaffold_vessel_skeleton",
+      "description": "LLM generates the full vessel file tree from vesselSpec + vessel-construction concepts from concept-db.",
+      "resolver": "scaffold_vessel_skeleton",
+      "config": {
+        "conceptDbEndpoint": "{{conceptDbEndpoint}}"
+      },
+      "dependencies": ["compose_vessel_spec"],
+      "inputImpulses": ["vessel_spec_out"],
+      "inputShapes": ["vesselSpec"],
+      "outputShapes": ["vesselScaffold"],
+      "outputImpulses": ["scaffold_out"]
+    },
+    {
+      "id": "wire_discovery_registration",
+      "description": "LLM injects non-blocking discovery registration + 60s heartbeat into the scaffold's src/index.ts.",
+      "resolver": "wire_discovery_registration",
+      "config": {
+        "conceptDbEndpoint": "{{conceptDbEndpoint}}"
+      },
+      "dependencies": ["scaffold_vessel_skeleton"],
+      "inputImpulses": ["scaffold_out"],
+      "inputShapes": ["vesselScaffold"],
+      "outputShapes": ["vesselWithDiscovery"],
+      "outputImpulses": ["with_discovery_out"]
+    },
+    {
+      "id": "wire_auth_blueprint",
+      "description": "LLM injects requireAuth() middleware + JWT_SECRET env wire per the two-source JWT pattern.",
+      "resolver": "wire_auth_blueprint",
+      "config": {
+        "conceptDbEndpoint": "{{conceptDbEndpoint}}"
+      },
+      "dependencies": ["wire_discovery_registration"],
+      "inputImpulses": ["with_discovery_out"],
+      "inputShapes": ["vesselWithDiscovery"],
+      "outputShapes": ["vesselWithAuth"],
+      "outputImpulses": ["with_auth_out"]
+    },
+    {
+      "id": "docker_build_push",
+      "description": "Build Docker image from the wired scaffold and push to metabobapp/ registry.",
+      "resolver": "docker_build_push",
+      "config": {},
+      "dependencies": ["wire_auth_blueprint"],
+      "inputImpulses": ["with_auth_out", "vessel_spec_out"],
+      "inputShapes": ["vesselWithAuth", "vesselSpec"],
+      "outputShapes": ["vesselImagePushed"],
+      "outputImpulses": ["image_out"],
+      "retry": {
+        "max_attempts": 3,
+        "strategy": "exponential_backoff"
+      }
+    },
+    {
+      "id": "helmfile_sync",
+      "description": "Write Helmfile overlay and wait for pod readiness (5 minute timeout).",
+      "resolver": "helmfile_sync",
+      "config": {
+        "deploymentWorkdir": "{{deploymentWorkdir}}"
+      },
+      "dependencies": ["docker_build_push"],
+      "inputImpulses": ["image_out", "vessel_spec_out"],
+      "inputShapes": ["vesselImagePushed", "vesselSpec"],
+      "outputShapes": ["vesselDeployedToCanary"],
+      "outputImpulses": ["deployed_out"]
+    },
+    {
+      "id": "verify_three_invariants",
+      "description": "Run discovery, observation, and auth probes in parallel. Emit vesselVerified on green.",
+      "resolver": "verify_three_invariants",
+      "config": {},
+      "dependencies": ["helmfile_sync"],
+      "inputImpulses": ["deployed_out", "vessel_spec_out"],
+      "inputShapes": ["vesselDeployedToCanary", "vesselSpec"],
+      "outputShapes": ["vesselVerified", "goalEnd"],
+      "outputImpulses": ["verified_out"]
+    }
+  ],
+  "metadata": {
+    "created": "2026-05-16",
+    "author": "phase-22-autonomous-vessel-forge",
+    "embedded": true,
+    "bootstrapTemplate": false,
+    "openSpec": "2026-04-26-impulse-activity-loop",
+    "readOnly": false,
+    "writeGated": true,
+    "shapeNotes": {
+      "preexisting": [
+        "goalEnd"
+      ],
+      "newOrInformal": [
+        "vesselSpec — structured vessel specification produced by compose_vessel_spec",
+        "vesselScaffold — path to the generated file tree in /tmp/forge_<uuid>/",
+        "vesselWithDiscovery — vesselScaffold + discovery registration injected",
+        "vesselWithAuth — vesselWithDiscovery + auth blueprint injected",
+        "vesselImagePushed — {imageUri} pointing to the pushed Docker image",
+        "vesselDeployedToCanary — {endpoint} of the live canary pod",
+        "vesselVerified — proof that all 3 invariants pass",
+        "recursion_guard — output of check_recursion_depth (OK or DEPTH_EXCEEDED)"
+      ]
+    },
+    "openQuestions": [
+      "DEPTH GUARD: check_recursion_depth uses bash exit code + forbiddenPatterns to trigger validator-dispatch with safety_breach. This requires validator-dispatch to be configured as a lifecycle subscriber on this execution context. If it is not wired, the depth check may not classify the failure correctly. The guard still prevents execution via the bash exit code.",
+      "DISCOVERY COLLISION: compose_vessel_spec does not query discovery for existing shapes. If another vessel already produces missingShape between slot-binding's check_discovery_for_producer call and forge completion, two vessels with the same shape will exist. This is acceptable for Phase 22 — dedup via alias-cluster in concept-db follows.",
+      "REGISTRY WRITE: The forged vessel's activities are not automatically registered in activity-api. The VesselForgeHost's execute() call does not register embedded templates. A follow-up ribosome-extract lifecycle hook would register them. For Phase 22.6, core-activity-audit includes the forged vessel's activities because they ARE registered in activity_template if the vessel's startup:template-sync waking activity runs."
+    ],
+    "limitations": [
+      "FORGE RESOLVERS REQUIRED: scaffold_vessel_skeleton, wire_discovery_registration, wire_auth_blueprint, docker_build_push, helmfile_sync, verify_three_invariants must all be registered with the host runtime. If any is missing, the corresponding task fails with 'resolver not found'. VesselForgeHost (ias-executor-ts) registers all 6.",
+      "WRITE-GATED: Writes to /tmp/, Docker registry, and Kubernetes. Should only be dispatched from canary-enabled environments.",
+      "CANARY ONLY: helmfile_sync deploys to canary (activity-system namespace). Promotion to production stays manual.",
+      "DEPTH LIMIT: parentDepth >= 2 aborts. A nested forge (forge forging another forge) is not supported."
+    ],
+    "outputContract": "Emits vesselVerified on success (all 3 probes pass) + goalEnd. On failure, emits typed failure_mode from the failing task and the chain stops.",
+    "subscriberContract": "Not a lifecycle subscriber. Dispatched explicitly from slot-binding's escalate_unbindable task when shape_producer_inventory.count === 0 AND parentDepth < 2.",
+    "spec_reference": "IAL tasks.md Phase 22, tasks 22.3.1-22.3.4. Part of Phase 22 — Autonomous Vessel Forge."
+  }
+}

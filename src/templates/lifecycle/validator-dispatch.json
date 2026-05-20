@@ -1,0 +1,205 @@
+{
+  "id": "validator-dispatch",
+  "name": "Validator Dispatch (validators-and-failure-modes)",
+  "description": "Activity-driven implementation of post-task validator dispatch per OpenSpec change 2026-04-26-validators-and-failure-modes (\u00a77). Subscribes to lifecycle:task:completed and chains five tasks: (1) discover_validators \u2014 find activities consuming the parent task's outputShapes AND producing validation_result via the canonical `discoverByShapesQuery` impulse-resolve shape (mode=backward + output_shapes=[validation_result]); (2) select_validator_per_shape \u2014 pick a validator from the activity envelope using composition_score and Thompson \u03b1/\u03b2; (3) dispatch_validators \u2014 execute the chosen validator with the parent task's outputs as inputs; (4) propagate_failure_mode \u2014 when validation_result.passed === false, emit a failure_mode_propagation impulse carrying the structured verifier_negative failure_mode for the dispatcher to stamp on the parent trace; (5) learning_signal_write \u2014 record impulse_relevance + tool_argument_pattern signals for the parent task, gating executionSucceeded on validator outcome. As of 2026-04-26 the template uses dotted-path interpolation (e.g. {{lifecycle.taskId}}, {{lifecycle.executionId}}) \u2014 the interpolate regex was extended to /\\{\\{([\\w]+(?:\\.[\\w]+)*)\\}\\}/g in iter 7 (activity.ts:6952). Task 1 uses the canonical `impulse-resolve` + `discoverByShapesQuery` pattern advertised by activity-api \u2014 zero minibob source changes (vessel-integration constraint).",
+  "category": "meta",
+  "version": "0.1.0",
+  "tags": [
+    "lifecycle",
+    "validator",
+    "meta",
+    "validator.dispatch",
+    "validators.and.failure.modes",
+    "failure.mode"
+  ],
+  "subscription": {
+    "shape": "lifecycle:task:completed"
+  },
+  "variables": [
+    {
+      "name": "selectionMethod",
+      "type": "string",
+      "required": false,
+      "default": "deterministic",
+      "description": "Selection strategy for producer_selection. 'deterministic' (default) picks highest mean (\u03b1/(\u03b1+\u03b2)) for reproducibility; 'thompson' Beta-samples each candidate. Mirrors slot-binding.json \u2014 deterministic is the safer default for first ship."
+    },
+    {
+      "name": "lifecycle",
+      "type": "object",
+      "required": false,
+      "description": "Set automatically by the lifecycle dispatcher (see activity.ts:1249-1273) to the lifecycle:task:completed payload merged with {executionId, shape}. Contains: taskId, taskIndex, executionId, status, outputShapes, durationMs, skip_validation, allImpulseIds, loadedImpulseIds, toolCallRecords. As of 2026-04-26, dotted-path interpolation works: `{{lifecycle.taskId}}`, `{{lifecycle.executionId}}`, `{{lifecycle.outputShapes}}` (array \u2192 JSON-stringified), `{{lifecycle.skip_validation}}` (boolean \u2192 string `\"true\"`/`\"false\"`), `{{lifecycle.allImpulseIds}}` (string[] \u2192 JSON-stringified), etc. Resolvers can also read the lifecycle:task:completed impulse content directly via `impulses` (delivered as the first impulseRef) for any field not surfaced as a dotted-path placeholder."
+    }
+  ],
+  "tasks": [
+    {
+      "id": "discover_validators",
+      "description": "Find activities that can validate the just-completed task's outputs.",
+      "conditional": {
+        "expression": "{{lifecycle.skip_validation}} !== 'true' AND '{{lifecycle.outputShapes}}' contains '\"'",
+        "skipIfFalse": true
+      },
+      "resolver": "impulse-resolve",
+      "config": {
+        "pointer": {
+          "type": "discoverByShapesQuery",
+          "required_shapes": "{{lifecycle.outputShapes}}",
+          "mode": "backward",
+          "output_shapes": [
+            "validation_result"
+          ],
+          "limit": 10
+        }
+      },
+      "inputShapes": [
+        "lifecycle:task:completed"
+      ],
+      "outputShapes": [
+        "validator_candidates"
+      ],
+      "outputImpulses": [
+        "discover_validators_result"
+      ],
+      "notes": "Uses the canonical `discoverByShapesQuery` shape \u2014 activity-api advertises this shape via discovery-vessel, and the existing generic `impulse-resolve` resolver in minibob dispatches the request with no source changes in the integrating vessel. Posts mode=backward + required_shapes={{lifecycle.outputShapes}} + output_shapes=[validation_result], which finds activities that CONSUME the parent task's outputs AND PRODUCE validation_result. Specialized validators (whose input_shapes literally contain one of the parent's output shapes) win over wildcard validators implicitly via the same shape filter. SHORT-CIRCUIT: when the parent task sets `skip_validation: true` on its config, the lifecycle:task:completed payload forwards that flag; the conditional below skips this task \u2014 and the rest of the chain via dependency-skip propagation \u2014 so no shape query, validator dispatch, or learning-signal write occurs. When `skip_validation` is omitted or false the conditional evaluates true and the chain runs as before."
+    },
+    {
+      "id": "select_validator_per_shape",
+      "description": "Reshape the discoverByShapesQuery result (a plain {activities, total} envelope) into a variant_selection_result-formatted memo so the downstream `activity` resolver (task 3) can pi\u2026",
+      "dependencies": [
+        "discover_validators"
+      ],
+      "conditional": {
+        "expression": "{{impulse:discover_validators_result}} contains '\"activities\"' AND {{impulse:discover_validators_result}} not-contains '\"total\":0'",
+        "skipIfFalse": true
+      },
+      "inputImpulses": [
+        "discover_validators_result"
+      ],
+      "prompt": {
+        "template": "You are converting a discoverByShapesQuery result into a variant_selection_result impulse for the downstream activity dispatcher.\n\nInput envelope (JSON): {{impulse:discover_validators_result}}\nThe envelope's `content` field (when delivered as the impulse-resolve response) is a JSON-stringified {activities: Activity[], total: number}. Each Activity has `id`, `name`, `output_shapes`, `input_shapes`, and may have `metrics` (Thompson \u03b1/\u03b2, success_rate) and `composition_score` ({alpha, beta} when mode=candidates_with_scores; null otherwise).\n\nIf total === 0 OR activities is empty, output: {\"selected\":null,\"unbindable\":true,\"reason\":\"no validator candidates returned by discoverByShapesQuery\"}\n\nOtherwise pick the BEST candidate by:\n1. If any candidate has composition_score (non-null), maximise composition_score.alpha / (composition_score.alpha + composition_score.beta).\n2. Else maximise metrics.thompson_alpha / (metrics.thompson_alpha + metrics.thompson_beta).\n3. Tie-break by metrics.total_executions DESC, then by `id` lexicographically.\n\nOutput EXACTLY (no markdown, no prose):\n{\"selected\":{\"activity_id\":\"<winner.id>\",\"template_id\":\"<winner.id>\"},\"runner_ups\":[{\"activity_id\":\"<id>\",\"template_id\":\"<id>\"}, ...],\"selection_method\":\"composition_score_or_thompson\",\"unbindable\":false}\n\nNo other fields. No commentary.",
+        "maxTokens": 400
+      },
+      "outputShapes": [
+        "variant_selection_result",
+        "selected_validators"
+      ],
+      "outputImpulses": [
+        "select_validator_per_shape_result"
+      ],
+      "notes": "Reshape the discoverByShapesQuery result (a plain {activities, total} envelope) into a variant_selection_result-formatted memo so the downstream `activity` resolver (task 3) can pick up the chosen validator's activity_id via its existing extractSelectedActivityId path (activity-resolver.ts:41). Now selects from the canonical shape result rather than producer_selection_result \u2014 the LLM picks a winner using composition_score (when present) and Thompson \u03b1/\u03b2 as tiebreakers. The spec describes per-shape partitioning (specialized vs wildcard) which isn't expressible in the current template format (no foreach over outputShapes); the validator's own inputShapes filter at dispatch time enforces the specialization implicitly. FUTURE CLEANUP: when a deterministic `impulse_reshape` resolver lands, replace this LLM call with `(activities \u2192 top by composition_score \u00b7 \u03b1/(\u03b1+\u03b2))` selection."
+    },
+    {
+      "id": "dispatch_validators",
+      "description": "Execute the chosen validator activity with the parent task's outputs as the validator's inputs.",
+      "dependencies": [
+        "select_validator_per_shape"
+      ],
+      "inputImpulses": [
+        "select_validator_per_shape_result"
+      ],
+      "conditional": {
+        "expression": "{{impulse:select_validator_per_shape_result}} contains 'activity_id' AND {{impulse:select_validator_per_shape_result}} not-contains 'unbindable\":true'",
+        "skipIfFalse": true
+      },
+      "resolver": "activity",
+      "config": {
+        "variables": {
+          "_dispatch_note": "Validator activity receives the parent task's outputs via the inherited impulse pool \u2014 the lifecycle subscriber merge path (activity.ts:1249-1273) already merges output impulses from the parent task's outputShapes into this nested execution's input pool. No explicit variable plumbing needed."
+        },
+        "reason": "validator-dispatch (validators-and-failure-modes)"
+      },
+      "outputShapes": [
+        "activityExecutionSummary",
+        "validation_result",
+        "validation_results"
+      ],
+      "outputImpulses": [
+        "dispatch_validators_result"
+      ],
+      "notes": "Reads the variant_selection_result emitted by task 2; ActivityResolver.extractSelectedActivityId pulls selected.activity_id and loads the validator template via loadTemplateFromMCPOrLocal (cache \u2192 MCP \u2192 embedded). The validator activity executes its own task chain and emits validation_result impulse(s). SIMPLIFICATION: dispatches a SINGLE validator (the one task 2 picked); multi-validator dispatch is deferred. There is no fallback template \u2014 when task 2 reports unbindable=true the conditional skips this task entirely. If a malformed variant_selection_result slips through, ActivityResolver returns an error impulse rather than dispatching a sentinel activity."
+    },
+    {
+      "id": "propagate_failure_mode",
+      "description": "When the dispatched validator emitted at least one validation_result with passed=false, build a failure_mode of type 'verifier_negative' and emit a failure_mode_propagation impulse\u2026",
+      "dependencies": [
+        "dispatch_validators"
+      ],
+      "inputImpulses": [
+        "dispatch_validators_result"
+      ],
+      "conditional": {
+        "expression": "{{impulse:dispatch_validators_result}} contains 'passed\":false'"
+      },
+      "prompt": {
+        "template": "Build a structured failure_mode impulse from the dispatched validator's validation_result(s).\n\nValidator output (JSON): {{impulse:dispatch_validators_result}}\nParent task id: {{lifecycle.taskId}}\nParent execution id: {{lifecycle.executionId}}\n\nFor each validation_result in the validator output where passed === false, extract:\n- validator_id (from validation_result.validator_id)\n- failed_evidence (the evidence rows where passed === false)\n- reason (first failed evidence row's message, or a synthesized one)\n\nOutput EXACTLY this JSON object (no markdown, no prose):\n{\"failure_mode\":{\"type\":\"verifier_negative\",\"reason\":\"<aggregated reason>\",\"context\":{\"validator_id\":\"<first failed validator_id>\",\"failed_evidence\":[<all failed evidence rows>]}},\"parent_task_id\":\"{{lifecycle.taskId}}\",\"parent_execution_id\":\"{{lifecycle.executionId}}\"}\n\nIf NO validation_result has passed === false (the conditional should have prevented this branch but be defensive), output: {\"failure_mode\":null,\"parent_task_id\":\"{{lifecycle.taskId}}\",\"parent_execution_id\":\"{{lifecycle.executionId}}\"}\n\nNo other fields. No commentary.",
+        "maxTokens": 1500
+      },
+      "outputShapes": [
+        "failure_mode_propagation"
+      ],
+      "outputImpulses": [
+        "propagate_failure_mode_result"
+      ],
+      "notes": "When the dispatched validator emitted at least one validation_result with passed=false, build a failure_mode of type 'verifier_negative' and emit a failure_mode_propagation impulse for the dispatcher to stamp on the parent task's trace metadata. NO ACTIVITY-API ENDPOINT EXISTS TODAY for writing trace metadata mid-execution \u2014 the proper wiring is Phase 5 of the OpenSpec change (activity.ts:5454-5529 inline path replacement), which lifts failure_mode handling out of the executor. Until Phase 5 lands, we emit the structured failure_mode as an impulse and rely on the lifecycle subscriber merge path to surface it in the parent execution's impulse pool, where downstream learning_signal_writer (task 5) and any post-execution observers can read it. The conditional expression follows the slot-binding.json idiom (line 162 of goal-processing-activity-driven.json: `{{impulse:...}} contains '<literal substring>'`) \u2014 we substring-match `passed\":false` in the dispatch_validators_result impulse content. The validator activity is expected to emit at least one validation_result impulse whose JSON content contains either passed=true or passed=false per the unified contract (spec \u00a73.1)."
+    },
+    {
+      "id": "learning_signal_write",
+      "description": "Record per-task learning signals (impulse_relevance + tool_argument_pattern) for the parent task that just completed.",
+      "dependencies": [
+        "dispatch_validators",
+        "propagate_failure_mode"
+      ],
+      "inputImpulses": [
+        "dispatch_validators_result",
+        "propagate_failure_mode_result"
+      ],
+      "optionalInputShapes": [
+        "validation_result",
+        "validation_results",
+        "failure_mode_propagation"
+      ],
+      "resolver": "learning_signal_writer",
+      "config": {
+        "signals": [
+          "impulse_relevance",
+          "tool_argument_pattern"
+        ],
+        "taskId": "{{lifecycle.taskId}}",
+        "templateId": "{{lifecycle.templateId}}",
+        "executionId": "{{lifecycle.executionId}}",
+        "executionSucceeded": false,
+        "allImpulseIds": "{{lifecycle.allImpulseIds}}",
+        "loadedImpulseIds": "{{lifecycle.loadedImpulseIds}}",
+        "toolCallRecords": "{{lifecycle.toolCallRecords}}",
+        "_lifecycle_note": "taskId/templateId/executionId/allImpulseIds/loadedImpulseIds/toolCallRecords use dotted-path interpolation against the lifecycle:task:completed payload. The interpolator JSON-stringifies array values when embedded as string leaves of resolver config; the resolver tolerates JSON.parse-able string-form arrays so the chain wires end-to-end. templateId is in the lifecycle payload. The hardcoded 'executionSucceeded: false' is a deliberate conservative default \u2014 the meta-activity fires post-completion specifically when validation may have failed; the parent task's intrinsic success is irrelevant to the validation-success signal. A future cleanup wires this to the validator's pass/fail outcome."
+      },
+      "outputShapes": [
+        "learning_signal_write_result"
+      ],
+      "outputImpulses": [
+        "learning_signal_write_result"
+      ],
+      "notes": "This is the migration target for the three executor call sites (`activity.ts:5471, :5574, :5719`); once Phase 5 deletes those, the meta-activity owns all learning-signal writes. executionSucceeded gates how Thompson Sampling \u03b1/\u03b2 eventually update \u2014 when the validator reported a failure (validation_result.passed=false somewhere), executionSucceeded should be FALSE even though the parent task's lifecycle.status was 'completed'. SIMPLIFICATION: the executionSucceeded determination ideally inspects the dispatch_validators_result impulse contents; without dotted-path interpolation OR a dedicated flag-extraction resolver, we delegate it to the resolver itself. The lifecycle:task:completed payload carries `allImpulseIds`, `loadedImpulseIds`, and `toolCallRecords` (activity.ts:2407 + :2877 emit sites); the learning_signal_writer resolver tolerates JSON-stringified array forms so dotted-path interpolation (which JSON-stringifies array values when embedded as string leaves of resolver config) feeds through correctly. templateId is carried on the lifecycle payload and forwarded via {{lifecycle.templateId}}. The learning_signal_writer resolver no-ops gracefully on missing/empty templateId rather than throwing \u2014 learning signals are best-effort."
+    }
+  ],
+  "metadata": {
+    "created": "2026-04-26",
+    "author": "validators-and-failure-modes",
+    "embedded": true,
+    "bootstrapTemplate": false,
+    "openSpec": "2026-04-26-validators-and-failure-modes",
+    "openQuestions": [
+      "Per-shape iteration: the spec's task 2 (select_validator_per_shape) ideally partitions candidates per produced shape into specialized (input_shapes literally contains the shape) vs wildcard (input_shapes: ['*']) and dispatches the right validator per shape. The current template format has no foreach/map primitive (infra gap B), so this template models the single-validator, single-shape-of-validation case. The validator's own inputShapes (enforced by matchImpulsesForTask at dispatch time) acts as the specialization filter implicitly. Multi-shape, multi-validator dispatch is a follow-up.",
+      "Architectural correction: instead of registering a thin `discover_by_shapes` resolver in minibob (which would have edited minibob source to call activity-api \u2014 a violation of the pure-vessel/vessel-integration constraint), activity-api advertises a `discoverByShapesQuery` shape via its impulse-resolve handler (repos/metabob-activity-api/src/routes/impulses.ts). The shape's pointer carries the same fields as the REST route body (required_shapes, mode, output_shapes, current_shapes, limit, predecessor_activity_id) and the handler delegates to the same shared helper (services/discover-by-shapes.ts) as the REST route. This template's task 1 (discover_validators) uses the canonical pattern: existing `impulse-resolve` resolver + `pointer.type: \"discoverByShapesQuery\"` with mode=backward + output_shapes=[validation_result] \u2014 zero minibob source changes.",
+      "producer_selection_result \u2192 variant_selection_result format adapter (task 2): the LLM prompt is mechanical and could be replaced with a deterministic `impulse_reshape` resolver (or a `variant_selection_from_producer_selection` resolver). Until then the LLM call is a low-cost placeholder \u2014 keep maxTokens=400.",
+      "failure_mode propagation mechanism (task 4): no activity-api endpoint exists today for writing trace metadata mid-execution. The Phase 5 cleanup (spec \u00a78) is where failure_mode handling moves from inline activity.ts code into structured impulses. This template emits failure_mode_propagation as an impulse; the lifecycle subscriber merge path surfaces it in the parent execution's impulse pool. Downstream consumers (trace storage, dashboard) read it from there. Once Phase 5 lifts the inline path, the impulse-based propagation becomes authoritative.",
+      "executionSucceeded for task 5: hardcoded to false because the meta-activity fires post-completion to capture validator outcomes, and the parent task's lifecycle.status doesn't reflect validator pass/fail. Once a flag-extraction primitive exposes the dispatch_validators_result impulse content as a derived variable, this becomes `true if all validation_results passed, else false`. Dotted-path interpolation alone doesn't suffice (we'd need an `{{impulse:dispatch_validators_result.passed_aggregate}}` capability or a deterministic reshape resolver).",
+      "templateId is included in the lifecycle:task:completed payload (activity.ts:2429 + :2899 emit sites) and consumed via {{lifecycle.templateId}} in task 5's config. The learning_signal_writer resolver no-ops gracefully on missing/empty templateId rather than throwing \u2014 learning signals are best-effort and missing data should not break the meta-activity. The chain (allImpulseIds/loadedImpulseIds/toolCallRecords/templateId) is wired end-to-end."
+    ],
+    "limitations": [
+      "Single-validator dispatch (task 3): multi-validator parallel dispatch is deferred until template foreach lands.",
+      "executionSucceeded hardcoded to false in task 5 \u2014 conservative default; refines once a flag-extraction primitive over impulse content lands (see openQuestions)."
+    ],
+    "subscriberContract": "subscription.shape = 'lifecycle:task:completed'. Fires after every task's loop iteration AND every parallel-group entry (activity.ts:2429, :2899). Lifecycle payload: { taskId, templateId, taskIndex, executionId, status, outputShapes, durationMs, skip_validation, allImpulseIds, loadedImpulseIds, toolCallRecords }. The dotted-path interpolator JSON-stringifies array values when embedded as resolver-config string leaves; the learning_signal_writer resolver tolerates JSON-stringified array forms. Subscriber outputs (validation_result, failure_mode_propagation, learning_signal_write_result) merge back into the parent execution's impulse pool via the existing nested-execution machinery (activity.ts:1249-1273).",
+    "outputContract": "Per shape-provenance principle (2026-04-27): each task's declared outputShapes is the UNION of possible emissions \u2014 actual emissions depend on conditional gates. (1) discover_validators emits validator_candidates iff skip_validation !== true; (2) select_validator_per_shape emits variant_selection_result + selected_validators iff candidates exist; (3) dispatch_validators emits validation_result/validation_results + activityExecutionSummary iff a validator was selected (unbindable=false); (4) propagate_failure_mode emits failure_mode_propagation iff at least one validation_result reported passed=false; (5) learning_signal_write always emits learning_signal_write_result. Impulses carry shapeOrigin: 'validator_emitted' (set by the resolvers via metadata) so trace consumers can stratify validator-driven shapes from resolver-emitted ones. Downstream consumers gating on `validation_result` see it ONLY when a validator was actually dispatched \u2014 not as a phantom shape from a skipped task."
+  }
+}

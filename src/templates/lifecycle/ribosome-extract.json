@@ -1,0 +1,280 @@
+{
+  "id": "ribosome-extract",
+  "name": "Ribosome Extract (lifecycle-driven template extraction)",
+  "description": "Activity-driven implementation of the ribosome pattern. Subscribes to lifecycle:activity:postExecution and treats template extraction as a shape-identifying counterpart to goal/activity \u2014 input shape lifecycle:activity:postExecution, output shapes extractedTemplate / learningSummary / goalEnd. Replaces the imperative ribosome calls that previously fired inline from activity.ts (recordExecutionTrace path), goal-processor.ts (4 sites: success extraction, cost-limit attempt, LLM-verified attempt, max-turns attempt), and improviser-resolver.ts (success + cost-limit paths). The chain has six tasks: (1) acquire_trace_signature \u2014 impulse-resolve `executionTraceWithSignatures` keyed by the just-completed executionId; (2) assess_quality \u2014 llm computes a quality score from the lifecycle payload + trace signature (success rate, task count, resolver tier mix, cost-per-output ratio, depth=0 check, author-skip check); (3) gate_extraction \u2014 conditional branch on qualityScore >= qualityThreshold; (4) synthesize_template \u2014 llm renders an extractedTemplate JSON proposal from the trace signature + lifecycle payload; (5) validate_proposal \u2014 llm validates the proposal against compliance rules (similar to replace-activity::validate_proposals); (6) dispatch_write \u2014 impulse-resolve with pointer.type=`activityTemplate_write` operation=`create`, GATED on the applyExtraction variable (default false). The applyExtraction default of false makes first-canary-deploy observe-only: the chain emits an extractedTemplate proposal impulse for downstream consumers (workbench, replace-activity, operator) without actually persisting the new template. Once enough proposal traces accumulate and the quality threshold is calibrated, applyExtraction can be flipped to true (per-template variable override) for autonomous registration. RECURSION SAFETY: this template's templateAuthor on the lifecycle payload is `ribosome-pattern`, so when the meta-activity itself emits postExecution at completion, the gate_extraction conditional skips because templateAuthor is matched against a documented skip list (the meta-activity sets `templateAuthor != ribosome-pattern && templateAuthor != ribosome && templateAuthor != ribosome-sequence` as the recursion-safety filter). MIGRATION TARGET: the imperative ribosome calls reach for mcp.registerTemplate(); the meta-activity uses the activityTemplate_write resolver advertised by activity-api per docs/impulse-types/LEARNING_LOOP_WRITE_RESOLVERS.md (post auth fix). Per the system's foundational model: ribosome is the shape-identifying counterpart to goal/activity \u2014 runs after execution, registered to the lifecycle hook, declarative quality gates expressed in template variables not buried in code.",
+  "category": "meta",
+  "version": "0.1.0",
+  "tags": [
+    "lifecycle",
+    "ribosome",
+    "meta",
+    "lifecycle.activity.post.execution",
+    "quality.gated",
+    "proposal.only"
+  ],
+  "subscription": {
+    "shape": "lifecycle:activity:postExecution"
+  },
+  "variables": [
+    {
+      "name": "qualityThreshold",
+      "type": "number",
+      "required": false,
+      "default": 0.7,
+      "description": "Minimum quality score (0-1) required for synthesize_template to fire. Mirrors the imperative call's threshold of 0.6 (activity.ts:3586) but raised slightly to compensate for the meta-activity's broader applicability \u2014 the imperative call only ran on shouldExtractTemplate-passing executions, while the lifecycle subscriber receives every postExecution. The acquired trace signature drives the score in assess_quality."
+    },
+    {
+      "name": "applyExtraction",
+      "type": "boolean",
+      "required": false,
+      "default": false,
+      "description": "When true, dispatch_write task fires `activityTemplate_write` to persist the synthesized template. Default false makes first-canary-deploy observe-only \u2014 the chain emits an extractedTemplate proposal impulse for downstream consumers (workbench, replace-activity, operator) without actually writing. Mirrors make-activity.json::applyTemplateExtraction (default false). Once quality calibration converges, flip per-invocation OR per-vessel as a variable override."
+    },
+    {
+      "name": "synthesisMaxTokens",
+      "type": "number",
+      "required": false,
+      "default": 2000,
+      "description": "Token budget for synthesize_template's LLM call. The synthesized template payload is bounded \u2014 per the existing `extractTemplateFromImprovisation` helper in template-extractor.ts, the typical payload is ~1500 tokens for a 3-5 task template. 2000 leaves headroom; raise for richer templates (longer descriptions, more tasks) and lower for token-cost optimization."
+    },
+    {
+      "name": "lifecycle",
+      "type": "object",
+      "required": false,
+      "description": "Set automatically by the lifecycle dispatcher (see activity.ts:1249-1273) to the lifecycle:activity:postExecution payload merged with {executionId, shape}. Contains (post-2026-04-27 ribosome refactor): executionId, templateId, templateName, templateAuthor, status, durationMs, costUsd, taskCount, impulseCount, depth, compositionChain (array \u2192 JSON-stringified), outputShapes (array \u2192 JSON-stringified), hasGoalContext (boolean \u2192 string `\"true\"`/`\"false\"`), qualityEligible (boolean \u2192 string). Dotted-path interpolation works: `{{lifecycle.executionId}}`, `{{lifecycle.templateAuthor}}`, etc. The interpolator was extended to /\\{\\{([\\w]+(?:\\.[\\w]+)*)\\}\\}/g in activity.ts iter 7 (slot-binding/validator-dispatch shipped on this primitive). Resolvers can also read the lifecycle:activity:postExecution impulse content directly via `impulses` (delivered as the first impulseRef) for any field not surfaced as a dotted-path placeholder."
+    }
+  ],
+  "tasks": [
+    {
+      "id": "acquire_trace_signature",
+      "description": "Fetch the just-completed execution's trace signature via the canonical executionTraceWithSignatures shape advertised by activity-api (see config.ts:223).",
+      "conditional": {
+        "expression": "{{lifecycle.qualityEligible}} === 'true'",
+        "skipIfFalse": true
+      },
+      "resolver": "impulse-resolve",
+      "config": {
+        "pointer": {
+          "type": "executionTraceWithSignatures",
+          "execution_id": "{{lifecycle.executionId}}",
+          "limit": 1
+        }
+      },
+      "outputShapes": [
+        "executionTraceWithSignatures"
+      ],
+      "outputImpulses": [
+        "trace_signature"
+      ],
+      "notes": "Uses the existing generic `impulse-resolve` resolver in minibob \u2014 zero source changes in the integrating vessel (vessel-integration constraint per shape-provider-goal.json pattern). The signature shape is context-budget-conscious: per-impulse pointer/shape signatures, per-task input/output_impulse_ids, status, duration, resolver tier mix \u2014 enough for downstream quality scoring + template synthesis without echoing full trace bodies. SHORT-CIRCUIT (recursion safety): when the lifecycle payload's `templateAuthor` is `ribosome`, `ribosome-pattern`, or `ribosome-sequence`, the conditional skips this task \u2014 and the rest of the chain via dependency-skip propagation \u2014 so the meta-activity does not extract from its own (or another ribosome activity's) executions. The imperative path used the same skip pattern (activity.ts:3525-3526). Substring-match idiom (used by slot-binding.json:162, goal-processing-activity-driven.json:162) \u2014 checks the lifecycle:activity:postExecution impulse content for the literal `\"templateAuthor\":\"ribosome\"` etc. SHORT-CIRCUIT (quality gate): when qualityEligible is `false` (lifecycle payload \u2014 mirrors the executor's `shouldExtractTemplate` thresholds: completed AND >= 2 tasks AND cost < $1 AND impulses <= 10 AND depth = 0), skip the whole chain. The qualityEligible flag is computed in activity.ts at the postExecution emit site so the meta-activity can short-circuit without re-running the same boolean here."
+    },
+    {
+      "id": "assess_quality",
+      "description": "LLM computes a quality score (0-1) from the trace signature + lifecycle payload.",
+      "dependencies": [
+        "acquire_trace_signature"
+      ],
+      "inputImpulses": [
+        "trace_signature"
+      ],
+      "conditional": {
+        "expression": "{{impulse:trace_signature}} contains '\"tasks\"'"
+      },
+      "prompt": {
+        "template": "You are scoring an execution trace for ribosome template extraction quality.\n\nLIFECYCLE PAYLOAD (from lifecycle:activity:postExecution):\n- executionId: {{lifecycle.executionId}}\n- templateId: {{lifecycle.templateId}}\n- templateName: {{lifecycle.templateName}}\n- templateAuthor: {{lifecycle.templateAuthor}}\n- status: {{lifecycle.status}}\n- taskCount: {{lifecycle.taskCount}}\n- impulseCount: {{lifecycle.impulseCount}}\n- depth: {{lifecycle.depth}}\n- durationMs: {{lifecycle.durationMs}}\n- costUsd: {{lifecycle.costUsd}}\n- hasGoalContext: {{lifecycle.hasGoalContext}}\n- outputShapes: {{lifecycle.outputShapes}}\n\nTRACE SIGNATURE (executionTraceWithSignatures): {{impulse:trace_signature}}\n\nVARIABLES:\n- qualityThreshold = {{qualityThreshold}}\n\nSCORING RUBRIC:\n1. RECURSION SAFETY (hard gate): if templateAuthor is one of [\"ribosome\", \"ribosome-pattern\", \"ribosome-sequence\"], output extractionEligible=false with reason \"recursion-safety: templateAuthor in ribosome family\". The score in this case should be 0.0.\n2. SUCCESS (hard gate): if status !== \"completed\", set score = 0.0, extractionEligible = false, reason: \"non-completed execution\".\n3. TASK COUNT: 2-3 tasks \u2192 0.7 base; 4-6 tasks \u2192 0.85 base; 7-10 tasks \u2192 0.9 base; > 10 \u2192 0.6 base (too complex).\n4. RESOLVER TIER MIX (from trace signature): higher proportion of deterministic resolvers (bash, file, git) \u2192 +0.1; pattern-tier present \u2192 +0.05; pure-LLM chain \u2192 +0.0 (no bonus).\n5. COST-PER-OUTPUT: costUsd / max(outputShapes.length, 1) \u2014 under $0.05 \u2192 +0.05; under $0.20 \u2192 +0.0; above $0.50 \u2192 -0.1.\n6. DEPTH: depth === 0 \u2192 +0.0 (top-level executions); depth > 0 \u2192 -0.1 (nested; less reusable as a top-level template).\n7. OUTPUT SHAPE DIVERSITY: outputShapes.length >= 2 distinct shapes \u2192 +0.05.\n\nClamp the final score to [0, 1].\n\nOutput EXACTLY this JSON (no markdown, no prose):\n{\"score\":<0-1>,\"issues\":[\"<issue 1>\",\"...\"],\"recommendations\":[\"<rec 1>\",\"...\"],\"extractionEligible\":<bool>,\"reason\":\"<short summary>\"}",
+        "maxTokens": 600
+      },
+      "outputShapes": [
+        "qualityScore"
+      ],
+      "outputImpulses": [
+        "quality_assessment"
+      ],
+      "notes": "Mirrors the imperative `scoreTemplateQuality` in template-generator.ts:885 \u2014 checks task count, resolver tier mix (deterministic > pattern > llm), cost-per-output ratio, depth, output-shape diversity, AND the recursion-safety filter (templateAuthor must NOT be in the ribosome family). Returns a structured JSON envelope: { score: 0-1, issues: string[], recommendations: string[], extractionEligible: boolean }. The extractionEligible flag is the gate used by synthesize_template \u2014 true iff score >= qualityThreshold AND templateAuthor is not in the ribosome family. SIMPLIFICATION: a deterministic `template_quality_scorer` resolver (extracted from scoreTemplateQuality) would replace this LLM call once the scoring heuristics stabilize (post-ship ribosome extraction of THIS meta-activity itself!). For first ship the LLM is bounded at maxTokens=600. SHORT-CIRCUIT: skips when acquire_trace_signature produced no useful trace data (impulse-resolve failed OR backend unavailable) \u2014 substring-match idiom on the trace_signature impulse content for the literal `\"tasks\"` (every executionTraceWithSignatures result with at least one task contains this key). When the trace fetch fails the parent test/canary doesn't waste an LLM call on an empty assessment."
+    },
+    {
+      "id": "synthesize_template",
+      "description": "LLM renders an `extractedTemplate`-shaped JSON proposal from the trace signature + lifecycle payload.",
+      "dependencies": [
+        "assess_quality"
+      ],
+      "inputImpulses": [
+        "quality_assessment",
+        "trace_signature"
+      ],
+      "conditional": {
+        "expression": "{{impulse:quality_assessment}} contains '\"extractionEligible\":true'"
+      },
+      "prompt": {
+        "template": "You are synthesizing a reusable activityTemplate from a successful execution trace.\n\nLIFECYCLE PAYLOAD:\n- executionId: {{lifecycle.executionId}}\n- templateId (parent): {{lifecycle.templateId}}\n- templateName (parent): {{lifecycle.templateName}}\n- templateAuthor (parent): {{lifecycle.templateAuthor}}\n- taskCount: {{lifecycle.taskCount}}\n- outputShapes: {{lifecycle.outputShapes}}\n\nTRACE SIGNATURE: {{impulse:trace_signature}}\nQUALITY ASSESSMENT: {{impulse:quality_assessment}}\n\nVARIABLES:\n- synthesisMaxTokens = {{synthesisMaxTokens}}\n\nDERIVATION RULES:\n1. id: `learned-<short-goal-slug>-<timestamp>` \u2014 slug from the parent templateName lowercased, non-alphanum \u2192 '-', truncated to 50 chars; timestamp = current epoch in base36.\n2. name: human-readable derived from goal context if available, else templateName.\n3. description: 1-2 sentence summary of what the chain does (synthesise from per-task descriptions in the trace signature).\n4. category: inherit from parent template's category (read from trace signature when available; default 'tool').\n5. version: '0.1.0'.\n6. tags: inherit parent tags + add 'ribosome.extracted', 'lifecycle.driven'. Tags MUST conform to dot-separated regex (post-tag-format-fix) \u2014 only [a-z0-9.] allowed.\n7. tasks: one task per executed task in the trace signature. For each task, populate: id (preserve from trace), description (preserve from trace), resolver (preserve), config (preserve where structurally present), inputShapes (preserve), outputShapes (preserve). For LLM-tier tasks where the prompt template is captured in the signature, preserve it.\n8. metadata: { author: 'ribosome-pattern', embedded: false, bootstrapTemplate: false, sourceExecutionId: <executionId>, sourceTemplateId: <parent templateId>, extractedAt: <ISO timestamp> }.\n\nRECURSION SAFETY: never set author to a ribosome-family value other than 'ribosome-pattern' (the canonical attribution); the lifecycle subscriber's gate_extraction recursion check skips templateAuthor in the ribosome family.\n\nOutput EXACTLY this JSON (no markdown, no prose):\n{\"id\":\"<...>\",\"name\":\"<...>\",\"description\":\"<...>\",\"category\":\"<...>\",\"version\":\"0.1.0\",\"tags\":[\"<...>\"],\"tasks\":[{\"id\":\"<...>\",\"description\":\"<...>\",\"resolver\":\"<...>\",\"config\":{},\"inputShapes\":[\"<...>\"],\"outputShapes\":[\"<...>\"]}],\"metadata\":{\"author\":\"ribosome-pattern\",\"embedded\":false,\"bootstrapTemplate\":false,\"sourceExecutionId\":\"<executionId>\",\"sourceTemplateId\":\"<parent>\",\"extractedAt\":\"<iso>\"}}",
+        "maxTokens": 2000
+      },
+      "outputShapes": [
+        "extractedTemplate"
+      ],
+      "outputImpulses": [
+        "extracted_template"
+      ],
+      "notes": "Mirrors `assembleTemplateFromExecution` in template-generator.ts:400 \u2014 extracts a template body whose tasks correspond to the trace's executed tasks, with resolver/prompt/inputShapes/outputShapes derived from the per-task signature rows. Naming: derives templateId from `learned-<short-goal-slug>-<timestamp>` (mirrors activity.ts:3554 imperative path). CONDITIONAL: fires only when assess_quality reported extractionEligible=true (substring match `\"extractionEligible\":true` against the quality_assessment impulse content). When the gate fails the meta-activity completes early \u2014 the trace_signature impulse is the only artefact; downstream consumers can still inspect it for failure analysis. SIMPLIFICATION: the canonical implementation would register a deterministic `template_synthesizer` resolver that maps trace signatures to canonical ActivityTemplate JSON without LLM cost (post-ship ribosome extraction); for first ship the LLM body is bounded at maxTokens=synthesisMaxTokens (default 2000). The output is an `extractedTemplate`-shape impulse (a NEW shape declared by this meta-activity for downstream replace-activity / operator consumption)."
+    },
+    {
+      "id": "validate_proposal",
+      "description": "LLM validates the synthesized template against compliance rules.",
+      "dependencies": [
+        "synthesize_template"
+      ],
+      "inputImpulses": [
+        "extracted_template"
+      ],
+      "conditional": {
+        "expression": "{{impulse:extracted_template}} contains '\"id\"'"
+      },
+      "prompt": {
+        "template": "You are validating a ribosome-extracted activityTemplate proposal against compliance rules.\n\nPROPOSAL: {{impulse:extracted_template}}\n\nRULES:\n1. id matches /^[a-z0-9-]+$/ (no whitespace, no uppercase).\n2. Every task has either prompt.template OR resolver.\n3. resolver field (if present) references a known resolver from this set: bash, file, git, llm, impulse-resolve, activity, validation, pattern-validator, template_sync, human, pre-validation, impulse_state_analysis, context_acquisition, failure_penalty, goal_satisfaction_checker, orchestration_goal_detector, context_template_router, keyword_extractor, impulse_cooccurrence, relevance_scorer, variant_selection, activity_recommendation, impulse_preparation, impulse_pool_selection, producer_selection, learning_signal_writer, iteration, goal_verification, ribosome, llm_impulse_selector, tool_selector, goal_enrichment, goal_decomposition, vessel-proxy. Vessel-prefixed names (e.g. concept-db:resolve_concept) also count as known.\n4. tags conform to dot-separated regex /^[a-z0-9.]+$/.\n5. At least one task has non-empty inputShapes AND at least one task has non-empty outputShapes.\n6. metadata.author is 'ribosome-pattern'.\n\nFor each rule, emit an evidence row: { rule: <number>, passed: <bool>, message: <reason on fail, empty on pass> }.\n\nOutput EXACTLY this JSON (no markdown, no prose):\n{\"validator_id\":\"ribosome-extract::validate_proposal\",\"passed\":<bool>,\"confidence\":<0-1>,\"evidence\":[{\"rule\":<n>,\"passed\":<bool>,\"message\":\"<...>\"}]}",
+        "maxTokens": 400
+      },
+      "outputShapes": [
+        "validation_result"
+      ],
+      "outputImpulses": [
+        "proposal_validation"
+      ],
+      "notes": "Mirrors replace-activity.json::validate_proposals (lines 138-158). Per-rule checks: (1) id is unique-shaped (matches /^[a-z0-9-]+$/, no whitespace); (2) every task has either prompt.template OR resolver; (3) resolver field references a known resolver (matches the embedded test's KNOWN_RESOLVERS set: bash, file, git, llm, impulse-resolve, activity, validation, etc.); (4) tags conform to dot-separated regex (post-tag-format-fix) \u2014 only [a-z0-9.] allowed; (5) inputShapes / outputShapes are non-empty for at least the entry / exit tasks; (6) author is 'ribosome-pattern' (recursion-safety attribution). Output: a structured envelope with passed: true|false and per-rule evidence. SIMPLIFICATION: a deterministic `template_compliance_validator` resolver (extracted from validate-template-compliance.json's logic) would replace this LLM call once the rule set stabilizes; for first ship the LLM is bounded at maxTokens=400. The output is a validation_result-shape impulse following the unified contract \u2014 passed flag + evidence rows + validator_id."
+    },
+    {
+      "id": "dispatch_write_attempt",
+      "description": "Attempt the activityTemplate_write dispatch.",
+      "dependencies": [
+        "validate_proposal"
+      ],
+      "inputImpulses": [
+        "extracted_template",
+        "proposal_validation"
+      ],
+      "conditional": {
+        "expression": "{{variables.applyExtraction}} == 'true'"
+      },
+      "resolver": "impulse-resolve",
+      "config": {
+        "pointer": {
+          "type": "activityTemplate_write",
+          "operation": "create",
+          "_payload_note": "The extractedTemplate JSON is delivered via the inherited impulse pool (extracted_template). The activityTemplate_write resolver reads the payload from the pool when no inline payload field is set; alternatively a follow-up enhancement to impulse-resolve can accept `payload_impulse: \"extracted_template\"` for explicit binding. Until then the resolver's existing trace-driven path applies (see make-activity.json::extract_template for the same pattern)."
+        }
+      },
+      "outputShapes": [
+        "writeAttempt"
+      ],
+      "outputImpulses": [
+        "write_result"
+      ],
+      "notes": "Shape-provenance correction (2026-04-27): split out from the previous `dispatch_write` so the trace's impulse pool reflects what was OBSERVED to be emitted, not what was DECLARED. This task ALWAYS emits a `writeAttempt`-shaped impulse describing what happened (success / failure / skipped) \u2014 gated on applyExtraction so a write actually occurs only when the variable is true. Persists the synthesized template via the `activityTemplate_write` write resolver (advertised by activity-api per docs/impulse-types/LEARNING_LOOP_WRITE_RESOLVERS.md, post auth fix). Replaces the imperative `mcp.registerTemplate(extractedTemplate)` call from activity.ts:3589, goal-processor.ts:2961/3005/3096/3145, improviser-resolver.ts:212/248. CONDITIONAL: gated on `applyExtraction` variable (default false) AND `validate_proposal` reported passed=true. The applyExtraction default of false makes first-canary-deploy observe-only \u2014 the chain emits an extractedTemplate proposal impulse for downstream consumers (workbench, replace-activity, operator) without actually writing. Once quality scoring is calibrated, applyExtraction can be flipped per-invocation OR per-vessel via the variable override. When the resolver fails (network, validation, etc.), the chain still completes \u2014 extract is best-effort; the trace records the failure_mode for ribosome itself to learn from (recursive learning loop). The pointer carries the full extractedTemplate as the payload via the `template` field; activity-api's write resolver validates structurally before persisting. NOTE: this task NEVER claims to emit `activityTemplate` \u2014 that is the responsibility of the downstream `dispatch_write_succeeded` task, which only fires when the write actually succeeded. This avoids polluting the impulse pool with a phantom `activityTemplate` shape on skipped/failed writes."
+    },
+    {
+      "id": "dispatch_write_succeeded",
+      "description": "Shape-provenance task (2026-04-27): emit an `activityTemplate` impulse ONLY when the upstream write actually succeeded.",
+      "dependencies": [
+        "dispatch_write_attempt"
+      ],
+      "inputImpulses": [
+        "write_result",
+        "extracted_template"
+      ],
+      "conditional": {
+        "expression": "{{impulse:write_result}} contains '\"id\"'"
+      },
+      "resolver": "impulse-resolve",
+      "config": {
+        "pointer": {
+          "type": "memo",
+          "content": "ribosome-extract: dispatch_write_succeeded \u2014 activityTemplate registered. The truthful shape is emitted here (NOT in dispatch_write_attempt) so the impulse pool reflects observed emissions, not declared intent. Downstream consumers gating on activityTemplate see this impulse only when applyExtraction=true AND the write succeeded. shapeOrigin: ribosome_extracted (set by the resolver via metadata)."
+        }
+      },
+      "outputShapes": [
+        "activityTemplate",
+        "goalEnd"
+      ],
+      "outputImpulses": [
+        "registered_template"
+      ],
+      "notes": "The conditional substring-matches the writeAttempt impulse content for a success marker (id field present + no error). When applyExtraction was false, dispatch_write_attempt was skipped \u2192 write_result impulse is absent \u2192 this task's conditional fails \u2192 no activityTemplate is registered in the pool. When applyExtraction was true but the write failed (network, 401, validation rejection), the writeAttempt impulse contains an error envelope \u2192 the conditional fails \u2192 again no activityTemplate. Only when a real registered template exists on the backend does this task fire and emit the truthful `activityTemplate` shape. This is the registry-quality posture: declared output shapes match observed emissions; downstream consumers (workbench, dashboards, learning-signal writers) gating on `metadata.shape: \"activityTemplate\"` only see the shape when a real template was actually written. The `ribosome_extracted` shapeOrigin marker (set by the resolver via metadata) makes the trace queryable: 'show me all activityTemplate impulses that came from a ribosome extraction'."
+    },
+    {
+      "id": "emit_summary",
+      "description": "Emits a `learningSummary` + `goalEnd` impulse summarising the ribosome run.",
+      "dependencies": [
+        "validate_proposal",
+        "dispatch_write_attempt",
+        "dispatch_write_succeeded"
+      ],
+      "conditional": {
+        "expression": "{{impulse:quality_assessment}} contains '\"score\"'"
+      },
+      "optionalInputImpulses": [
+        "trace_signature",
+        "quality_assessment",
+        "extracted_template",
+        "proposal_validation",
+        "write_result",
+        "registered_template"
+      ],
+      "optionalInputShapes": [
+        "executionTraceWithSignatures",
+        "qualityScore",
+        "extractedTemplate",
+        "validation_result",
+        "writeAttempt",
+        "activityTemplate"
+      ],
+      "prompt": {
+        "template": "You are emitting a learningSummary for the just-completed ribosome-extract run.\n\nLIFECYCLE PAYLOAD: (parent execution that triggered this meta-activity)\n- executionId: {{lifecycle.executionId}}\n- templateId: {{lifecycle.templateId}}\n- templateName: {{lifecycle.templateName}}\n- status: {{lifecycle.status}}\n- taskCount: {{lifecycle.taskCount}}\n- depth: {{lifecycle.depth}}\n\nINPUTS:\n- trace signature: {{impulse:trace_signature}}\n- quality assessment: {{impulse:quality_assessment}}\n- synthesized template proposal: {{impulse:extracted_template}}\n- proposal validation: {{impulse:proposal_validation}}\n- write result (only when applyExtraction=true): {{impulse:write_result}}\n\nVARIABLES:\n- qualityThreshold = {{qualityThreshold}}\n- applyExtraction = {{applyExtraction}}\n\nProduce a 2-4 sentence learningSummary covering:\n- Whether the parent execution was eligible for extraction (qualityEligible from lifecycle).\n- Quality score and verdict.\n- Whether a template proposal was synthesized and validated.\n- Whether a write was dispatched (applyExtraction=true) AND its outcome, OR `proposal-only mode` (applyExtraction=false).\n- One forward-looking recommendation (e.g. 'flip applyExtraction to true once 10+ proposals validate' OR 'investigate quality gate' if score < threshold).\n\nOutput EXACTLY this JSON (no markdown, no prose):\n{\"learning_summary\":\"<2-4 sentences>\",\"qualityScore\":<n>,\"extractionEligible\":<bool>,\"proposalSynthesized\":<bool>,\"validationPassed\":<bool>,\"writeDispatched\":<bool>,\"writeSucceeded\":<bool>,\"applyExtractionWasTrue\":<bool>,\"forward_recommendation\":\"<...>\"}",
+        "maxTokens": 500
+      },
+      "outputShapes": [
+        "learningSummary",
+        "goalEnd"
+      ],
+      "outputImpulses": [
+        "ribosome_summary"
+      ],
+      "notes": "Conditional on assess_quality having actually produced output (substring-match on `quality_assessment` impulse) \u2014 when the upstream chain short-circuited (no trace data), the summary is skipped to avoid an LLM call with empty inputs. Mirrors make-activity.json::declare_complete (line 174-208). For mature canary use, downstream consumers (workbench history panel, dashboards) consume learningSummary to render the ribosome's learning trail per execution. The summary aggregates: trace_signature presence, quality_assessment fields (score, extractionEligible, issues, recommendations), extracted_template id+name (when synthesized), proposal_validation passed flag, write_result status (when dispatched), AND the registered_template impulse (only present when the write succeeded \u2014 observable shape provenance). The chain's value comes from the LLM seeing the full picture; with empty inputs there's nothing useful to summarise. The summary's `writeSucceeded` boolean is now driven by the presence of the `registered_template` impulse rather than parsing the writeAttempt envelope \u2014 observable rather than declared."
+    }
+  ],
+  "metadata": {
+    "created": "2026-04-27",
+    "author": "ribosome-pattern",
+    "embedded": true,
+    "bootstrapTemplate": false,
+    "supersedes": [
+      "activity.ts:3526-3690 imperative ribosome auto-register block (removed)",
+      "goal-processor.ts:2952-2975 success extraction (removed)",
+      "goal-processor.ts:2993-3016 cost-limit attempt extraction (removed; out-of-scope: requires lifecycle:activity:failure subscriber)",
+      "goal-processor.ts:3083-3105 LLM-verified extraction (removed)",
+      "goal-processor.ts:3128-3156 max-turns attempt extraction (removed; out-of-scope: requires lifecycle:activity:failure subscriber)",
+      "improviser-resolver.ts:204-228 success extraction (removed)",
+      "improviser-resolver.ts:237-259 cost-limit attempt extraction (removed; out-of-scope)"
+    ],
+    "openQuestions": [
+      "FAILURE-PATH RIBOSOME (cost-limit, max-turns): the imperative path also extracted ATTEMPT templates from cost-exhausted and max-turns improvisations via `extractAttemptTemplate`. The current meta-activity subscribes to lifecycle:activity:postExecution which fires on completed AND per-task-failed activities, but the improviser cost-limit/max-turns paths terminate WITHOUT firing postExecution (they go through `convertImprovisationToExecution` and return directly). A sibling subscriber on lifecycle:activity:failure (or a new lifecycle:activity:improviserExhausted event) is the proper fix; deferred until the improviser-driven failure path is wired through the executor's lifecycle emit machinery. Until then attempt-template extraction is OUT OF SCOPE \u2014 the meta-activity only handles the success path that the imperative code's three success sites previously covered (activity.ts, goal-processor success, goal-processor LLM-verified, improviser success).",
+      "TEMPLATE-PAYLOAD SYNTHESIS (synthesize_template + dispatch_write): the LLM body in synthesize_template renders a structurally-valid ActivityTemplate JSON; activity-api's `activityTemplate_write` resolver validates structurally before persisting (post auth fix). SIMPLIFICATION: a deterministic `template_synthesizer` resolver (extracted from `assembleTemplateFromExecution` in template-generator.ts:400) would replace the LLM call once the synthesis pattern stabilizes \u2014 POST-SHIP RIBOSOME EXTRACTION OF THIS META-ACTIVITY ITSELF (a recursive learning loop). For first ship the LLM is bounded at maxTokens=synthesisMaxTokens (default 2000).",
+      "QUALITY SCORER (assess_quality): the LLM-based scorer is a low-cost placeholder \u2014 a deterministic `template_quality_scorer` resolver (extracted from `scoreTemplateQuality` in template-generator.ts:885) would replace this LLM call once enough scoring traces accumulate for ribosome extraction. Until then the LLM is bounded at maxTokens=600.",
+      "RECURSION-SAFETY VIA TEMPLATEAUTHOR: the meta-activity's gate is templateAuthor != 'ribosome' && != 'ribosome-pattern' && != 'ribosome-sequence' (mirrors activity.ts:3525-3526 imperative skip). A more rigorous fix would use the static-mutual-recursion check in templates.test.ts (Tier 4) \u2014 but Tier 4 only catches output_shape collisions, not author-driven skips. The current author-string match relies on the synthesize_template prompt instructing the LLM to set metadata.author to 'ribosome-pattern' (the canonical attribution); if the LLM violates this contract, validate_proposal's rule 6 catches it before dispatch_write fires.",
+      "COMPOSITION-EDGE RECORDING: the imperative path also called `mcp.recordComposition()` (activity.ts:3598-3618) to record the parent \u2192 child composition edge after successful registration. The meta-activity does NOT currently record this edge \u2014 the `activityTemplate_write` resolver may handle it server-side OR a follow-up sibling task could invoke a `compositionEdge_write` resolver. Tracked as a follow-up cleanup pass.",
+      "BOREDOM-QUEUE ENQUEUE: the imperative path also enqueued the new template for boredom-queue testing (activity.ts:3629-3645). The meta-activity does NOT currently enqueue \u2014 boredom-queue enqueueing is a separate concern and could be a sibling subscriber on the `activityTemplate_write_result` shape. Tracked as a follow-up cleanup pass."
+    ],
+    "limitations": [
+      "Failure-path ribosome (cost-limit, max-turns) is OUT OF SCOPE; only success-path extraction is covered. Sibling subscriber on lifecycle:activity:failure is the proper fix.",
+      "synthesize_template uses LLM-based template synthesis (not a deterministic template_synthesizer); bounded by synthesisMaxTokens. Deterministic synthesizer is a follow-up.",
+      "assess_quality uses LLM-based quality scoring (not a deterministic template_quality_scorer); bounded by maxTokens=600.",
+      "Recursion safety relies on templateAuthor string-matching the ribosome family. The synthesize_template prompt instructs the LLM to set author='ribosome-pattern'; validate_proposal rule 6 catches violations before write.",
+      "applyExtraction defaults to false \u2014 first canary deploy is observe-only. Flip to true once quality calibration converges OR per-invocation via variable override.",
+      "Composition-edge recording (parent \u2192 extracted child) is NOT done by this meta-activity; tracked as follow-up.",
+      "Boredom-queue enqueue of the extracted template is NOT done; tracked as follow-up.",
+      "dispatch_write_succeeded uses substring-match on the writeAttempt impulse content for an `id` field as the success signal. Activity-api's write resolver returns the registered template's id field on success and an error envelope on failure; the substring approach is the same idiom used by slot-binding.json (line 162) and goal-processing-activity-driven.json (line 162). Once a deterministic gate primitive lands the conditional can be tightened; until then this is the proven pattern."
+    ],
+    "outputContract": "Truthful output-shape contract per shape-provenance correction (2026-04-27): emissions reflect what was OBSERVED to happen, not what was DECLARED. (1) Always emits a `learningSummary` and `goalEnd` impulse via emit_summary (mandatory regardless of applyExtraction OR quality verdict, gated only on having quality_assessment data). (2) When qualityEligible AND quality_score >= threshold, ALSO emits an `extractedTemplate` proposal impulse via synthesize_template. (3) When applyExtraction=true (regardless of write outcome), ALSO emits a `writeAttempt`-shaped impulse via dispatch_write_attempt \u2014 describes what was attempted and the resolver's response (success/error envelope). (4) When applyExtraction=true AND the write succeeded (writeAttempt content has an `id` field), ALSO emits an `activityTemplate` impulse via dispatch_write_succeeded \u2014 the truthful counterpart to a registered template, NOT a phantom emission on skipped/failed writes. Dynamic shapes (validation_result, executionTraceWithSignatures) flow through the existing nested-execution merge path. The shape-provenance discipline: an `activityTemplate` impulse appears in the pool ONLY when a real backend-registered template exists; consumers gating on it (workbench, dashboards) can rely on this without parsing metadata.error / metadata.degraded.",
+    "subscriberContract": "subscription.shape = 'lifecycle:activity:postExecution'. Fires after every activity execution's trace storage (activity.ts:3680+, post-2026-04-27 ribosome refactor). Lifecycle payload: { executionId, templateId, templateName, templateAuthor, status, durationMs, costUsd, taskCount, impulseCount, depth, compositionChain, outputShapes, hasGoalContext, qualityEligible }. The dotted-path interpolator JSON-stringifies array values when embedded as resolver-config string leaves; the impulse-resolve resolver tolerates JSON-stringified array forms. Subscriber outputs (extractedTemplate, learningSummary, validation_result, activityTemplate_write_result, goalEnd) merge back into the parent execution's impulse pool via the existing nested-execution machinery (activity.ts:1249-1273) \u2014 though for postExecution the parent is already finalised, so subscriber outputs surface in the trace as a child execution under composition_chain.",
+    "spec_reference": "ribosome-as-meta-activity refactor (2026-04-27). Architectural change: imperative inline ribosome calls \u2192 declarative lifecycle-subscribed meta-activity, mirroring slot-binding / validator-dispatch / create-shape-provider-goal pattern. Treats template extraction as a shape-identifying counterpart to goal/activity (input shape: lifecycle:activity:postExecution, output shape: extractedTemplate). Quality gating moved from code (activity.ts:3586 `qualityResult.score >= 0.6`) to template variable (qualityThreshold default 0.7). Write path moved from MCP client (mcp.registerTemplate) to activityTemplate_write resolver (post auth fix). The applyExtraction=false default makes first-canary observe-only (proposal-emit) before any writes happen.",
+    "_design_intent": "Per the user framing (2026-04-27): 'ribosome itself ought to be another activity driven resolver and we should treat it like a shape identifying counterpart to goal/activity that runs after execution and is registered to the lifecycle hook.' This template realizes that intent. The meta-activity's role: identify the `extractedTemplate` shape \u2014 the ribosome's output is a NEW activity, just as goal-processing's output is a goal-shaped impulse. The lifecycle hook (postExecution) is the trigger; the chain is observable, gateable, and Thompson-Sampling-rankable like any other meta-activity."
+  }
+}

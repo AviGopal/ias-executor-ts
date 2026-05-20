@@ -1,0 +1,181 @@
+{
+  "id": "core-activity-audit",
+  "name": "Core Activity Audit",
+  "description": "Read-only audit activity that catalogues and ranks the load-bearing core of the activity registry. First concrete deliverable of OpenSpec change 2026-04-27-activity-registry-quality-pass. Five tasks: (1) fetch_templates \u2014 pull activityTemplate list (limit=500) via impulse-resolve; (2) fetch_metrics \u2014 pull activityTemplatesByMetrics for Thompson \u03b1/\u03b2 + recent execution count; (3) fetch_recent_traces \u2014 pull executionTraceWithSignatures (NOT full bodies) for the last lookbackDays days, capped per template at maxTracesPerTemplate; (4) compute_load_bearing \u2014 LLM-renders a ranked array of {templateId, rank, evidence} from the three signal sources, emitting a coreActivitySet impulse with the top-N templates; (5) emit_audit_report \u2014 LLM summarizes the audit into a human-readable auditReport impulse and calls markGoalComplete (matching make-activity's emission contract). Sandbox: read-only \u2014 no file writes, no workingDirectory. Sibling activities (review-activity, prune-activity, replace-activity, extract-pattern, concept-from-pattern) consume coreActivitySet downstream; this activity is the FIRST of six per the proposal \u2014 the remaining five are designed against the real coreActivitySet output rather than speculative shapes. Context-budget: trace SIGNATURES not full traces (the existing executionTraceWithSignatures shape was built precisely for this case at activity-api/config.ts:223), capped at maxTracesPerTemplate*coreSetSize ~= 100 signature rows per invocation.",
+  "category": "meta",
+  "version": "0.1.0",
+  "tags": [
+    "meta",
+    "registry.quality",
+    "activity.registry.audit",
+    "audit",
+    "read.only",
+    "trace.summarization"
+  ],
+  "variables": [
+    {
+      "name": "lookbackDays",
+      "type": "number",
+      "required": false,
+      "default": 7,
+      "description": "How far back to look at execution traces when ranking by recent activity. The fetch_recent_traces task computes since=now()-lookbackDays*86400s and passes it as the executionTraceWithSignatures pointer's since filter. Lower values bias toward currently-load-bearing templates; higher values surface seasonal patterns."
+    },
+    {
+      "name": "coreSetSize",
+      "type": "number",
+      "required": false,
+      "default": 20,
+      "description": "Top-N templates considered the load-bearing core. The compute_load_bearing task emits a coreActivitySet impulse with at most this many entries, sorted by load-bearing score (Thompson \u03b1 weighted by recency-decayed execution count + downstream-dependency count). Default 20 is intentionally small \u2014 the Pareto principle expectation is that ~20 templates carry ~80% of executions."
+    },
+    {
+      "name": "maxTracesPerTemplate",
+      "type": "number",
+      "required": false,
+      "default": 5,
+      "description": "Per-template signature-row cap for fetch_recent_traces. Bounds the LLM input context budget: maxTracesPerTemplate * coreSetSize signature rows per invocation, where each row is ~200-500 tokens (a per-impulse signature map, not a full trace body). Default 5 yields ~100 rows per invocation."
+    },
+    {
+      "name": "templatesLimit",
+      "type": "number",
+      "required": false,
+      "default": 500,
+      "description": "Cap on the activityTemplate list fetched by fetch_templates. The audit ranks within this slice; pagination across invocations is left to a follow-up activity (see proposal Out-of-Scope). Default 500 covers the current registry size (~2,500 with most being deprecated/inactive \u2014 the active subset fits well below 500)."
+    }
+  ],
+  "tasks": [
+    {
+      "id": "fetch_templates_with_metrics",
+      "description": "Fetch templates joined with Thompson Sampling metrics via impulse-resolve with pointer.type=activityTemplatesByMetrics.",
+      "resolver": "impulse-resolve",
+      "config": {
+        "pointer": {
+          "type": "activityTemplatesByMetrics",
+          "limit": "{{templatesLimit}}"
+        }
+      },
+      "outputShapes": [
+        "activityTemplatesByMetrics"
+      ],
+      "outputImpulses": [
+        "metrics_list"
+      ],
+      "notes": "Returns a list of {template_id, alpha, beta, sample_count, last_executed_at, ...} rows (advertised by activity-api per src/config.ts:207). This single shape returns both the template list AND its metrics in one round trip \u2014 replacing the earlier two-task split (the standalone activityTemplate pointer is singular-by-id, not a list shape). The compute_load_bearing task uses these rows directly. SIMPLIFICATION: we accept the resolver's default ordering; the LLM scorer in compute_load_bearing reorders by load-bearing score. When activity-api is unreachable, the resolver emits an empty/error impulse and compute_load_bearing degrades gracefully (ranks by available signal alone)."
+    },
+    {
+      "id": "fetch_recent_traces",
+      "description": "Fetch trace SIGNATURES (not full bodies) for the last lookbackDays days via impulse-resolve with pointer.type=executionTraceWithSignatures.",
+      "resolver": "impulse-resolve",
+      "config": {
+        "pointer": {
+          "type": "executionTraceWithSignatures",
+          "since_days": "{{lookbackDays}}",
+          "limit": "{{maxTracesPerTemplate}}"
+        }
+      },
+      "dependencies": [
+        "fetch_templates_with_metrics"
+      ],
+      "outputShapes": [
+        "executionTraceWithSignatures"
+      ],
+      "outputImpulses": [
+        "traces_signatures"
+      ],
+      "notes": "This shape was built precisely for the metadata-first / context-budget-conscious read path (activity-api/src/config.ts:219-223 and minibob's ImpulseCooccurrenceResolver). Each signature row carries (activity_template_id, status, duration_ms, per-impulse pointer/shape signatures, per-task input/output_impulse_ids) \u2014 enough for ranking and clustering, far less than a full trace body. Capped per template at maxTracesPerTemplate. CONTEXT BUDGET: maxTracesPerTemplate * coreSetSize ~= 100 rows per invocation; at ~300 tokens per signature row this is ~30K tokens of signal \u2014 well within a single-LLM-call budget for compute_load_bearing. SIMPLIFICATION: the pointer's filter shape (since, limit, success_only, min_duration_ms, activity_template_id) is documented in activity-api but the per-template cap is enforced server-side via the limit field \u2014 when the resolver does not honor a per-template grouping, the LLM in compute_load_bearing applies the cap defensively."
+    },
+    {
+      "id": "compute_load_bearing",
+      "description": "Rank templates by load-bearing score and emit a coreActivitySet impulse with the top-N (coreSetSize, default 20).",
+      "resolver": "llm",
+      "config": {
+        "prompt": "You are computing the load-bearing core of an activity registry from two signal sources.\n\nVARIABLES:\n- coreSetSize = {{coreSetSize}} (top-N to emit)\n- lookbackDays = {{lookbackDays}}\n\nSIGNAL 1 \u2014 TEMPLATES + THOMPSON METRICS (joined; per-template \u03b1/\u03b2/sample_count/last_executed_at):\n{{impulse:metrics_list}}\n\nSIGNAL 2 \u2014 RECENT TRACE SIGNATURES (last {{lookbackDays}} days, capped at {{maxTracesPerTemplate}} per template):\n{{impulse:traces_signatures}}\n\nCOMPUTE for each template in SIGNAL 1:\n- thompson_alpha (default 1.0 if missing)\n- thompson_beta (default 1.0 if missing)\n- recent_execution_count (count of trace signatures with this template_id; default 0 if traces_signatures is empty/error)\n- downstream_dependency_count (heuristic: when SIGNAL 1 carries task graphs, count OTHER templates whose tasks include {resolver: 'activity', config.templateId: <this id>}; otherwise default 0 and note in evidence.note)\n- last_executed_at (null if missing)\n\nSCORE formula:\n  score = thompson_alpha * recency_decay(last_executed_at, lookbackDays) * (1 + log(1 + downstream_dependency_count))\nwhere recency_decay returns 1.0 when last_executed_at is within lookbackDays/2, decays to 0.5 at lookbackDays, and is 0.1 when older or null.\n\nSORT by score DESC and take the top coreSetSize.\n\nOutput EXACTLY this JSON object (no markdown, no prose, no commentary):\n{\"coreSet\":[{\"templateId\":\"<id>\",\"rank\":<1-indexed>,\"score\":<number>,\"evidence\":{\"alpha\":<number>,\"beta\":<number>,\"recent_execution_count\":<number>,\"downstream_dependency_count\":<number>,\"last_executed_at\":\"<iso8601 or null>\",\"note\":\"<optional one-line degradation note when signals were missing>\"}}],\"degraded\":<true|false>,\"degradationReason\":\"<empty string when degraded=false; otherwise a one-line description of which signals were missing>\"}\n\nNo other fields. No commentary.",
+        "maxTokens": 2000
+      },
+      "dependencies": [
+        "fetch_recent_traces"
+      ],
+      "inputImpulses": [
+        "metrics_list",
+        "traces_signatures"
+      ],
+      "inputShapes": [
+        "activityTemplatesByMetrics",
+        "executionTraceWithSignatures"
+      ],
+      "outputShapes": [
+        "coreActivitySet"
+      ],
+      "outputImpulses": [
+        "core_set_result"
+      ],
+      "notes": "Inputs: templates_list, metrics_list, traces_signatures. Score formula (sketch \u2014 refine via ribosome over invocations): score = thompson_alpha * recency_decay(last_executed_at, lookbackDays) * (1 + log(1 + downstream_dependency_count)), where downstream_dependency_count is the number of templates that dispatch this template as a child via the `activity` resolver (computable from templates_list by scanning each template's tasks for resolver=='activity' + a config.templateId match). The `evidence` field on each entry carries the raw signals: {alpha, beta, recent_execution_count, downstream_count, last_executed_at}. SIMPLIFICATION: the canonical implementation would register a deterministic `template_load_bearing_scorer` resolver (no LLM call) that consumes the three impulses and emits a JSON ranking \u2014 that's a follow-up after enough scoring traces accumulate for ribosome extraction. For first ship, the LLM is bounded at maxTokens=2000 and instructed to output ONLY a structured JSON array. When traces_signatures is empty (no recent activity OR activity-api unreachable), the LLM falls back to ranking by Thompson \u03b1 + downstream_count alone and notes the degradation in evidence.note."
+    },
+    {
+      "id": "emit_audit_report",
+      "description": "LLM summarizes the audit into a human-readable auditReport impulse and emits a goalEnd-shaped completion (matching make-activity's emission contract at make-activity.json:declare_complete).",
+      "resolver": "llm",
+      "config": {
+        "prompt": "You are emitting the final audit report for a core-activity-audit invocation.\n\nINPUTS:\n- TEMPLATES + METRICS (joined): {{impulse:metrics_list}}\n- TRACES (signatures only): {{impulse:traces_signatures}}\n- CORE SET (computed in previous task): {{impulse:core_set_result}}\n\nProduce a structured audit report with these sections:\n1. registry_size \u2014 total templates seen, count with metrics, count with recent activity\n2. core_set \u2014 copy the top-N from core_set_result verbatim (already ranked)\n3. observations \u2014 array of {kind: 'promotion_candidate'|'prune_candidate'|'orphan'|'note', templateId, reason}\n   - promotion_candidate: alpha >> beta (alpha > 3*beta) AND downstream_dependency_count == 0 AND recent_execution_count >= 3\n   - prune_candidate: beta >> alpha (beta > 3*alpha) AND sample_count >= 5\n   - orphan: in templates list but NOT in metrics AND NOT in traces (never executed)\n   - note: anything else worth flagging in <= 1 sentence\n4. forward_pointers \u2014 list the sibling activities that consume coreActivitySet: review-activity, prune-activity, replace-activity, extract-pattern, concept-from-pattern (per OpenSpec change 2026-04-27-activity-registry-quality-pass)\n\nThen call the `markGoalComplete` tool with these structured args:\n- summary: 2-3 sentence description of what was audited and the headline finding (e.g. 'audited N templates, top M carry P% of executions, K candidates flagged for prune in follow-up')\n- achievedShapes: ['coreActivitySet', 'auditReport']\n- evidence: array of {kind: 'impulse', ref: <impulse-id>, observation: <short note>}\n\nOutput EXACTLY this JSON object representing the tool call (no markdown, no prose):\n{\"text\":\"<summary>\",\"achievedShapes\":[\"coreActivitySet\",\"auditReport\"],\"evidence\":[<evidence rows>],\"goalSucceeded\":<true|false>,\"completedAt\":\"<ISO-8601>\",\"auditReport\":{\"registry_size\":{...},\"core_set\":[...],\"observations\":[...],\"forward_pointers\":[...]}}\n\nNo other fields. No commentary.",
+        "maxTokens": 3000,
+        "_tool_note": "Same prompt-enforced markGoalComplete contract as make-activity.json:declare_complete (see make-activity openQuestions[5]). When a per-task tool registry hook lands, tighten this to a true tool call."
+      },
+      "dependencies": [
+        "compute_load_bearing"
+      ],
+      "inputImpulses": [
+        "metrics_list",
+        "traces_signatures",
+        "core_set_result"
+      ],
+      "inputShapes": [
+        "coreActivitySet"
+      ],
+      "outputShapes": [
+        "auditReport",
+        "goalEnd"
+      ],
+      "outputImpulses": [
+        "audit_report_result"
+      ],
+      "notes": "The auditReport contains: registry size summary, the coreSet (top-N from compute_load_bearing), notable observations (e.g. templates with \u03b1 >> \u03b2 but low downstream_count \u2192 candidates for promotion; templates with \u03b2 >> \u03b1 \u2192 candidates for prune-activity in a follow-up invocation), and a forward-pointer block listing the sibling activities (review-activity, prune-activity, replace-activity, extract-pattern, concept-from-pattern) that consume coreActivitySet. SIMPLIFICATION: the markGoalComplete tool contract is prompt-enforced (per make-activity's openQuestions[5]); a deterministic `audit_report_synthesizer` resolver that takes structured inputs and emits the impulse without an LLM call is a post-ship ribosome extraction."
+    }
+  ],
+  "metadata": {
+    "created": "2026-04-27",
+    "author": "activity-registry-quality-pass",
+    "embedded": true,
+    "bootstrapTemplate": false,
+    "openSpec": "2026-04-27-activity-registry-quality-pass",
+    "readOnly": true,
+    "shapeNotes": {
+      "preexisting": [
+        "activityTemplate",
+        "activityMetrics",
+        "activityTemplatesByMetrics",
+        "executionTraceWithSignatures",
+        "templateRegistry",
+        "goalEnd"
+      ],
+      "newOrInformal": [
+        "coreActivitySet \u2014 output of this activity; not yet a registered resolver, so consumers read it from the impulse pool by id (core_set_result). Will become a registered shape if/when activity-api adds a server-side resolver.",
+        "auditReport \u2014 output of this activity; same status as coreActivitySet. The proposal mentions an existing templateAuditReport (per-template deficiency report); coreActivitySet+auditReport are different \u2014 registry-wide ranking + summary, not per-template deficiency."
+      ]
+    },
+    "openQuestions": [
+      "RECENT-TRACE PER-TEMPLATE GROUPING: the executionTraceWithSignatures pointer's `limit` field is enforced globally, not per-template. fetch_recent_traces passes maxTracesPerTemplate as the limit, which means the slice may not include every template's traces. SIMPLIFICATION for first ship: the LLM in compute_load_bearing handles missing-trace templates gracefully (recency_decay falls back to last_executed_at from metrics_list). FOLLOW-UP: extend the pointer to accept `per_template_limit` server-side, OR fan out one resolver call per top-K-from-metrics template_id (would close this gap at the cost of N round trips).",
+      "DOWNSTREAM-DEPENDENCY COUNT: computed by the LLM by scanning templates_list task graphs for resolver=='activity' references. This is O(templates*tasks) inside an LLM call \u2014 fine for templatesLimit=500 but degrades at registry scale. FOLLOW-UP: extend activity-api's templateAuditReport (or add a sibling shape) that pre-computes downstream_dependency_count server-side via SurrealDB graph traversal.",
+      "LOAD-BEARING SCORE FORMULA: the formula in compute_load_bearing is a placeholder, refinable via ribosome over invocations. The recency_decay piecewise function is intentionally simple (1.0 at <half-window, 0.5 at full window, 0.1 beyond) to avoid hyperparameter sensitivity. After enough invocations accumulate, ribosome can extract a learned weighting from the observations field of subsequent auditReports.",
+      "TEMPLATE-LEVEL SAMPLING: with templatesLimit=500 and a registry of ~2,500, this activity sees ~20% of templates per invocation. The current pointer does not support cursor-based pagination at the impulse layer. FOLLOW-UP: pagination loop activity that drives core-activity-audit across the full registry in chunks of 500. Out-of-scope for this spec; flagged in proposal.md."
+    ],
+    "limitations": [
+      "Read-only \u2014 emits coreActivitySet and auditReport impulses but does NOT mutate the registry. Pruning, replacement, and concept promotion are sibling activities in this spec's roadmap (review-activity, prune-activity, replace-activity, extract-pattern, concept-from-pattern).",
+      "Trace inputs are SIGNATURES, not bodies \u2014 score reasoning operates on pointer/shape signatures, per-task input/output_impulse_ids, status, and duration. Anything requiring trace body inspection (e.g. extracting tool-call arguments, reading prompt text) belongs in a downstream activity (likely extract-pattern).",
+      "Load-bearing score is heuristic and refineable; the first invocation establishes a baseline that ribosome can refine. Treat the first coreSet as informative-not-canonical; cross-check against the headline observations in auditReport.",
+      "downstream_dependency_count counts STATIC dispatch references (resolver=='activity' with a literal templateId in config). Dynamic dispatch (selection by Thompson Sampling at runtime) is NOT counted at the template level \u2014 it shows up in trace signatures instead, and is therefore captured implicitly via recent_execution_count.",
+      "When activity-api is unreachable, fetch_metrics and fetch_recent_traces emit empty/error impulses; compute_load_bearing degrades to ranking by template count alone with degraded=true in the output. The trace still records \u2014 ribosome can learn from the failure_mode."
+    ],
+    "outputContract": "Always emits a `coreActivitySet` impulse via compute_load_bearing and an `auditReport` impulse via emit_audit_report. The emit_audit_report task additionally emits a `goalEnd` impulse matching make-activity's emission contract \u2014 this is intentional so that goal-processing-activity-driven dispatching core-activity-audit as a sub-goal sees explicit completion.",
+    "subscriberContract": "Not a lifecycle subscriber. This activity is dispatched explicitly \u2014 typically by a registry-quality orchestrator (sibling activity, not yet authored), OR directly by the workbench's 'audit registry' affordance (also not yet authored), OR by a boredom task that runs the audit on a schedule.",
+    "spec_reference": "OpenSpec change 2026-04-27-activity-registry-quality-pass. Sibling spec to 2026-04-27-meta-activity-builder (which is verified end-to-end on canary 2026-04-27 12:38 UTC). The remaining five activities in this spec's roadmap (review-activity, prune-activity, replace-activity, extract-pattern, concept-from-pattern) consume coreActivitySet and will be authored once the first invocation produces real signal."
+  }
+}

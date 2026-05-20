@@ -1,0 +1,193 @@
+{
+  "id": "debug-failing-audit",
+  "name": "Debug Failing Audit (test-audit-loop)",
+  "description": "LLM-classified failure handler for failed test_audit_report impulses (OpenSpec 2026-05-18-test-audit-loop §D). Subscribes to lifecycle:execution:succeeded filtered by output_shapes ∋ 'test_audit_report' AND passed === false. Three tasks: (1) classify_failure — LLM resolver categorises the failure into one of {audit_insensitive, audit_noisy, audit_misaligned, audit_record_incomplete}; (2) propose_modification — LLM resolver produces a structured code_modification_proposal { target_file, diff, risk_tier, risk_assessment ∈ {low,medium,high}, rationale }; (3) route_proposal — deterministic routing: risk_tier='test_only' (path confined to validation/scripts/) emits a code_modification_proposal for the auto-merge lane; any path outside validation/scripts/ emits a system_modification_proposal; low verification_confidence falls through to the standard HumanResolver tier via human_review_request — NOT a new audit-specific escalation surface (spec Requirement R4). The proposal carries supersedes: [...] of prior unmerged proposals for the same test, plus a lifecycle dedupe key of (test_registration_id, audit_subtype) so concurrent dispatches collapse to one proposal.",
+  "category": "meta",
+  "version": "0.1.0",
+  "tags": [
+    "lifecycle",
+    "meta",
+    "audit",
+    "debug",
+    "test.audit.loop"
+  ],
+  "subscription": {
+    "shape": "lifecycle:execution:succeeded",
+    "filter": {
+      "output_shapes_contains": "test_audit_report",
+      "passed_equals": false
+    },
+    "dedupe_key": "{test_registration_id}:{audit_subtype}"
+  },
+  "input_shapes": [
+    {
+      "shape": "test_audit_report",
+      "predicate": { "passed": false }
+    }
+  ],
+  "output_shapes": [
+    "code_modification_proposal",
+    "system_modification_proposal",
+    "human_review_request"
+  ],
+  "variables": [
+    {
+      "name": "lifecycle",
+      "type": "object",
+      "required": false,
+      "description": "Set by the lifecycle dispatcher to the execution:succeeded payload. Carries executionId of the audit producing the failed test_audit_report plus parentDepth/composition_chain for the depth-2 recursion cap (audits of audits cap at depth 2, same as audit-test-report). debug-failing-audit itself does not invoke audit-test-report so the cap is inherited rather than re-checked here."
+    },
+    {
+      "name": "test_audit_report_id",
+      "type": "string",
+      "required": false,
+      "description": "Impulse id of the failing test_audit_report. Derived from lifecycle.output_impulse_ids when invoked via subscription; pass explicitly for ad-hoc/workbench dispatches."
+    },
+    {
+      "name": "verification_threshold",
+      "type": "number",
+      "required": false,
+      "default": 0.6,
+      "description": "verification_confidence below this routes through human_review_request (HumanResolver tier). Spec Requirement R4: this is the SAME gate any other activity uses — no audit-specific human-escalation surface."
+    },
+    {
+      "name": "debugLLMModel",
+      "type": "string",
+      "required": false,
+      "default": "claude-sonnet-4-20250514",
+      "description": "Model used by classify_failure + propose_modification. Sonnet-tier (vs Haiku for audit-test-report) because proposing a code modification needs deeper reasoning about the failure mode."
+    }
+  ],
+  "tasks": [
+    {
+      "id": "fetch_audit_report",
+      "description": "Fetch the failing test_audit_report. The downstream classifier needs the validation_results[] (which check failed), the failed_evidence.audit_subtype (classifier seed), and the originating test_registration_id + test_report_id (so propose_modification can target the right file).",
+      "resolver": "impulse-resolve",
+      "config": {
+        "pointer": {
+          "type": "test_audit_report",
+          "limit": 1
+        },
+        "_filter": {
+          "id": "{{test_audit_report_id}}"
+        }
+      },
+      "inputShapes": [
+        "lifecycle:execution:succeeded"
+      ],
+      "outputShapes": [
+        "test_audit_report"
+      ],
+      "outputImpulses": [
+        "fetch_audit_report_result"
+      ],
+      "notes": "The test_audit_report shape (Phase A) supports filtering by test_registration_id, test_report_id, and passed. id-level lookup is done via the _filter side-channel that the resolver narrows post-fetch when needed. When the lookup returns zero rows the downstream tasks short-circuit via the standard 'empty input impulse' propagation."
+    },
+    {
+      "id": "classify_failure",
+      "description": "LLM classifier: read the failed test_audit_report and confirm or refine its failed_evidence.audit_subtype. The audit's deterministic checks already proposed a subtype (record_incomplete > insensitive > noisy > misaligned per the compose_audit_report priority); the LLM either confirms or upgrades based on the validation_results details. Emits a validation_result impulse with failure_mode = verifier_negative carrying the final audit_subtype.",
+      "resolver": "llm",
+      "prompt": {
+        "template": "You are classifying a failed test audit. Read the test_audit_report and the underlying validation_results to confirm or refine the audit_subtype.\n\nFailed audit report (JSON): {{impulse:fetch_audit_report_result}}\n\nThe audit's compose step already proposed `failed_evidence.audit_subtype`. Your job: either confirm or upgrade (never downgrade) the classification based on what the four validation_results actually say.\n\nValid subtypes (verifier_negative extensions — closed list):\n- audit_record_incomplete: assertions don't reference impulse ids / trace events; witness counts mismatch declared witness_types; decision record schema invalid.\n- audit_insensitive: perturbations do not move the test outcome as predicted (expected pass→fail observed pass→pass, or expected_delta non-trivial but observed_delta≈0 across runs).\n- audit_noisy: outcomes flip without input change, or observed_delta has high variance across runs at the same perturbation.\n- audit_misaligned: the discrimination_claim is not plausible against the declared IAL criterion (review_alignment_claim returned plausible=false).\n\nEmit EXACTLY this JSON object:\n{\n  \"audit_subtype\": \"<one of the four>\",\n  \"confidence\": <0..1>,\n  \"rationale\": \"<one sentence>\",\n  \"failure_mode\": {\n    \"type\": \"verifier_negative\",\n    \"reason\": \"audit_failed\",\n    \"validator_id\": \"debug-failing-audit.classify_failure\",\n    \"failed_evidence\": [{\n      \"check_id\": \"classify_failure\",\n      \"details\": \"<short summary with audit_subtype tag>\"\n    }]\n  }\n}",
+        "model": "{{debugLLMModel}}",
+        "maxTokens": 500,
+        "budgetUsd": 0.10
+      },
+      "dependencies": ["fetch_audit_report"],
+      "inputImpulses": ["fetch_audit_report_result"],
+      "inputShapes": [
+        "test_audit_report"
+      ],
+      "outputShapes": [
+        "validation_result"
+      ],
+      "outputImpulses": [
+        "classify_failure_result"
+      ],
+      "notes": "The audit_subtype lives inside failed_evidence per spec §F — the top-level failure_mode.type remains 'verifier_negative'. The closed five-type enumeration in validators-and-failure-modes/failure-mode-taxonomy/spec.md is preserved."
+    },
+    {
+      "id": "propose_modification",
+      "description": "LLM proposes a concrete code modification: target_file, unified diff, and risk_assessment ∈ {low, medium, high}. The audit_subtype drives the proposal shape: insensitive → tighten the test assertion to read more deeply (typically a trace-id or impulse-id reference); noisy → reduce variance (deterministic seed, tighter input bounds); misaligned → rewrite the discrimination_claim or refactor the test; record_incomplete → add the missing decision-record fields. risk_tier is derived deterministically by route_proposal from the target_file path; the LLM only proposes the diff + risk_assessment.",
+      "resolver": "llm",
+      "prompt": {
+        "template": "You are proposing a code modification for a failing test audit.\n\nClassification (JSON): {{impulse:classify_failure_result}}\nFailed audit report (JSON): {{impulse:fetch_audit_report_result}}\n\nPropose ONE concrete modification. Default target is the test file itself (validation/scripts/<test_id>.ts when test_id is a validation script). Only target system code (outside validation/scripts/) when the failure is clearly an under-instrumented system path (rare).\n\nAudit-subtype-specific guidance:\n- audit_record_incomplete: add the missing decision-record references — every assertion should cite an impulse id or trace event.\n- audit_insensitive: tighten assertions so the perturbation actually flips the outcome (e.g. check a specific tool-call argument, not just goal completion).\n- audit_noisy: pin nondeterministic inputs (seeds, time, random sampling). Document the noise source in the rationale.\n- audit_misaligned: rewrite the discrimination_claim or refactor the test so the claim and the test actually match.\n\nEmit EXACTLY this JSON object:\n{\n  \"target_file\": \"<path, absolute or repo-relative>\",\n  \"diff\": \"<unified-diff string>\",\n  \"risk_assessment\": \"low|medium|high\",\n  \"rationale\": \"<2-3 sentences explaining what changes and why>\",\n  \"verification_confidence\": <0..1>\n}",
+        "model": "{{debugLLMModel}}",
+        "maxTokens": 1500,
+        "budgetUsd": 0.20
+      },
+      "dependencies": ["classify_failure"],
+      "inputImpulses": [
+        "classify_failure_result",
+        "fetch_audit_report_result"
+      ],
+      "inputShapes": [
+        "validation_result"
+      ],
+      "outputShapes": [
+        "code_modification_proposal"
+      ],
+      "outputImpulses": [
+        "propose_modification_result"
+      ],
+      "notes": "risk_assessment is independent of risk_tier — assessment is the LLM's confidence in the change correctness; risk_tier is computed by route_proposal from the target_file path. A 'low' risk_assessment on a system-code modification still becomes a system_modification_proposal (not auto-mergeable) because the file path is outside validation/scripts/. The verification_confidence field gates the human_review_request branch (spec Requirement R4); when below verification_threshold the proposal routes to HumanResolver."
+    },
+    {
+      "id": "route_proposal",
+      "description": "Deterministic routing per spec §D and Requirement R4. Reads the LLM's proposal + verification_confidence; the SAME verification_confidence < threshold gate any other activity uses routes to human_review_request, otherwise the proposal emits as code_modification_proposal (risk_tier='test_only' when target_file lives under validation/scripts/) or system_modification_proposal (target_file outside validation/scripts/). Carries supersedes: [...] of any prior unmerged proposals for the same (test_registration_id, audit_subtype) so auto-merge picks the newest non-superseded entry.",
+      "resolver": "impulse-resolve",
+      "config": {
+        "pointer": {
+          "type": "code_modification_proposal_write",
+          "proposalData": {
+            "source_audit_report_id": "{{test_audit_report_id}}",
+            "test_registration_id": "__derived_from_audit_report__",
+            "target_file": "{{impulse:propose_modification_result.target_file}}",
+            "diff": "{{impulse:propose_modification_result.diff}}",
+            "risk_tier": "__derived_from_target_file__",
+            "risk_assessment": "{{impulse:propose_modification_result.risk_assessment}}",
+            "classification": "{{impulse:classify_failure_result.audit_subtype}}",
+            "rationale": "{{impulse:propose_modification_result.rationale}}",
+            "supersedes": "__derived_from_prior_proposals__",
+            "verification_confidence": "{{impulse:propose_modification_result.verification_confidence}}"
+          }
+        },
+        "_routing": {
+          "verification_threshold": "{{verification_threshold}}",
+          "low_confidence_emit_shape": "human_review_request",
+          "test_only_prefix": "validation/scripts/",
+          "system_code_emit_shape": "system_modification_proposal",
+          "dedupe_key": "{test_registration_id}:{audit_subtype}"
+        }
+      },
+      "dependencies": ["propose_modification"],
+      "inputImpulses": [
+        "propose_modification_result",
+        "classify_failure_result",
+        "fetch_audit_report_result"
+      ],
+      "inputShapes": [
+        "code_modification_proposal"
+      ],
+      "outputShapes": [
+        "code_modification_proposal",
+        "system_modification_proposal",
+        "human_review_request"
+      ],
+      "outputImpulses": [
+        "route_proposal_result"
+      ],
+      "notes": "Three branches per spec Requirement R4:\n  1. verification_confidence < verification_threshold → emit human_review_request (HumanResolver tier — the standard low-confidence gate, NOT an audit-specific escalation). The proposal is still persisted via code_modification_proposal_write so the human reviewer has a concrete artifact, but the routing impulse on the wire is human_review_request.\n  2. target_file starts with 'validation/scripts/' → risk_tier='test_only', emit code_modification_proposal (auto-merge lane per design.md §D.3).\n  3. otherwise → risk_tier mirrors risk_assessment (low/medium/high), emit system_modification_proposal.\n\nThe _routing block is read by the dispatcher to determine which output shape to surface; the underlying write always goes to code_modification_proposal_write so the proposal persists regardless of routing.\n\nThe supersedes array is computed by a read-side query against prior code_modification_proposal rows matching (test_registration_id, classification) — the deduplication is at PROPOSAL level (carry forward unmerged predecessors) rather than at DISPATCH level (which is handled by the subscription dedupe_key). spec §H concurrency contract: concurrent dispatches with the same dedupe_key collapse to one proposal at the subscription layer; supersedes covers sequentially-emitted proposals across multiple audit cycles."
+    }
+  ],
+  "metadata": {
+    "created": "2026-05-18",
+    "author": "test-audit-loop",
+    "embedded": true,
+    "openSpec": "2026-05-18-test-audit-loop",
+    "subscriberContract": "subscription.shape = 'lifecycle:execution:succeeded' with filter output_shapes_contains = 'test_audit_report' AND passed === false. dedupe_key = '{test_registration_id}:{audit_subtype}' — concurrent dispatches (e.g. weekly probe + ad-hoc audit) collapse to ONE proposal per (test, subtype) per dispatch window per spec §H.",
+    "outputContract": "Emits EXACTLY ONE of three shapes per dispatch (spec Requirement R4): code_modification_proposal (test_only or low/medium/high risk, when verification_confidence ≥ threshold), system_modification_proposal (target outside validation/scripts/, when confidence ≥ threshold), or human_review_request (when confidence < threshold). The human_review_request branch routes through the standard HumanResolver tier — NOT a new audit-specific escalation path.",
+    "auditSubtypeContract": "classify_failure refines the audit_subtype within failed_evidence (verifier_negative subtype), never introducing a new top-level failure_mode.type. The closed five-type enumeration is preserved (spec §F).",
+    "recursionCap": "debug-failing-audit does not invoke audit-test-report directly, so the depth-2 cap is enforced upstream in audit-test-report's compose_audit_report task. Meta-audits of meta-audits (depth 3+) are rejected with safety_breach at the audit-test-report dispatch, never reaching this template."
+  }
+}

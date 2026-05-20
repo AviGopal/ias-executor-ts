@@ -5,3 +5,4 @@ export * from "./resolvers";
 export * from "./runtime";
 export * from "./engine";
 export * from "./lifecycle-subscriber";
+export * from "./templates";

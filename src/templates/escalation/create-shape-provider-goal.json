@@ -1,0 +1,275 @@
+{
+  "id": "create-shape-provider-goal",
+  "name": "Create Shape-Provider Goal (shape-provider-goal-creation)",
+  "description": "Activity-driven implementation of shape-provider goal creation per OpenSpec change 2026-04-26-shape-provider-goal-creation \u00a73. When a missing input shape cannot be bound by pool selection or in-scope producer selection, this activity composes a NEW goal-shaped impulse whose `endpoint_output_shapes: [target_shape]` constraint will route the dispatched activity to a producer of that shape via the existing variant-selection pipe (goal-processing-activity-driven). Five signal-gathering tasks (forward-chain producers, prior paths with terminal-shape match, concept-db related concepts, impulse co-occurrence ranking, cost/risk priors) accumulate evidence; the parent-chain lookup task surfaces the parent execution's composition_chain for cycle detection; a final LLM compose_goal task ingests all signals and emits a single goal-shaped impulse. Three recursion-safety guards (depth, cycle, budget) are embedded in the compose_goal LLM prompt and surface as `human_in_the_loop_required: true` plus a `failure_mode` per the validators-and-failure-modes taxonomy. The activity itself records traces for Thompson Sampling \u2014 variants (cost-optimized, concept-omitted, etc.) emerge from the learning loop via save-as-variant.",
+  "category": "meta",
+  "version": "0.1.0",
+  "tags": [
+    "meta",
+    "goal",
+    "shape.provider",
+    "shape.provider.goal.creation",
+    "recursive",
+    "subgoal"
+  ],
+  "variables": [
+    {
+      "name": "target_shape",
+      "type": "string",
+      "required": true,
+      "description": "The missing impulse shape that the emitted sub-goal must produce. Becomes `endpoint_output_shapes: [target_shape]` on the goal-shaped output impulse, which the downstream variant-selection step uses as a hard constraint when picking a dispatched activity."
+    },
+    {
+      "name": "parent_goal_text",
+      "type": "string",
+      "required": true,
+      "description": "The parent goal's human-readable text. Provides semantic context to the LLM composer so the sub-goal text references the ancestor intent (e.g. 'as part of <parent>, produce <shape>' rather than just 'produce <shape>')."
+    },
+    {
+      "name": "available_shapes",
+      "type": "array",
+      "required": false,
+      "default": [],
+      "description": "Shapes already bound in the parent's impulse pool. Feeds the impulse_cooccurrence task \u2014 which of these historically co-occur as inputs to producers of `target_shape`? \u2014 so the composed goal text can hint at which existing impulses to surface to the sub-goal's producer."
+    },
+    {
+      "name": "parent_execution_id",
+      "type": "string",
+      "required": false,
+      "description": "Execution id of the parent activity whose missing-shape signal triggered this sub-goal. Used by the parent_chain_lookup task to resolve the parent's `composition_chain` (denormalized ancestor chain, root-first; see CLAUDE.md \u00a7Execution Trace Model) for cycle detection. When omitted (e.g. top-level invocations from the workbench), cycle detection short-circuits to 'no cycle possible' and the depth guard alone gates recursion."
+    },
+    {
+      "name": "parent_depth",
+      "type": "number",
+      "required": false,
+      "default": 0,
+      "description": "Recursion depth of the parent. The emitted goal sets `depth: parent_depth + 1`. The depth guard in compose_goal sets `human_in_the_loop_required: true` AND `failure_mode.type: 'safety_breach'` (breach_type='depth') when `(parent_depth + 1) > max_recursion_depth`."
+    },
+    {
+      "name": "remaining_budget_usd",
+      "type": "number",
+      "required": false,
+      "description": "USD budget remaining for the parent's overall execution. The budget guard in compose_goal sets `human_in_the_loop_required: true` AND `failure_mode.type: 'budget_exhausted'` when the cheapest known producer's `avg_cost_usd` (signal 5) exceeds `remaining_budget_usd / 2` \u2014 heuristic 'leave headroom for parent's other tasks'. When omitted, budget guard is disabled."
+    },
+    {
+      "name": "max_recursion_depth",
+      "type": "number",
+      "required": false,
+      "default": 3,
+      "description": "Hard ceiling on `depth`. Default 3 matches the design.md guard (`max_depth_default`). Configurable via this variable so org policies can tighten or loosen the bound; raising it should be a deliberate decision visible in the dispatch call."
+    }
+  ],
+  "tasks": [
+    {
+      "id": "forward_chain_producers",
+      "description": "Signal 1 \u2014 query the Thompson-Sampling backend for activities that produce `target_shape`.",
+      "resolver": "activity_recommendation",
+      "config": {
+        "limit": 5,
+        "minSuccessRate": 0.0,
+        "_target_shape_note": "target_shape (variable) is not directly forwarded to the backend recommend route as a `required_shapes` filter \u2014 that filter wiring is part of the spec's discover-by-shapes mode but the recommend route uses a goal-enrichment-shaped impulse to derive expected_output_shapes server-side. The downstream variant_selection step in goal-processing-activity-driven applies the shape filter on the client side (Investigation #5 fix, 2026-04-22). Future cleanup: register a `discover_by_shapes` resolver that forwards `required_shapes: [target_shape]` directly. Until then, callers of this template can rely on the cost_risk_priors task to retrieve metrics for whichever candidates come back, and compose_goal to filter by output_shape compatibility in the final synthesis."
+      },
+      "outputShapes": [
+        "activity_recommendations"
+      ],
+      "outputImpulses": [
+        "forward_chain_producers_result"
+      ],
+      "notes": "Uses `activity_recommendation` (registered template-dispatchable resolver) which wraps `POST /v2/activities/recommend`. SIMPLIFICATION (per spec pragmatic-decisions allowance): the spec calls for `discover-by-shapes` mode=forward with `required_shapes: [target_shape]` filter, but `activity_recommendation` is the existing template-dispatchable wrapper around the recommendation+Thompson path \u2014 `discover_by_shapes` has no template-dispatchable resolver wrapper today (`producer_selection` calls discover-by-shapes too but with mode=candidates_with_scores + missingShape, which gives the same set of producers with composition scores). The downstream cost_risk_priors task (signal 5) reads `activityMetrics` for the candidates returned here, and compose_goal can choose to proceed or escalate based on the candidates' confidence. When the backend is unreachable, the resolver emits an empty `activity_recommendations` impulse (metadata.empty=true) \u2014 the chain still completes; compose_goal then leans on signals 2-4 and the LLM to draft a more verbose goal text."
+    },
+    {
+      "id": "prior_paths_with_endpoint",
+      "description": "Signal 2 \u2014 query existing `goal_execution_paths` whose `endpoint_output_shapes` contains `target_shape` (the new denormalized field landed in migration 092 / spec sibling \u00a71).",
+      "resolver": "impulse-resolve",
+      "config": {
+        "pointer": {
+          "type": "goalExecutionPath",
+          "endpoint_output_shape": "{{target_shape}}",
+          "limit": 10
+        }
+      },
+      "outputShapes": [
+        "goal_execution_paths_subset"
+      ],
+      "outputImpulses": [
+        "prior_paths_with_endpoint_result"
+      ],
+      "notes": "LIMITATION: `goalExecutionPath` is NOT one of activity-api's advertised impulse shapes (see `repos/metabob-activity-api/src/config.ts:158-189`); the `/v2/goal-paths` REST endpoint exists but cannot be reached via the `impulse-resolve` template-dispatchable path. SIMPLIFICATION (per spec pragmatic-decisions allowance): we attempt the read via `impulse-resolve` with pointer.type='goalExecutionPath' so the chain is well-formed for the future when activity-api adds the case. Until then this task gracefully returns an error/empty content, which compose_goal handles defensively \u2014 empty signal 2 just means 'no prior path closed this shape gap; lean harder on signals 1/3/4'. Filter parameters (`endpoint_output_shape: target_shape`) are forwarded as pointer fields for forward compatibility."
+    },
+    {
+      "id": "concept_lookup",
+      "description": "Signal 3 \u2014 query concept-db for concepts related to `target_shape`.",
+      "resolver": "impulse-resolve",
+      "config": {
+        "pointer": {
+          "type": "relatedConcepts",
+          "concept_id": "{{target_shape}}",
+          "direction": "both",
+          "limit": 10
+        }
+      },
+      "outputShapes": [
+        "related_concepts"
+      ],
+      "outputImpulses": [
+        "concept_lookup_result"
+      ],
+      "notes": "LIMITATION: concept-db's `relatedConcepts` shape requires `pointer.concept_id` (a specific concept's id) \u2014 there is no `relatedConcepts-by-shape-name` endpoint; you'd need to resolve target_shape to a concept_id first (e.g. via concept-db's search route, which is not exposed as an advertised impulse shape). SIMPLIFICATION (per spec pragmatic-decisions allowance): we issue the resolve with `concept_id: target_shape` as a best-effort lookup \u2014 concept-db treats unknown ids gracefully (returns 404 / empty) and the chain continues. The compose_goal task treats an empty/error response as 'no concept context available' \u2014 not a failure. Future fix: register a concept-search-by-name shape (e.g. `conceptSearch` with `pointer.shape_name`) and route through that instead. The signal is enrichment for the LLM composer, not a hard requirement; signals 1+2+4+5 carry the load when 3 is empty."
+    },
+    {
+      "id": "cooccurrence_signal",
+      "description": "Signal 4 \u2014 `impulse_cooccurrence` extractor.",
+      "resolver": "impulse_cooccurrence",
+      "config": {
+        "traces": [],
+        "_producer_ids_note": "Spec \u00a73.5 calls for consuming producer ids from forward_chain_producers and `available_shapes`. The resolver's contract today consumes a trace array, not producer ids \u2014 producer ids are an upstream signal that would be used when fetching the relevant traces. The producer ids and available_shapes are wired into the compose_goal prompt via {{impulse:forward_chain_producers_result}} and {{available_shapes}}; the LLM cross-references them with signal 4's matrix when present.",
+        "_available_shapes_note": "available_shapes is forwarded to the LLM composer via {{available_shapes}}, not to this resolver, because the resolver's input shape is a trace array. See description for the future-fix path."
+      },
+      "dependencies": [
+        "forward_chain_producers"
+      ],
+      "optionalInputShapes": [
+        "activity_recommendations"
+      ],
+      "outputShapes": [
+        "cooccurrence_ranking",
+        "impulseCooccurrenceMatrix"
+      ],
+      "outputImpulses": [
+        "cooccurrence_signal_result"
+      ],
+      "notes": "Identifies which of the parent's `available_shapes` historically co-occur as inputs to producers of `target_shape`. The resolver is deterministic and stateless (see ImpulseCooccurrenceResolver) \u2014 given execution traces it pair-counts same-task co-occurrence of impulse signatures. SIMPLIFICATION: the resolver expects traces on `config.traces` or as a JSON-serialised input impulse; it does NOT itself fetch traces from the backend. Without an upstream task that fetches `executionTraceWithSignatures` keyed by target_shape, this resolver runs over an empty trace set and emits an empty cooccurrence matrix \u2014 that's a structurally-valid no-op which compose_goal handles defensively (empty signal 4 = no cooccurrence hint; LLM composer relies on signals 1/2/3/5 + parent_goal_text). Future fix: prepend a task that calls `impulse-resolve` with `pointer.type='executionTraceWithSignatures'` filtered by activity output_shape=target_shape, then feed the result here as an input impulse. Out of scope per spec \u00a73.5 which only requires producer ids + available_shapes (we forward both via config so a future refactor can wire trace fetching in without changing this template's signal-output contract)."
+    },
+    {
+      "id": "cost_priors",
+      "description": "Signal 5a \u2014 fetch `activityMetrics` for the producer candidates from signal 1.",
+      "resolver": "impulse-resolve",
+      "config": {
+        "pointer": {
+          "type": "activityMetrics",
+          "activityId": "unknown"
+        }
+      },
+      "dependencies": [
+        "forward_chain_producers"
+      ],
+      "optionalInputShapes": [
+        "activity_recommendations"
+      ],
+      "outputShapes": [
+        "cost_summary"
+      ],
+      "outputImpulses": [
+        "cost_priors_result"
+      ],
+      "notes": "The pointer requires `activityId` (singular) per `activity-api/src/routes/impulses.ts:852-883`; SIMPLIFICATION (per spec pragmatic-decisions allowance and infra gap B 'no foreach over arrays'): we issue ONE metrics resolve at the top of the cost stream and let the compose_goal LLM cross-reference per-candidate `avg_cost_usd` it sees in `forward_chain_producers_result` (the recommend route returns `metrics.confidence`, `metrics.success_rate`, etc. inline). When a future foreach primitive lands, expand this into a per-candidate metrics fetch. The hardcoded `activityId: 'unknown'` is a deliberate no-op anchor \u2014 the compose_goal prompt reads cost from `forward_chain_producers_result` instead and treats this task's output as a structural placeholder. Documents the spec intent without fabricating an arbitrary candidate id."
+    },
+    {
+      "id": "risk_priors",
+      "description": "Signal 5b \u2014 fetch `toolRiskProfile` for the producer candidates from signal 1.",
+      "resolver": "impulse-resolve",
+      "config": {
+        "pointer": {
+          "type": "toolRiskProfile",
+          "limit": 50
+        }
+      },
+      "dependencies": [
+        "forward_chain_producers"
+      ],
+      "optionalInputShapes": [
+        "activity_recommendations"
+      ],
+      "outputShapes": [
+        "risk_summary"
+      ],
+      "outputImpulses": [
+        "risk_priors_result"
+      ],
+      "notes": "PARALLEL to cost_priors (both depend on forward_chain_producers, neither depends on the other; the executor schedules them concurrently). The pointer accepts an optional `activityId` filter; when omitted, the route returns aggregated tool risk across the org. We send the unfiltered query \u2014 compose_goal cross-references with `forward_chain_producers_result` to spot high-risk tools per candidate. Same SIMPLIFICATION rationale as cost_priors: per-candidate per-tool fetching awaits a foreach primitive; meanwhile aggregated risk is a sufficient first-cut signal for compose_goal's heuristic 'any candidate carries destructive ops?' check."
+    },
+    {
+      "id": "parent_chain_lookup",
+      "description": "Cycle-detection precursor \u2014 fetch the parent execution's `composition_chain` (denormalized ancestor chain, root-first; see CLAUDE.md \u00a7Execution Trace Model).",
+      "resolver": "impulse-resolve",
+      "config": {
+        "pointer": {
+          "type": "activityExecutionTrace",
+          "executionId": "{{parent_execution_id}}",
+          "includeImpulses": false
+        }
+      },
+      "outputShapes": [
+        "activityExecutionTrace"
+      ],
+      "outputImpulses": [
+        "parent_chain_lookup_result"
+      ],
+      "notes": "The compose_goal task uses this chain to enforce the cycle guard (spec \u00a73.9): if any ancestor's `endpoint_output_shapes` contains `target_shape`, that ancestor is already trying to produce the shape and recursing would be redundant, so the goal is emitted with `human_in_the_loop_required: true` and `failure_mode.type: 'safety_breach'` (breach_type='cycle'). When `parent_execution_id` is empty (top-level invocations), the cycle guard short-circuits to 'no cycle possible' and the depth guard alone gates recursion. This task uses `impulse-resolve` with pointer.type='activityExecutionTrace'; the route requires `executionId` (see `repos/metabob-activity-api/src/routes/impulses.ts:719-724`) and returns 400 when omitted, so the lookup is best-effort: if `parent_execution_id` is empty/missing the resolver returns an error which compose_goal interprets as 'no parent chain available, cycle check skipped'."
+    },
+    {
+      "id": "compose_goal",
+      "description": "Final task \u2014 LLM composes the goal-shaped output impulse from all five signals plus the parent-chain context.",
+      "dependencies": [
+        "forward_chain_producers",
+        "prior_paths_with_endpoint",
+        "concept_lookup",
+        "cooccurrence_signal",
+        "cost_priors",
+        "risk_priors",
+        "parent_chain_lookup"
+      ],
+      "inputImpulses": [
+        "forward_chain_producers_result",
+        "prior_paths_with_endpoint_result",
+        "concept_lookup_result",
+        "cooccurrence_signal_result",
+        "cost_priors_result",
+        "risk_priors_result",
+        "parent_chain_lookup_result"
+      ],
+      "prompt": {
+        "template": "You are composing a SHAPE-PROVIDER GOAL impulse. The parent goal needs an impulse of shape `{{target_shape}}` but no producer is currently bound; your output is a NEW goal that, when dispatched, will route to an activity producing `{{target_shape}}`.\n\nINPUT CONTEXT:\n- target_shape: {{target_shape}}\n- parent_goal_text: {{parent_goal_text}}\n- available_shapes (parent's bound pool): {{available_shapes}}\n- parent_depth: {{parent_depth}}\n- max_recursion_depth: {{max_recursion_depth}}\n- remaining_budget_usd: {{remaining_budget_usd}}\n- parent_execution_id: {{parent_execution_id}}\n\nFIVE SIGNALS (each may be empty/error \u2014 handle defensively):\n1. Forward-chain producers (Thompson-ranked activities producing target_shape):\n{{impulse:forward_chain_producers_result}}\n\n2. Prior goal-execution paths with endpoint_output_shapes containing target_shape:\n{{impulse:prior_paths_with_endpoint_result}}\n\n3. Concept-db related concepts for target_shape:\n{{impulse:concept_lookup_result}}\n\n4. Impulse co-occurrence ranking (which available_shapes historically co-occur with target_shape inputs):\n{{impulse:cooccurrence_signal_result}}\n\n5a. Activity metrics (avg_cost_usd, success_rate per candidate):\n{{impulse:cost_priors_result}}\n\n5b. Tool risk profile (destructive-op detection per candidate's tools):\n{{impulse:risk_priors_result}}\n\nPARENT EXECUTION CONTEXT (for cycle detection):\n{{impulse:parent_chain_lookup_result}}\n\nTASK: Compose a single goal-shaped impulse as JSON. Apply ALL THREE recursion-safety guards in order; each guard, when triggered, sets `human_in_the_loop_required: true` AND populates `failure_mode` with the structured taxonomy from sibling change validators-and-failure-modes (migration 091). The guards do NOT block emission \u2014 the goal still emits, but with the human-gate flag set so the dispatcher can pause for review.\n\nGUARD 1 \u2014 DEPTH (spec \u00a73.8). Compute `depth = parent_depth + 1`. If `depth > max_recursion_depth`, set:\n- human_in_the_loop_required: true\n- failure_mode: {\"type\": \"safety_breach\", \"reason\": \"depth limit reached\", \"context\": {\"breach_type\": \"depth\", \"limit\": max_recursion_depth, \"ancestor_chain\": <composition_chain from parent_chain_lookup_result, or empty array if unavailable>}}\n\nGUARD 2 \u2014 CYCLE (spec \u00a73.9). When parent_chain_lookup_result is non-empty AND parsable as a trace, extract its `composition_chain` (ordered ancestor execution ids, root-first). For each ancestor execution, check whether its goal-shaped output impulse declares `endpoint_output_shapes` containing target_shape \u2014 that information lives in the trace's `output_impulses` / per-task output_impulse_ids fields if the impulses were embedded, or implicitly via the activity's declared output_shapes. If `target_shape` appears in any ancestor's endpoint_output_shapes, set:\n- human_in_the_loop_required: true\n- failure_mode: {\"type\": \"safety_breach\", \"reason\": \"cycle detected \u2014 ancestor already targets this shape\", \"context\": {\"breach_type\": \"cycle\", \"ancestor_chain\": <composition_chain>}}\n(NOTE: failure_mode.context.limit is OPTIONAL for the cycle case per the failure-mode taxonomy; omit the field when breach_type is 'cycle'.)\n\nWhen parent_chain_lookup_result is empty, errored, or parent_execution_id was absent, skip GUARD 2 \u2014 emit no failure_mode for cycle, no human gate from this guard.\n\nGUARD 3 \u2014 BUDGET (spec \u00a73.10). When remaining_budget_usd is a number AND signal 1 is non-empty, find the cheapest candidate's `avg_cost_usd` (from signal 5a if per-candidate, else from signal 1's `metrics.confidence`-adjacent fields, else estimate as median from signal 5a's aggregated cost). If `cheapest_avg_cost_usd > remaining_budget_usd / 2`, set:\n- human_in_the_loop_required: true\n- failure_mode: {\"type\": \"budget_exhausted\", \"reason\": \"cheapest producer exceeds half remaining budget\", \"context\": {\"budget_type\": \"cost\", \"consumed\": cheapest_avg_cost_usd, \"allowed\": remaining_budget_usd}}\n\nWhen remaining_budget_usd is null/undefined, skip GUARD 3.\n\nIf MULTIPLE guards trip, retain ALL their failure_mode entries \u2014 emit `failure_modes` as an array under that name AND set the top-level `failure_mode` to the FIRST tripped guard (in order: depth \u2192 cycle \u2192 budget) for backward compat with single-failure_mode consumers. (If only one trips, emit it as the single `failure_mode` field and omit `failure_modes`.)\n\nEMIT EXACTLY this JSON object (no markdown, no prose):\n{\n  \"text\": \"<2-4 sentence goal text composed from the signals; reference parent_goal_text where relevant; cite the strongest signal \u2014 typically a producer activity_id from signal 1 if confidence > 0.6, or a prior path from signal 2 \u2014 so a downstream LLM-driven decomposer has anchors>\",\n  \"category\": \"meta\",\n  \"target_shape\": \"{{target_shape}}\",\n  \"endpoint_output_shapes\": [\"{{target_shape}}\"],\n  \"available_shapes\": <available_shapes verbatim from inputs, or [] when empty>,\n  \"depth\": <parent_depth + 1>,\n  \"parent_execution_id\": \"<parent_execution_id from inputs, or null>\",\n  \"remaining_budget_usd\": <remaining_budget_usd from inputs, or null>,\n  \"human_in_the_loop_required\": <true if any guard tripped, else false>,\n  \"failure_mode\": <object per the guards above, or null when no guard tripped>,\n  \"failure_modes\": <array when multiple guards tripped, else omit this field>,\n  \"signals_summary\": {\n    \"top_producer\": \"<activity_id from signal 1 with highest confidence, or null>\",\n    \"top_producer_confidence\": <number 0..1, or null>,\n    \"prior_paths_count\": <integer count of paths from signal 2, or 0>,\n    \"related_concepts_count\": <integer count from signal 3, or 0>,\n    \"cooccurrence_top_shape\": \"<top co-occurring shape from signal 4, or null>\",\n    \"cheapest_producer_cost_usd\": <number, or null>\n  }\n}\n\nNo other fields. No commentary.",
+        "maxTokens": 4000
+      },
+      "outputShapes": [
+        "goal"
+      ],
+      "outputImpulses": [
+        "compose_goal_result"
+      ],
+      "notes": "The prompt enforces ALL THREE recursion-safety guards (depth, cycle, budget) inline because the existing template format does NOT support per-task validation rules that conditionally rewrite output fields, and expressing each guard as a separate task with its own conditional would multiply the dispatched-activity count for no behavioral gain. CHOICE: guards in the LLM prompt is the simplification documented in metadata.openQuestions. When a deterministic guard-evaluator resolver lands (or per-task validation rules with mutable output schema), the prompt-embedded guards can be lifted out without changing this template's external contract (the goal impulse it emits). The prompt outputs a single JSON object matching the goal-shape schema in design.md \u00a7Goal-as-shape-producer framing; the LLM is instructed to be defensive about empty/error signal inputs (signals 2-4 may be empty; signal 5a/5b may be aggregated rather than per-candidate)."
+    }
+  ],
+  "metadata": {
+    "created": "2026-04-26",
+    "author": "shape-provider-goal-creation",
+    "embedded": true,
+    "bootstrapTemplate": false,
+    "openSpec": "2026-04-26-shape-provider-goal-creation",
+    "openQuestions": [
+      "Validation-rule mechanism (spec \u00a73.8-\u00a73.10): the existing template format has no per-task validation rules that conditionally REWRITE output fields (it has `task.validation` for required files / forbidden patterns, but those reject the task; they don't transform the output JSON). Expressing each guard as a separate task with a `conditional` would split emission across multiple tasks and require a final merge step, which has no template-format primitive either. CHOICE made here: embed all three guards (depth, cycle, budget) in the compose_goal LLM prompt, since the LLM already has access to all the inputs the guards need (parent_depth, max_recursion_depth, parent_chain_lookup_result, remaining_budget_usd, signal 5 cost data). The LLM is instructed to be deterministic about the guard logic \u2014 the prompt enumerates the exact conditions and the exact failure_mode shapes per migration 091. FUTURE FIX: when a deterministic guard-evaluator resolver lands (e.g. `goal_guard_evaluator` taking depth/budget/chain inputs and emitting a guard_result impulse), the LLM prompt-embedded guards can be lifted out without changing this template's external contract (the goal-shape impulse it emits).",
+      "discover-by-shapes resolver: spec \u00a73.2 calls for `activity_recommendation` OR `producer_selection` with selectionMethod='deterministic' to query producers for target_shape. We use `activity_recommendation` because it's the more direct wrapper around the recommend+Thompson path; `producer_selection` is geared for slot-binding-style 'pick one to dispatch now' rather than 'enumerate candidates with metrics'. The forward-chain task does NOT pass target_shape as a `required_shapes` filter to the backend \u2014 the recommend route derives expected_output_shapes from the goal_enrichment-shaped input impulse server-side (see Investigation #5 fix in goal-processing-activity-driven). The downstream variant_selection step in the goal-processing chain applies output_shape compatibility on the client side. Future cleanup: register a `discover_by_shapes` resolver that forwards `required_shapes: [target_shape]` directly so this template can call it explicitly.",
+      "goalExecutionPath shape advertisement: spec \u00a73.3 calls for an `impulse-resolve` to activity-api with `pointer.type='goalExecutionPath'` filtered by endpoint_output_shape=target_shape (the new field from sibling \u00a71, migration 092). LIMITATION: `goalExecutionPath` is NOT in `repos/metabob-activity-api/src/config.ts:158-189` (advertised shapes). The case isn't yet wired in `repos/metabob-activity-api/src/routes/impulses.ts`. This template's signal 2 task issues the resolve regardless so the chain is well-formed for the future when activity-api adds the case; meanwhile the resolver returns an error/empty content which compose_goal handles defensively. Follow-up: add `goalExecutionPath` to `config.ts` advertised shapes and a case in `routes/impulses.ts` that queries `goal_execution_paths` filtered by `endpoint_output_shapes CONTAINS $shape`.",
+      "concept-db relatedConcepts pointer: spec \u00a73.4 calls for keying the lookup on `target_shape`. LIMITATION: concept-db's `relatedConcepts` shape requires `pointer.concept_id` (a specific concept's id), not a shape-name. There is no `relatedConcepts-by-shape-name` endpoint; resolving target_shape to a concept_id would require a separate concept-search call which isn't exposed as an advertised impulse shape. This template issues the resolve with `concept_id: target_shape` as a best-effort lookup \u2014 concept-db treats unknown ids gracefully (404 / empty), and compose_goal handles the error path. Follow-up: register a `conceptSearch` shape on concept-db with `pointer.shape_name`, OR have concept-db's relatedConcepts case accept either concept_id or shape_name with a documented precedence.",
+      "impulse_cooccurrence trace fetching: spec \u00a73.5 says 'config consumes producer ids from task 1 and available_shapes'. The `impulse_cooccurrence` resolver's actual contract is a trace array (inline `config.traces` or via input impulse parsing); it does NOT fetch traces from the backend. Without an upstream trace-fetching task, signal 4 runs over an empty trace set and emits an empty matrix. This is a structurally-valid no-op which compose_goal handles defensively. Follow-up: prepend a task that calls `impulse-resolve` with `pointer.type='executionTraceWithSignatures'` filtered by activity output_shape=target_shape, then pass the result as an input impulse to the cooccurrence task. Out of scope per the spec's strict 'producer ids + available_shapes' framing; producer ids are visible to compose_goal via the forward_chain_producers_result impulse and used in the LLM's reasoning regardless.",
+      "Per-candidate cost/risk fetching (spec \u00a73.6): the spec calls for two parallel `vessel_resolve_call`s keyed on producer ids from signal 1. The pointers (activityMetrics requires activityId; toolRiskProfile accepts optional activityId) require ONE id per resolve, but the template format has no foreach/map primitive (infra gap B). SIMPLIFICATION: cost_priors anchors with a placeholder activityId='unknown' (resolver returns 404, treated as empty by compose_goal); risk_priors uses the unfiltered route which returns aggregated risk across the org. compose_goal cross-references the candidates' inline metrics from forward_chain_producers_result (the recommend route returns metrics.confidence, success_rate per candidate inline) for the cheapest-producer cost calculation. Follow-up: when foreach lands, expand into a per-candidate metrics+risk fetch.",
+      "Cycle-detection ancestor inspection: spec \u00a73.9 says 'for each ancestor execution, read its goal-shaped output impulse'. The current parent_chain_lookup task fetches the immediate parent's full trace (which includes composition_chain \u2014 the ancestor list) but does NOT recursively fetch each ancestor's full trace + their goal impulses. SIMPLIFICATION: the compose_goal LLM is instructed to inspect whatever output_impulse shape data is present in the parent's trace (which embeds its own task outputs); for deeper-than-1 ancestor inspection it would need a multi-hop trace fetch which is N+1 problematic without a batch-resolve primitive. Conservative behaviour: when the immediate parent's output_impulses include target_shape, GUARD 2 trips. Multi-hop ancestor inspection is a follow-up; in practice depth>1 cycles are rare because the depth guard kicks in first (default max_recursion_depth=3).",
+      "failure_mode taxonomy alignment: the inline guards emit failure_mode objects matching migration 091 (failure_mode_taxonomy). When that migration's discriminated-union shape evolves, this template's compose_goal prompt MUST be updated to match \u2014 there's no schema validation on the LLM-emitted JSON beyond the structural shape implied by the prompt. Cross-spec coupling is documented in the design.md (this change is a consumer/emitter of validators-and-failure-modes' failure_mode shape).",
+      "Auto-dispatch vs human-only-dispatch policy (design.md \u00a7Cascade integration): this template emits the goal with `human_in_the_loop_required` populated by the guards. The DISPATCH policy (auto vs human-mediated) lives in the sibling impulse-binding-selection-layer's slot-binding meta-activity, not here. This template is a pure emitter; it does not call back into the dispatcher. The default in the design is human-only dispatch with auto-dispatch reserved for goals where `human_in_the_loop_required: false AND confidence_top_producer > 0.8 AND depth == 1`."
+    ],
+    "limitations": [
+      "Validation rules embedded in compose_goal LLM prompt rather than as standalone task validations \u2014 see openQuestions[0]. Guard logic lives in the prompt; the LLM applies depth/cycle/budget checks deterministically.",
+      "Forward-chain producers task uses activity_recommendation rather than a target_shape-filtered discover-by-shapes call \u2014 see openQuestions[1]. Shape filtering happens client-side downstream.",
+      "Signal 2 (prior_paths_with_endpoint) issues an impulse-resolve to a shape (`goalExecutionPath`) that is not yet advertised by activity-api \u2014 see openQuestions[2]. Best-effort lookup; compose_goal handles empty/error responses.",
+      "Signal 3 (concept_lookup) keys relatedConcepts on target_shape as a concept_id \u2014 see openQuestions[3]. Best-effort; falls back gracefully when target_shape is not a known concept_id.",
+      "Signal 4 (cooccurrence_signal) runs over empty traces because there's no upstream trace-fetcher \u2014 see openQuestions[4]. Emits empty cooccurrence matrix; compose_goal handles defensively.",
+      "Signal 5 (cost_priors / risk_priors) does NOT iterate per producer candidate \u2014 see openQuestions[5]. Aggregated/placeholder lookups; compose_goal cross-references with forward_chain_producers_result's inline metrics.",
+      "Cycle detection inspects only the immediate parent's trace, not the full ancestor chain's trace tree \u2014 see openQuestions[6]. Conservative since depth guard (default 3) bounds recursion before deep cycles can form.",
+      "failure_mode JSON shape is enforced by the LLM prompt, not by schema validation \u2014 see openQuestions[7]. Update the prompt when migration 091's taxonomy evolves."
+    ],
+    "subscriberContract": "Not a lifecycle subscriber. This activity is dispatched explicitly \u2014 typically by the impulse-binding-selection-layer slot-binding meta-activity when both pool selection and producer selection return unbindable=true, or directly by the workbench's spawn-subgoal affordance (sibling \u00a74) when a missing-shape row in BackwardChainingPanel has no in-scope producer or only low-confidence producers.",
+    "guardSummary": "Three recursion-safety guards (depth, cycle, budget) are embedded in the compose_goal LLM prompt. Each guard, when tripped, sets `human_in_the_loop_required: true` on the emitted goal impulse and populates `failure_mode` with the structured taxonomy from sibling validators-and-failure-modes (migration 091). The guards do NOT block emission \u2014 the goal emits in all cases \u2014 but the human gate flag instructs the downstream dispatcher to pause for review. Multi-guard tripping is supported via `failure_modes` array.",
+    "outputContract": "Single goal-shaped impulse with body fields per design.md \u00a7Goal-as-shape-producer framing: text (LLM-composed), category='meta', target_shape, endpoint_output_shapes=[target_shape], available_shapes, depth=parent_depth+1, parent_execution_id, remaining_budget_usd, human_in_the_loop_required, failure_mode (or failure_modes array if multiple), signals_summary."
+  }
+}

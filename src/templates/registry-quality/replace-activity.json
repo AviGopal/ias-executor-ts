@@ -1,0 +1,227 @@
+{
+  "id": "replace-activity",
+  "name": "Replace Activity (registry-quality)",
+  "description": "Sibling #6 of the registry-quality-pass per OpenSpec change 2026-04-27-activity-registry-quality-pass. Consumes activityReview[] (severity 2-3 \u2014 idiom-aligned but improvable) plus pattern[] (from extract-pattern) and synthesizes activityTemplateProposal entries. Five tasks: (1) acquire_targets_and_patterns \u2014 impulse-resolve both shapes from the pool; (2) match_patterns_to_reviews \u2014 llm; for each review, picks the best pattern as a replacement template's basis; emits matchedReview[] (review + matched pattern); (3) synthesize_replacements \u2014 iteration; body=llm generates new template JSON proposals (NOT a write \u2014 emits activityTemplateProposal shape; never directly writes; the user/operator decides); aggregateAs=list; (4) validate_proposals \u2014 iteration; body=llm validates each proposal against compliance rules; tags valid: true|false; (5) emit_proposals \u2014 emits activityTemplateProposal[] + auditReport + goalEnd. CONTEXT-BUDGET: each per-review LLM body is bounded at maxTokens=900 (template proposals are larger than reviews/concepts but still bounded); per-validation pass at maxTokens=400. PROPOSAL-NOT-WRITE posture: this activity NEVER calls activityTemplate_write \u2014 it surfaces proposals for an operator (or a downstream activity invoking make-activity) to decide.",
+  "category": "meta",
+  "version": "0.1.0",
+  "tags": [
+    "meta",
+    "registry.quality",
+    "activity.replace",
+    "template.synthesis",
+    "iteration",
+    "proposal.only",
+    "read.only"
+  ],
+  "variables": [
+    {
+      "name": "maxProposals",
+      "type": "number",
+      "required": false,
+      "default": 5,
+      "description": "Maximum number of activityTemplateProposal entries to synthesize per invocation. The match_patterns_to_reviews task selects the top-N reviews (sorted by improvement potential \u2014 typically severity 2-3 with the strongest matched pattern) and synthesize_replacements iterates over those N. Default 5 keeps a single invocation's iteration body within ~5 LLM calls (each capped at maxTokens=900), totalling ~4.5K output tokens. Lower (e.g. 3) for a fast smoke; higher (e.g. 10) for a comprehensive sweep at higher cost."
+    },
+    {
+      "name": "requireValidation",
+      "type": "boolean",
+      "required": false,
+      "default": true,
+      "description": "When true (the default), validate_proposals runs and tags each proposal with valid: true|false. When false, validate_proposals is skipped via conditional and emit_proposals surfaces all synthesized proposals untagged. Recommended: keep true so that downstream consumers (workbench, make-activity dispatch) see the validation verdict alongside the proposal."
+    }
+  ],
+  "tasks": [
+    {
+      "id": "acquire_targets_and_patterns",
+      "description": "Read the activityReview[] (severity 2-3 idiom-aligned candidates from review-activity's score_severity task \u2014 referenced in the pool as scored_reviews) AND pattern[] (from extract-\u2026",
+      "resolver": "impulse-resolve",
+      "config": {
+        "pointer": {
+          "type": "memo",
+          "content": "Acquire activityReview[] (from scored_reviews) AND pattern[] (from patterns_list) via impulse pool reference."
+        }
+      },
+      "inputShapes": [
+        "activityReview",
+        "pattern"
+      ],
+      "outputShapes": [
+        "activityReview",
+        "pattern"
+      ],
+      "outputImpulses": [
+        "targets_and_patterns"
+      ],
+      "notes": "Read the activityReview[] (severity 2-3 idiom-aligned candidates from review-activity's score_severity task \u2014 referenced in the pool as scored_reviews) AND pattern[] (from extract-pattern's extract_patterns task \u2014 referenced as patterns_list) from the impulse pool. Same pool-by-id pattern as the rest of this activity family. The pointer's type=`memo` is a placeholder; downstream LLM calls reference {{impulse:scored_reviews}} and {{impulse:patterns_list}} directly. When either shape is empty (review-activity OR extract-pattern not run in current session), the chain still completes with a goalEnd describing the no-op (zero proposals)."
+    },
+    {
+      "id": "match_patterns_to_reviews",
+      "description": "LLM task that pairs each severity 2-3 review with the best-fit pattern from patterns_list.",
+      "resolver": "llm",
+      "config": {
+        "prompt": "You are pairing severity 2-3 activity reviews with reusable patterns to identify replacement candidates.\n\nVARIABLES:\n- maxProposals = {{maxProposals}}\n\nREVIEWS (filter to severity in [2, 3]):\n{{impulse:scored_reviews}}\n\nPATTERNS:\n{{impulse:patterns_list}}\n\nFOR EACH severity 2-3 review, pick the best matching pattern.\n\nMATCH HEURISTIC:\n- review.summary describes a deficiency (e.g. 'all-LLM task chain', 'missing inputShapes')\n- pattern.applicability describes when the pattern fits\n- Score (0..1) on applicability fit; drop matches < 0.5 as 'no good replacement found'\n\nReturn the top-{{maxProposals}} matches by match_score.\n\nOutput EXACTLY this JSON (no markdown, no prose):\n{\"matchedReviews\":[{\"review\":<review object>,\"matched_pattern\":<pattern object>,\"match_score\":<0..1>,\"rationale\":\"<one-sentence explanation citing review.findings + pattern.applicability>\"}],\"unmatched\":[<review objects with no match >= 0.5>]}",
+        "maxTokens": 1500
+      },
+      "dependencies": [
+        "acquire_targets_and_patterns"
+      ],
+      "inputImpulses": [
+        "targets_and_patterns"
+      ],
+      "inputShapes": [
+        "activityReview",
+        "pattern"
+      ],
+      "outputShapes": [
+        "matchedReview"
+      ],
+      "outputImpulses": [
+        "matched_reviews"
+      ],
+      "notes": "Match heuristic: review.summary describes a deficiency (e.g. 'all-LLM task chain where deterministic resolver would suffice', 'missing inputShapes declaration'); pattern.applicability describes when the pattern fits (e.g. 'when goal requires iterating over a list of impulses'); the LLM scores each (review, pattern) pair on applicability fit and emits the best pair per review. Drops reviews with no good match (score < 0.5 in the LLM's judgment) \u2014 these are flagged for prune-activity instead. Output: matchedReviews list of {review, matched_pattern, match_score, rationale}, capped at maxProposals (top-N by match_score). SIMPLIFICATION: a deterministic `pattern_review_matcher` resolver consuming the structured fields of both impulses is the proper fix; today the LLM applies the heuristic and is bounded at maxTokens=1500 over the full input set."
+    },
+    {
+      "id": "synthesize_replacements",
+      "description": "Iterate over matched_reviews from match_patterns_to_reviews; per-match the LLM body generates a new activityTemplate-shaped JSON proposal that addresses the review's deficiencies u\u2026",
+      "resolver": "iteration",
+      "config": {
+        "over": "{{impulse:matched_reviews}}",
+        "elementVar": "match",
+        "maxIterations": "{{maxProposals}}",
+        "body": {
+          "resolver": "llm",
+          "config": {
+            "prompt": "You are synthesizing an activityTemplate proposal that REPLACES an existing template by addressing its review deficiencies using a matched pattern as a blueprint.\n\nMATCH (review + matched_pattern):\n{{match}}\n\nOUTPUT REQUIREMENTS:\n- Emit a structurally valid activityTemplate JSON object (NOT a write \u2014 this is a proposal for review)\n- id \u2014 original templateId + '-v2' OR a derived unique id\n- name \u2014 derived from original; reflect the pattern (e.g. 'Foo (iterate-aggregate)')\n- description \u2014 2-4 sentences citing what was wrong with the original AND how the pattern fixes it\n- category \u2014 copy from original (in match.review)\n- version \u2014 '0.1.0' (this is a NEW template, not a variant)\n- tags \u2014 copy original tags + add 'registry-quality-replacement'\n- variables \u2014 derive from original + the pattern's task_graph_shape requirements\n- tasks \u2014 synthesize from pattern.task_graph_shape; each task must declare resolver, inputShapes, outputShapes; bash/file resolvers reference {{variables.workingDirectory}} for path arguments (sandbox hygiene)\n- metadata \u2014 set author='replace-activity', source_review_id=<review.templateId>, source_pattern_id=<pattern.name>, openSpec='2026-04-27-activity-registry-quality-pass'\n\nCRITICAL: declare every task's inputShapes and outputShapes; no naked LLM tasks; no hard-coded paths outside workingDirectory; no all-LLM task chains where a deterministic resolver fits.\n\nOutput EXACTLY this JSON (no markdown, no prose):\n{\"id\":\"<...>\",\"name\":\"<...>\",\"description\":\"<...>\",\"category\":\"<...>\",\"version\":\"0.1.0\",\"tags\":[...],\"variables\":[...],\"tasks\":[...],\"metadata\":{\"author\":\"replace-activity\",\"source_review_id\":\"<...>\",\"source_pattern_id\":\"<...>\",\"openSpec\":\"2026-04-27-activity-registry-quality-pass\"},\"_proposal_note\":\"replacement candidate \u2014 NOT yet written; awaits operator review or downstream make-activity dispatch\"}",
+            "maxTokens": 900
+          }
+        },
+        "aggregateAs": "list",
+        "stopOnError": false,
+        "outputShape": "activityTemplateProposal"
+      },
+      "dependencies": [
+        "match_patterns_to_reviews"
+      ],
+      "inputImpulses": [
+        "matched_reviews"
+      ],
+      "inputShapes": [
+        "matchedReview"
+      ],
+      "outputShapes": [
+        "activityTemplateProposal"
+      ],
+      "outputImpulses": [
+        "proposals_list"
+      ],
+      "notes": "Iterate over matched_reviews from match_patterns_to_reviews; per-match the LLM body generates a new activityTemplate-shaped JSON proposal that addresses the review's deficiencies using the matched_pattern's structure as a blueprint. The proposal's id is the original review's templateId + '-v2' (or similar \u2014 the LLM is instructed to derive a unique id); fields include name, description, category, version, tags, variables, tasks, metadata. CRUCIALLY: this task NEVER calls activityTemplate_write \u2014 it emits activityTemplateProposal impulses for downstream consumption (operator review, workbench display, OR a downstream activity that invokes make-activity with the proposal as a goal). aggregateAs=list collects per-match proposals into a single proposals_list impulse. SIMPLIFICATION: a deterministic `template_synthesizer` resolver (mentioned in make-activity.json:openQuestions[1] as a future fix) would replace this LLM body once the synthesis pattern stabilizes; today the LLM is bounded at maxTokens=900 per iteration. The body is instructed to emit STRUCTURALLY VALID activityTemplate JSON; validate_proposals downstream double-checks compliance."
+    },
+    {
+      "id": "validate_proposals",
+      "description": "Iterate over the proposals from synthesize_replacements; per-proposal the LLM body validates against compliance rules (same default ruleset as review-activity: idiom_alignment, sha\u2026",
+      "resolver": "iteration",
+      "config": {
+        "over": "{{impulse:proposals_list}}",
+        "elementVar": "proposal",
+        "body": {
+          "resolver": "llm",
+          "config": {
+            "prompt": "You are validating an activityTemplate proposal against the registry-quality compliance ruleset.\n\nPROPOSAL:\n{{proposal}}\n\nRULES (default ruleset, same as review-activity):\n1. idiom_alignment \u2014 declares inputShapes/outputShapes; uses resolvers idiomatically (no hand-rolled bash for orchestration); no hard-coded absolute paths outside workingDirectory.\n2. shape_completeness \u2014 every task declares its inputShapes / outputShapes; no naked LLM tasks emitting unnamed impulses.\n3. resolver_diversity \u2014 no all-LLM task chains when a deterministic resolver (bash, file, git, impulse-resolve, validation) would suffice.\n4. redundancy \u2014 does this proposal's output_shapes overlap with another existing template's output_shapes? (Heuristic \u2014 if the original template's id+'-v2' suggests a direct replacement, redundancy is acceptable; otherwise flag).\n5. sandbox_hygiene \u2014 bash/file resolver path arguments reference {{variables.workingDirectory}}.\n\nFor each rule, verdict: pass | warn | fail.\n\noverall valid: true if all rules pass or warn; false if ANY rule fails.\n\nOutput EXACTLY this JSON (no markdown, no prose):\n{\"proposal\":<proposal object>,\"valid\":<true|false>,\"validation_findings\":[{\"rule\":\"<name>\",\"verdict\":\"pass|warn|fail\",\"detail\":\"<one-line>\"}],\"compliance_summary\":\"<one-sentence overall compliance summary>\"}",
+            "maxTokens": 400
+          }
+        },
+        "aggregateAs": "list",
+        "stopOnError": false,
+        "outputShape": "activityTemplateProposal"
+      },
+      "dependencies": [
+        "synthesize_replacements"
+      ],
+      "inputImpulses": [
+        "proposals_list"
+      ],
+      "inputShapes": [
+        "activityTemplateProposal"
+      ],
+      "conditional": {
+        "expression": "{{variables.requireValidation}} == 'true'"
+      },
+      "outputShapes": [
+        "activityTemplateProposal"
+      ],
+      "outputImpulses": [
+        "validated_proposals"
+      ],
+      "notes": "Iterate over the proposals from synthesize_replacements; per-proposal the LLM body validates against compliance rules (same default ruleset as review-activity: idiom_alignment, shape_completeness, resolver_diversity, redundancy, sandbox_hygiene). Emits a tag {valid: true|false, validation_findings: [...], compliance_summary: <...>} appended to each proposal. Conditional gate: requireValidation=true (the default). When requireValidation=false, this task is skipped and proposals flow through untagged. SIMPLIFICATION: a deterministic `template_compliance_validator` resolver consuming the proposal JSON would replace this LLM body once the rule set stabilizes (see review-activity openQuestions for the same theme); today the LLM is bounded at maxTokens=400 per iteration. Per-iteration errors do not short-circuit \u2014 invalid proposals still flow through to emit_proposals, just tagged valid=false."
+    },
+    {
+      "id": "emit_proposals",
+      "description": "LLM summarizes the proposals and emits the final auditReport + goalEnd matching make-activity's emission contract.",
+      "resolver": "llm",
+      "config": {
+        "prompt": "You are emitting the final replacement-proposal report for a replace-activity invocation.\n\nINPUTS:\n- MATCHED REVIEWS: {{impulse:matched_reviews}}\n- PROPOSALS (synthesize_replacements output): {{impulse:proposals_list}}\n- VALIDATED PROPOSALS (validate_proposals output; null when requireValidation=false): {{impulse:validated_proposals}}\n- REQUIRE VALIDATION: {{variables.requireValidation}}\n\nProduce a structured audit report with these sections:\n1. total_reviews_input \u2014 count of severity 2-3 reviews seen\n2. total_matched \u2014 count of (review, pattern) matches with score >= 0.5\n3. total_synthesized \u2014 count of proposals generated\n4. total_validated \u2014 count from validate_proposals (== total_synthesized when requireValidation=false)\n5. valid_count \u2014 proposals where valid=true (== total_synthesized when requireValidation=false; all flow through untagged-as-valid)\n6. invalid_count \u2014 proposals where valid=false\n7. proposals \u2014 array of activityTemplateProposal entries (each with valid tag when requireValidation=true)\n8. unmatched \u2014 array of severity 2-3 reviews with no good pattern match (forward to prune-activity)\n9. forward_pointers \u2014 operator/workbench review of proposals; OR make-activity invocation with the proposal as a goal; OR prune-activity for the unmatched\n\nThen call markGoalComplete with:\n- summary: 2-3 sentence description (e.g. 'synthesized N proposals from M matched reviews; K passed validation, L failed; J reviews unmatched and forwarded to prune-activity')\n- achievedShapes: ['activityTemplateProposal', 'auditReport']\n- evidence: array of {kind: 'impulse', ref: <impulse-id>, observation}\n\nOutput EXACTLY this JSON (no markdown, no prose):\n{\"text\":\"<summary>\",\"achievedShapes\":[\"activityTemplateProposal\",\"auditReport\"],\"evidence\":[<rows>],\"goalSucceeded\":<true|false>,\"completedAt\":\"<ISO-8601>\",\"auditReport\":{\"total_reviews_input\":<n>,\"total_matched\":<n>,\"total_synthesized\":<n>,\"total_validated\":<n>,\"valid_count\":<n>,\"invalid_count\":<n>,\"proposals\":[...],\"unmatched\":[...],\"forward_pointers\":[...]}}\n\nNo other fields. No commentary.",
+        "maxTokens": 2500,
+        "_tool_note": "Same prompt-enforced markGoalComplete contract as the rest of this activity family."
+      },
+      "dependencies": [
+        "validate_proposals"
+      ],
+      "inputImpulses": [
+        "matched_reviews",
+        "proposals_list"
+      ],
+      "optionalInputImpulses": [
+        "validated_proposals"
+      ],
+      "inputShapes": [
+        "activityTemplateProposal"
+      ],
+      "outputShapes": [
+        "activityTemplateProposal",
+        "auditReport",
+        "goalEnd"
+      ],
+      "outputImpulses": [
+        "proposals_report"
+      ],
+      "notes": "The auditReport carries: total_reviews_input (count of severity 2-3 reviews from acquire_targets_and_patterns), total_matched (count of matched_reviews from match_patterns_to_reviews), total_synthesized (count of proposals from synthesize_replacements), total_validated (count from validate_proposals; equals total_synthesized when requireValidation=false), valid_count, invalid_count, proposals (full list of activityTemplateProposal entries \u2014 each with valid tag when requireValidation=true), unmatched (severity 2-3 reviews with no good pattern match \u2014 flagged for prune-activity), forward_pointers (operator OR make-activity invocation with proposal as goal; prune-activity for the unmatched). NOTE: this task NEVER calls activityTemplate_write \u2014 proposals are surfaced for downstream decision."
+    }
+  ],
+  "metadata": {
+    "created": "2026-04-27",
+    "author": "activity-registry-quality-pass",
+    "embedded": true,
+    "bootstrapTemplate": false,
+    "openSpec": "2026-04-27-activity-registry-quality-pass",
+    "readOnly": true,
+    "writeGated": false,
+    "shapeNotes": {
+      "preexisting": [
+        "activityReview (informal \u2014 emitted by review-activity)",
+        "pattern (informal \u2014 emitted by extract-pattern)",
+        "goalEnd"
+      ],
+      "newOrInformal": [
+        "matchedReview \u2014 pairing of (review, matched_pattern, match_score, rationale); intermediate shape used by synthesize_replacements",
+        "activityTemplateProposal \u2014 synthesized template JSON, NOT yet written. The activity surfaces these for operator review or downstream make-activity dispatch. Distinct from activityTemplate (which is a registered shape representing a written template).",
+        "auditReport \u2014 registry-wide replacement summary"
+      ]
+    },
+    "openQuestions": [
+      "PROPOSAL-NOT-WRITE POSTURE: this activity NEVER calls activityTemplate_write \u2014 it surfaces proposals for an operator (or a downstream activity) to decide. RATIONALE: synthesizing a replacement template is high-stakes (introduces a new id into the registry); the LLM-generated JSON should be reviewed before persisting. FOLLOW-UP: a sibling activity (apply-replacement, not yet authored) could iterate over validated proposals and dispatch activityTemplate_write per proposal \u2014 gated on operator approval OR a Thompson-Sampling-confidence threshold. Alternative: a downstream make-activity dispatch consumes the proposal as a goal and produces a real activityTemplate via its extract_template task.",
+      "VALIDATION COVERAGE: validate_proposals applies the same compliance ruleset as review-activity. The redundancy rule is heuristic \u2014 when a proposal's id is original-id + '-v2', it's expected to overlap with the original (that's the point of replacement); the LLM is instructed to treat that case as acceptable. FOLLOW-UP: a deterministic `template_compliance_validator` resolver that handles the v2-overlap case explicitly would tighten this.",
+      "TEMPLATE SYNTHESIS PROMPT: synthesize_replacements asks the LLM to emit a structurally valid activityTemplate JSON. The structural validity is checked downstream by validate_proposals (and ultimately by the embedded-templates harness if/when the proposal is written). SIMPLIFICATION: the LLM is bounded at maxTokens=900 per iteration which limits how complex the synthesized template can be. FOLLOW-UP: a `template_synthesizer` resolver (also referenced in make-activity.json:openQuestions[1]) consuming the matched_pattern's task_graph_shape and review.findings would replace the LLM body with deterministic synthesis.",
+      "MATCH-SCORE THRESHOLD: match_patterns_to_reviews drops matches with score < 0.5. This threshold is hardcoded; FOLLOW-UP: thread as a variable (default 0.5) so operators can tune sensitivity.",
+      "UNMATCHED REVIEWS DOWNSTREAM ROUTE: the emit_proposals report flags severity 2-3 reviews with no good pattern match as 'forwarded to prune-activity'. RATIONALE: if a review can't be replaced, it's a candidate for deprecation. SIMPLIFICATION: this activity does not directly invoke prune-activity \u2014 operators read the auditReport and decide. FOLLOW-UP: a registry-quality orchestrator could read the unmatched list and dispatch prune-activity with minSeverity=2 (more aggressive)."
+    ],
+    "limitations": [
+      "PROPOSAL-ONLY \u2014 emits activityTemplateProposal impulses + auditReport but does NOT write to the registry. The user/operator (or a downstream make-activity dispatch) decides whether to persist the proposal as a real activityTemplate.",
+      "Template synthesis is LLM-derived for first ship; expect minor structural defects until a deterministic template_synthesizer resolver matures. The validate_proposals task surfaces defects.",
+      "Match scoring is heuristic \u2014 relies on extract-pattern's pattern.applicability descriptions (which are themselves LLM-derived). Treat the matched pairs as informative-not-canonical.",
+      "When activityReview[] is empty (review-activity not run) OR pattern[] is empty (extract-pattern not run), the chain emits a goalEnd describing the no-op (zero proposals).",
+      "Unmatched severity 2-3 reviews are flagged in the auditReport for prune-activity routing; this activity does not invoke prune-activity directly."
+    ],
+    "outputContract": "Always emits per-iteration `activityTemplateProposal` impulses (aggregated in proposals_list and validated_proposals) plus an `auditReport` and `goalEnd` for explicit completion. When requireValidation=false, validate_proposals is skipped and the proposals flow through untagged.",
+    "subscriberContract": "Not a lifecycle subscriber. Dispatched explicitly \u2014 typically after review-activity AND extract-pattern have both completed in the current session, OR in an orchestrated registry-quality sweep.",
+    "spec_reference": "OpenSpec change 2026-04-27-activity-registry-quality-pass (sibling #6 of 6). Sibling spec to 2026-04-27-meta-activity-builder."
+  }
+}

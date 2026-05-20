@@ -1,0 +1,267 @@
+{
+  "id": "slot-binding",
+  "name": "Slot Binding (impulse-binding-selection-layer)",
+  "description": "Activity-driven implementation of pool selection and producer selection per OpenSpec change 2026-04-26-impulse-binding-selection-layer (D5). Subscribes to lifecycle:task:preBinding and chains three tasks: (1) prepare_pool — synthesise impulses from same-named template variables (cheap, deterministic, runs unconditionally); (2) select_or_produce — branches between impulse_pool_selection (when candidates already exist for a missing shape) and producer_selection (when no candidate exists); (3) agent_fill_fallback — LLM-of-last-resort that runs only when steps 1-2 leave shapes unbound and producer_selection returned no producer. As of 2026-04-26 the template uses dotted-path interpolation (e.g. {{lifecycle.taskId}}, {{lifecycle.missingShapes}}) — the interpolate regex was extended to /\\{\\{([\\w]+(?:\\.[\\w]+)*)\\}\\}/g in iter 7 (activity.ts:6952). Array/object subtrees still serialise to JSON-stringified form per existing semantics (resolvers JSON.parse where needed).",
+  "category": "meta",
+  "version": "0.2.0",
+  "tags": [
+    "lifecycle",
+    "binding",
+    "meta",
+    "slot.binding",
+    "impulse.binding.selection.layer"
+  ],
+  "subscription": {
+    "shape": "lifecycle:task:preBinding"
+  },
+  "variables": [
+    {
+      "name": "selectionMethod",
+      "type": "string",
+      "required": false,
+      "default": "deterministic",
+      "description": "Selection strategy for both impulse_pool_selection and producer_selection. 'deterministic' (default) picks highest mean (α/(α+β)) for reproducibility; 'thompson' Beta-samples each candidate. Per design.md OpenQuestion #1, deterministic is the safer default for first ship; expose 'thompson' as a variant later."
+    },
+    {
+      "name": "lifecycle",
+      "type": "object",
+      "required": false,
+      "description": "Set automatically by the lifecycle dispatcher to the lifecycle:task:preBinding payload merged with {executionId, shape}. Contains: taskId, templateId, inputShapes, currentImpulseIds, currentImpulseShapes (Phase 20.3: Array<{id,shape,producedBy?}>), missingShapes (string[]), missingInputs (Array<{shape,predicate?}>), variables, executionId, parentGoalText, parentDepth. Dotted-path interpolation: `{{lifecycle.taskId}}`, `{{lifecycle.executionId}}`, `{{lifecycle.missingShapes}}` (JSON-stringified array), `{{lifecycle.currentImpulseShapes}}` (JSON-stringified — pool_precheck passes this to impulse_pool_selection.poolCandidates), `{{lifecycle.parentGoalText}}` (undefined when executor invoked without goal context), `{{lifecycle.parentDepth}}` (composition_chain depth; 0 for root). Arrays/objects serialise to JSON-stringified form; resolvers JSON.parse where needed."
+    }
+  ],
+  "tasks": [
+    {
+      "id": "prepare_pool",
+      "description": "Cheap deterministic synthesise: wrap same-named template variables in memo-pointer impulses for any inputShape that's currently missing from the pool.",
+      "resolver": "impulse_preparation",
+      "config": {
+        "operation": "synthesise_from_variables",
+        "missingShapes": "{{lifecycle.missingShapes}}",
+        "variables": "{{lifecycle.variables}}",
+        "executionId": "{{lifecycle.executionId}}"
+      },
+      "inputShapes": [
+        "lifecycle:task:preBinding"
+      ],
+      "outputShapes": [
+        "impulse:supplemental",
+        "prepared_impulses"
+      ],
+      "outputImpulses": [
+        "prepare_pool_result"
+      ],
+      "notes": "Equivalent to ActivityExecutor.synthesizeShapeImpulsesFromVariables (now living in ImpulsePreparationResolver). Runs unconditionally — covers the common `inputShapes: ['goal']` + `{ goal: '...' }` variable pattern without spending an LLM call. As of 2026-04-26, missingShapes/variables/executionId are passed as dotted-path interpolations from the lifecycle payload; arrays/objects serialise to JSON-stringified form (resolver JSON.parses where needed)."
+    },
+    {
+      "id": "pool_precheck",
+      "description": "Phase 20.3 pool-selection pre-check: for each missing shape, query currentImpulseShapes (from lifecycle payload) to find existing pool candidates matching shape + predicate. When candidates exist, dispatches impulse_pool_selection to rank them by impulse_relevance Thompson posteriors. When no candidates exist, returns {no_pool_candidates:true} gracefully. Runs in parallel with select_or_produce (both depend on prepare_pool); their outputs together feed agent_fill_fallback and escalate_unbindable.",
+      "resolver": "iteration",
+      "config": {
+        "over": "{{lifecycle.missingShapes}}",
+        "elementVar": "shape",
+        "indexVar": "i",
+        "body": {
+          "resolver": "impulse_pool_selection",
+          "config": {
+            "shape": "{{shape}}",
+            "taskId": "{{lifecycle.taskId}}",
+            "poolCandidates": "{{lifecycle.currentImpulseShapes}}",
+            "selectionMethod": "{{selectionMethod}}"
+          },
+          "outputShapes": [
+            "impulse_pool_selection_result"
+          ]
+        },
+        "maxIterations": 16,
+        "stopOnError": false,
+        "aggregateAs": "list",
+        "outputShape": "pool_precheck_result"
+      },
+      "dependencies": [
+        "prepare_pool"
+      ],
+      "inputShapes": [
+        "lifecycle:task:preBinding"
+      ],
+      "optionalInputShapes": [
+        "prepared_impulses"
+      ],
+      "outputShapes": [
+        "pool_precheck_result",
+        "impulse_pool_selection_result"
+      ],
+      "outputImpulses": [
+        "pool_precheck_result"
+      ],
+      "notes": "Phase 20.3: the long-deferred pool_selection branch (openQuestions[0]). Uses ImpulsePoolSelectionResolver.poolCandidates which auto-filters by shape and returns {no_pool_candidates:true} when the filtered set is empty — no throw, no special casing needed in the iteration. currentImpulseShapes is the new lifecycle payload field (array of {id,shape,producedBy?}) emitted by both preBinding sites in activity.ts."
+    },
+    {
+      "id": "select_or_produce",
+      "description": "Per-shape producer discovery iterating over lifecycle.missingShapes. Runs after pool_precheck; dispatches producer_selection for shapes that have no existing pool candidates (complementary to pool_precheck which covers shapes that already have candidates).",
+      "resolver": "iteration",
+      "config": {
+        "over": "{{lifecycle.missingShapes}}",
+        "elementVar": "shape",
+        "indexVar": "i",
+        "body": {
+          "resolver": "producer_selection",
+          "config": {
+            "missingShape": "{{shape}}",
+            "taskId": "{{lifecycle.taskId}}",
+            "selectionMethod": "{{selectionMethod}}"
+          },
+          "outputShapes": [
+            "producer_selection_result"
+          ]
+        },
+        "maxIterations": 16,
+        "stopOnError": false,
+        "aggregateAs": "list",
+        "outputShape": "select_or_produce_result"
+      },
+      "dependencies": [
+        "prepare_pool",
+        "pool_precheck"
+      ],
+      "inputShapes": [
+        "lifecycle:task:preBinding"
+      ],
+      "optionalInputShapes": [
+        "prepared_impulses"
+      ],
+      "outputShapes": [
+        "select_or_produce_result"
+      ],
+      "outputImpulses": [
+        "select_or_produce_result"
+      ],
+      "notes": "For each missing shape the iteration body dispatches producer_selection (query discover-by-shapes mode=candidates_with_scores; pick highest composition_score / Beta-sample). When the route returns no producers for that shape, that iteration's result carries unbindable=true. The aggregated `select_or_produce_result` impulse contains a per-shape entry list — downstream tasks (escalate_unbindable, agent_fill_fallback) substring-match on 'unbindable\": true' across the aggregated JSON, so the recursive-escalation path fires when ANY shape didn't bind. Infra gap B closure (2026-04-30): the previous single-shape simplification (taking JSON-array index 0 of missingShapes) is replaced with foreach via the registered IterationResolver. The pool-vs-producer branching itself is still single-resolver per iteration — the impulse_pool_selection branch can land later as a sibling variant template that flips the order; Thompson Sampling on lifecycle subscribers picks the winner."
+    },
+    {
+      "id": "agent_fill_fallback",
+      "description": "LLM-of-last-resort: invokes SessionMemoryAgent.fillMissingShapes via impulse_preparation.agent_fill.",
+      "resolver": "impulse_preparation",
+      "config": {
+        "operation": "agent_fill",
+        "task": "{{lifecycle.taskId}}",
+        "missingShapes": "{{lifecycle.missingShapes}}",
+        "variables": "{{lifecycle.variables}}",
+        "currentImpulses": "{{lifecycle.currentImpulseIds}}"
+      },
+      "dependencies": [
+        "select_or_produce"
+      ],
+      "conditional": {
+        "expression": "{{impulse:select_or_produce_result}} contains 'unbindable\": true' AND {{impulse:select_or_produce_result}} not-contains '\"score\": null' AND {{impulse:select_or_produce_result}} not-contains '\"score\":null'",
+        "skipIfFalse": true
+      },
+      "inputShapes": [
+        "lifecycle:task:preBinding"
+      ],
+      "optionalInputShapes": [
+        "producer_selection_result",
+        "impulse_pool_selection_result",
+        "prepared_impulses"
+      ],
+      "outputShapes": [
+        "impulse:supplemental",
+        "prepared_impulses"
+      ],
+      "outputImpulses": [
+        "agent_fill_fallback_result"
+      ],
+      "notes": "Runs only when select_or_produce reported no producer (unbindable=true) AND there are still unbound shapes. Bounded LLM cost — this is the explicit escape hatch when neither prepared synthesise nor producer selection found a binding. Uses the same `conditional.expression` idiom as goal-processing-activity-driven.json::ask_human_on_divergence (see line 162 of that template). Config fields use dotted-path interpolation as of 2026-04-26; the `task` field carries the taskId scalar (the resolver doesn't need the full lifecycle blob since it can read the lifecycle:task:preBinding impulse directly via impulseRefs)."
+    },
+    {
+      "id": "consult_gap_cache",
+      "description": "Phase 10 P4.5 / 10.24: before triggering recursive create-shape-provider-goal escalation, consult activity-api's shape_gap_resolution cache (migration 105 + impulses.ts:1148 sibling case). Cache hits surface (resolved_by, resolution_type) tuples that downstream consumers can short-circuit recursion with. Best-effort: a backend miss or empty result-set yields a degraded-but-non-fatal impulse so the rest of the chain runs.",
+      "resolver": "impulse-resolve",
+      "config": {
+        "pointer": {
+          "type": "shape_gap_resolution",
+          "shape": "{{lifecycle.missingShapes}}"
+        }
+      },
+      "dependencies": [
+        "select_or_produce"
+      ],
+      "conditional": {
+        "expression": "{{impulse:select_or_produce_result}} contains 'unbindable\": true'",
+        "skipIfFalse": true
+      },
+      "inputShapes": [
+        "lifecycle:task:preBinding"
+      ],
+      "outputShapes": [
+        "shape_gap_resolution"
+      ],
+      "outputImpulses": [
+        "shape_gap_cache_result"
+      ],
+      "notes": "Lookup is best-effort and read-only. The dotted-path interpolator emits {{lifecycle.missingShapes}} as a JSON-stringified array; activity-api's shape_gap_resolution resolver expects pointer.shape as a single string but treats the JSON-array form as 'shape unspecified' and returns an empty resolutions array — degraded-but-non-fatal. Future fix: extract index 0 via a helper-resolver task or extend the lifecycle payload with a primary missing-shape scalar."
+    },
+    {
+      "id": "escalate_unbindable",
+      "description": "Recursive escalation per OpenSpec change 2026-04-26-impulse-activity-loop §7.2: when select_or_produce reported no in-scope producer (unbindable=true), dispatch the create-shape-pr…",
+      "resolver": "activity",
+      "config": {
+        "templateId": "create-shape-provider-goal",
+        "reason": "slot-binding escalation — select_or_produce reported unbindable=true",
+        "variables": {
+          "target_shape": "{{lifecycle.missingShapes}}",
+          "parent_goal_text": "{{lifecycle.parentGoalText}}",
+          "available_shapes": "{{lifecycle.currentImpulseIds}}",
+          "parent_execution_id": "{{lifecycle.executionId}}",
+          "parent_depth": "{{lifecycle.parentDepth}}",
+          "max_recursion_depth": 3
+        },
+        "_variables_note": "Dotted-path interpolation. target_shape interpolates to the JSON-stringified missingShapes array; the dispatched compose_goal task picks index 0 (its prompt already documents defensive parsing per spec §7.1). parent_goal_text resolves to {{lifecycle.parentGoalText}} — sourced from the executing activity's currentGoalContext, populated by execute() from ExecuteOptions.goalContext or reason. When parentGoalText is undefined on the payload (executor invoked without goal context), the dotted-path interpolator leaves the literal placeholder string in place per its missing-segment semantics; compose_goal's prompt should treat that literal-or-empty input as '<no parent goal text available>'. available_shapes carries currentImpulseIds (a JSON-stringified array of impulse ids — NOT shapes); the compose_goal LLM is responsible for mapping ids→shapes via the inherited impulse pool, or we extend the lifecycle payload with currentImpulseShapes for direct dotted-path access. parent_execution_id is a clean scalar string. parent_depth resolves to {{lifecycle.parentDepth}} — sourced from the executor's activityCallStack length, where 0 indicates a root execution with no ancestors. The dotted-path interpolator emits the value as a number-as-string; create-shape-provider-goal's compose_goal LLM already handles defensive parsing per spec §7.1. max_recursion_depth=3 matches the design.md guard. remaining_budget_usd is intentionally unset — the budget guard short-circuits to 'disabled' on null.",
+        "_available_shapes_TODO": "available_shapes carries currentImpulseIds (impulse ids) not shapes; compose_goal LLM must map ids→shapes via inherited impulse pool. Cleaner fix: extend lifecycle payload with currentImpulseShapes (or a {id, shape} array). Tracked as openQuestion[2]."
+      },
+      "dependencies": [
+        "select_or_produce",
+        "consult_gap_cache"
+      ],
+      "conditional": {
+        "expression": "{{impulse:select_or_produce_result}} contains 'unbindable\": true' AND {{impulse:select_or_produce_result}} not-contains '\"score\": null' AND {{impulse:select_or_produce_result}} not-contains '\"score\":null'",
+        "skipIfFalse": true
+      },
+      "inputShapes": [
+        "lifecycle:task:preBinding"
+      ],
+      "optionalInputShapes": [
+        "producer_selection_result",
+        "impulse_pool_selection_result"
+      ],
+      "outputShapes": [
+        "goal",
+        "activityExecutionSummary"
+      ],
+      "outputImpulses": [
+        "escalate_unbindable_result"
+      ],
+      "notes": "Recursive escalation per OpenSpec change 2026-04-26-impulse-activity-loop §7.2: when select_or_produce reported no in-scope producer (unbindable=true), dispatch the create-shape-provider-goal activity to recursively compose a NEW goal-shaped impulse whose `endpoint_output_shapes: [target_shape]` will route a downstream variant_selection to a producer of the missing shape. Runs IN PARALLEL with agent_fill_fallback (both gated on the same unbindable=true signal, both depending only on select_or_produce). Rationale: they cover orthogonal fallback paths — agent_fill_fallback is a bounded LLM best-effort to synthesise the missing impulse from variables/agent memory; escalate_unbindable creates a sub-goal whose dispatched activity will produce the missing shape as a real output. If agent_fill succeeds, the sub-goal's goal-shaped impulse remains as a useful bonus context in the parent's pool; if agent_fill fails, the sub-goal is the recovery path. Sequencing escalation after agent_fill_fallback would require failure-detection on agent_fill's output, which the template format doesn't cleanly express. Uses the same conditional idiom as agent_fill_fallback (substring match on 'unbindable\\\": true' in the select_or_produce_result impulse — see goal-processing-activity-driven.json:162 for the same pattern). Dispatches via the `activity` resolver (mirrors goal-processing-activity-driven.json::dispatch_activity at lines 110-125): templateId='create-shape-provider-goal', variables forwarded as best-effort given the lifecycle-payload interpolation limitation. The output goal-shaped impulse is surfaced to the parent's impulse pool by the existing nested-execution machinery."
+    }
+  ],
+  "metadata": {
+    "created": "2026-04-26",
+    "author": "impulse-binding-selection-layer",
+    "embedded": true,
+    "bootstrapTemplate": false,
+    "openSpec": "2026-04-26-impulse-binding-selection-layer",
+    "openQuestions": [
+      "Per-shape iteration: the select_or_produce task ideally dispatches once per missing shape (impulse_pool_selection when candidates exist for the shape, producer_selection otherwise). The current template format has no foreach/map primitive, so this template models the single-shape case via a single resolver call. With dotted-path interpolation landed (iter 7), `{{lifecycle.missingShapes}}` serialises the WHOLE missingShapes array to JSON — the producer_selection resolver tolerates either an array-string (parses, takes index 0) or a plain string. Per the spec's pragmatic-decisions allowance, this template handles the dominant single-shape case; multi-shape iteration remains a follow-up (would need either a foreach/map template primitive, OR the dispatcher emitting the lifecycle event once per missing shape).",
+      "Recursive-escalation variable forwarding (escalate_unbindable, added per spec 2026-04-26-impulse-activity-loop §7.2): the dispatched create-shape-provider-goal activity expects scalar/array variables (target_shape: string, parent_goal_text: string, available_shapes: array, parent_execution_id: string, parent_depth: number). With dotted-path interpolation landed: `target_shape` carries the JSON-stringified missingShapes array (compose_goal picks index 0), `parent_execution_id` is a clean scalar, `available_shapes` is currentImpulseIds (ids, not shapes — see openQuestions). parent_goal_text wires from {{lifecycle.parentGoalText}} (sourced from the executing activity's currentGoalContext); when undefined the interpolator leaves the placeholder text in place per its missing-segment semantics, and compose_goal's defensive prompt treats that literal as '<no parent goal text available>'. parent_depth wires from {{lifecycle.parentDepth}} (sourced from the executor's activityCallStack length — root-first ancestor template ids; 0 for root executions). The interpolator emits the value as a number-as-string; create-shape-provider-goal's compose_goal LLM handles defensive parsing per spec §7.1. The recursion-safety guard (max_recursion_depth=3) now fires correctly end-to-end.",
+      "currentImpulseIds vs currentImpulseShapes: the lifecycle payload carries currentImpulseIds (impulse ids) not shapes. escalate_unbindable's available_shapes variable expects shapes; we forward ids and let the dispatched compose_goal LLM map ids→shapes via the inherited impulse pool. A cleaner fix is to extend the lifecycle payload with currentImpulseShapes (or a {id, shape} array) so the dotted-path `{{lifecycle.currentImpulseShapes}}` works directly. Bounded by spec §7.2 'no activity.ts changes'.",
+      "Escalate vs agent_fill ordering: escalate_unbindable runs IN PARALLEL with agent_fill_fallback (both depend only on select_or_produce, both gated on the same `unbindable=true` substring). They cover orthogonal recovery paths — agent_fill is a bounded LLM best-effort to synthesise the missing impulse from variables/agent memory; escalate produces a recursive sub-goal whose dispatched activity will create a real producer-output impulse. Sequencing escalation AFTER agent_fill_fallback would require failure-detection on agent_fill's output (e.g. 'agent_fill_result contains \"failed\":true') which the template format doesn't cleanly express today, AND would serialise two LLM-touching tasks for no behavioural gain. The parallel layout means both fallback impulses land in the parent's pool; downstream consumers (agent_fill's prepared_impulses for direct binding, or escalate's goal-shaped impulse for recursive dispatch) compete for relevance via the existing impulse-relevance machinery. Future fix when explicit failure-detection conditionals land: convert to fail-fast 'agent_fill first, escalate only if agent_fill failed' and save one dispatch per binding miss."
+    ],
+    "limitations": [
+      "select_or_produce uses producer_selection as the default branch; the impulse_pool_selection branch (when candidates already exist) is deferred to a sibling template variant. See openQuestions[0] and the task description.",
+      "agent_fill_fallback's conditional.expression checks the literal string 'unbindable\": true' in the select_or_produce_result impulse; this matches the producer_selection result format. If the resolver result format changes, update this expression accordingly.",
+      "escalate_unbindable: parent_goal_text is forwarded via {{lifecycle.parentGoalText}} (sourced from the executing activity's currentGoalContext; when undefined the dotted-path interpolator leaves the literal placeholder, which compose_goal's defensive prompt treats as '<no parent goal text available>'); available_shapes is currentImpulseIds (ids, not shapes — see openQuestions[2]); target_shape is the JSON-stringified missingShapes array (compose_goal LLM picks index 0). parent_depth is forwarded via {{lifecycle.parentDepth}} (sourced from the executor's activityCallStack length; 0 for root executions; serialised as a number-as-string handled by compose_goal's defensive parsing); max_recursion_depth defaults to 3; remaining_budget_usd is unset (budget guard short-circuits to disabled).",
+      "Single-shape simplification (select_or_produce): {{lifecycle.missingShapes}} interpolates to the WHOLE array as JSON-stringified; producer_selection takes index 0. Multi-shape per-task iteration remains an open question."
+    ],
+    "subscriberContract": "subscription.shape = 'lifecycle:task:preBinding'. Fires before the canExecuteTask gate (activity.ts:4427 and :4992) for any task whose declared inputShapes are non-empty. Lifecycle payload: { taskId, templateId, inputShapes, currentImpulseIds, missingShapes, variables, executionId, parentGoalText, parentDepth }. parentGoalText is undefined when the executor was invoked without goal context (e.g. direct execute() call); subscribers should tolerate undefined explicitly. parentDepth is the executor's composition_chain depth (number of ancestors); 0 for root executions. Subscriber outputs are merged back into the parent's impulse pool by the existing nested-execution machinery (activity.ts:1249-1273).",
+    "outputContract": "Per shape-provenance principle (2026-04-27): each task's declared outputShapes is the UNION of possible emissions — actual emissions depend on conditional gates. (1) prepare_pool runs unconditionally and emits prepared_impulses (or impulse:supplemental); (2) select_or_produce runs unconditionally; emits producer_selection_result OR impulse_pool_selection_result depending on the resolver branch taken; (3) agent_fill_fallback emits prepared_impulses iff select_or_produce reported unbindable=true; (4) escalate_unbindable emits goal + activityExecutionSummary (forwarded from the dispatched create-shape-provider-goal sub-activity) iff unbindable=true. The escalation's `goal` shape carries shapeOrigin: 'sub_activity' (set by the activity resolver's createOutputImpulses; see activity-resolver.ts) with shapeOriginRef pointing to the create-shape-provider-goal child execution's id — so the parent's pool can answer 'this goal: did slot-binding produce it via escalation, or was it user-seeded?'. Downstream consumers gating on `goal` see the impulse only when escalation actually fired."
+  }
+}

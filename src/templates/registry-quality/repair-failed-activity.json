@@ -1,0 +1,116 @@
+{
+  "id": "repair-failed-activity",
+  "name": "Repair Failed Activity",
+  "description": "Analyze a failed activity execution and create a repaired variant that addresses the failure",
+  "category": "meta",
+  "tags": ["self.improvement"],
+  "tasks": [
+    {
+      "id": "analyze-failure",
+      "subagent": "general",
+      "description": "Read the failed execution trace and identify the root cause",
+      "dependencies": [],
+      "prompt": {
+        "template": "Analyze this failed activity execution and identify the root cause of the failure.\n\nActivity: {{activityId}}\nExecution ID: {{executionId}}\nError: {{errorMessage}}\n\nExamine the execution trace to understand:\n1. What was the activity trying to accomplish?\n2. Which task failed and why?\n3. What was the specific error or issue?\n4. What context or assumptions were invalid?\n\nProvide a concise analysis (2-3 sentences) of the root cause.",
+        "maxTokens": 3000,
+        "compressionStrategy": "filter"
+      },
+      "validation": {
+        "requiredFiles": [],
+        "requiredPatterns": [],
+        "forbiddenPatterns": [],
+        "commands": []
+      },
+      "retry": {
+        "strategy": "simple",
+        "maxAttempts": 2
+      }
+    },
+    {
+      "id": "create-fix",
+      "subagent": "general",
+      "description": "Create a repaired version of the activity that fixes the identified issue",
+      "dependencies": ["analyze-failure"],
+      "prompt": {
+        "template": "Based on the failure analysis, create a repaired variant of the activity.\n\nOriginal Activity: {{activityId}}\nFailure Cause: From previous analysis\n\nCreate a new activity template that:\n1. Fixes the identified issue\n2. Adds validation to prevent the same failure\n3. Includes better error handling\n4. Uses a descriptive variant ID like: {{activityId}}-repaired-001\n\nUse the write tool to save the repaired template to:\n~/.minibob/activities/repaired/{{activityId}}-{{timestamp}}.json",
+        "maxTokens": 4000,
+        "compressionStrategy": "filter"
+      },
+      "validation": {
+        "requiredFiles": [],
+        "requiredPatterns": ["repaired"],
+        "forbiddenPatterns": [],
+        "commands": []
+      },
+      "retry": {
+        "strategy": "simple",
+        "maxAttempts": 2
+      }
+    },
+    {
+      "id": "test-repair",
+      "subagent": "general",
+      "description": "Test the repaired activity with the same inputs",
+      "dependencies": ["create-fix"],
+      "prompt": {
+        "template": "Test the repaired activity template to verify it works.\n\nRepaired Template: From previous task\nOriginal Inputs: {{originalInputs}}\n\nRun the repaired activity and verify:\n1. It completes without the previous error\n2. It produces the expected output\n3. Validation passes\n\nReport the test result (success/failure) and any remaining issues.",
+        "maxTokens": 3000,
+        "compressionStrategy": "filter"
+      },
+      "validation": {
+        "requiredFiles": [],
+        "requiredPatterns": [],
+        "forbiddenPatterns": ["ERROR", "FAILED"],
+        "commands": []
+      },
+      "retry": {
+        "strategy": "simple",
+        "maxAttempts": 2
+      }
+    }
+  ],
+  "variables": [
+    {
+      "name": "activityId",
+      "type": "string",
+      "required": true,
+      "description": "ID of the activity that failed"
+    },
+    {
+      "name": "executionId",
+      "type": "string",
+      "required": true,
+      "description": "Execution ID of the failed run"
+    },
+    {
+      "name": "errorMessage",
+      "type": "string",
+      "required": true,
+      "description": "Error message from the failure"
+    },
+    {
+      "name": "originalInputs",
+      "type": "object",
+      "required": false,
+      "description": "Original input variables",
+      "default": {}
+    },
+    {
+      "name": "timestamp",
+      "type": "string",
+      "required": false,
+      "description": "Timestamp for unique file naming",
+      "default": "{{now | date: '%Y%m%d%H%M%S'}}"
+    }
+  ],
+  "version": 1,
+  "contextRequirements": [
+    {
+      "id": "execution-trace",
+      "type": "activityExecutionTrace",
+      "source": "{{executionId}}",
+      "priority": "high",
+      "budget": 3000
+    }
+  ]
+}

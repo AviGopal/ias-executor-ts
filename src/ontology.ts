@@ -48,6 +48,17 @@ export interface ActivityTask {
   config?: Record<string, unknown>;
   /** When resolver is "compose", dispatch to this template id via the templateProvider */
   subActivityId?: string;
+  /**
+   * Shared-catalogue templates carry additional task fields beyond the
+   * engine's minimum surface (notes, outputImpulses, inputImpulses,
+   * optionalInputShapes, conditional, dependencies, retry, validation,
+   * prompt, ...). The canonical executor doesn't read these — they are
+   * consumed by host-side resolvers and lifecycle dispatchers — but the
+   * loader needs JSON files to typecheck cleanly.
+   *
+   * See openspec/changes/2026-05-19-ias-executor-as-canonical-host/design.md §F.
+   */
+  [extra: string]: unknown;
 }
 
 /**
@@ -72,6 +83,19 @@ export interface ActivityTemplateSubscription {
   dedupe_key?: string;
 }
 
+/**
+ * Variable declaration carried on shared-catalogue templates. Consumed by
+ * hosts that surface user-facing knobs (workbench, CLI flags); the executor
+ * itself only reads `variables` opaquely through `ExecuteOptions.variables`.
+ */
+export interface ActivityTemplateVariable {
+  name: string;
+  type?: string;
+  required?: boolean;
+  default?: unknown;
+  description?: string;
+}
+
 export interface ActivityTemplate {
   id: string;
   name: string;
@@ -87,6 +111,21 @@ export interface ActivityTemplate {
   subscription?: ActivityTemplateSubscription;
   /** Top-level dedupe-key template (mirrors subscription.dedupe_key for parity). */
   dedupe_key?: string;
+  /** Catalogue-canonical fields preserved from minibob templates. */
+  category?: string;
+  version?: string;
+  variables?: ActivityTemplateVariable[];
+  /** snake_case aliases used by some catalogue templates (audit-test-report etc.). */
+  input_shapes?: string[];
+  output_shapes?: string[];
+  /**
+   * Catalogue templates occasionally carry vessel-specific fields
+   * (`composition`, `hooks`, `integration`, `learning`, `metabob`,
+   * `contextRequirements`, ...). The executor ignores them; the index
+   * signature lets the JSON imports typecheck without per-template
+   * carve-outs. See openspec/changes/2026-05-19-ias-executor-as-canonical-host/design.md §F.
+   */
+  [extra: string]: unknown;
 }
 
 export type ResolverTier = "deterministic" | "pattern" | "llm" | "external";

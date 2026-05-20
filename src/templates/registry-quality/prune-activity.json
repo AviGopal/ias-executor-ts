@@ -1,0 +1,178 @@
+{
+  "id": "prune-activity",
+  "name": "Prune Activity (registry-quality)",
+  "description": "Sibling #3 of the registry-quality-pass per OpenSpec change 2026-04-27-activity-registry-quality-pass. Consumes activityReview[] (from review-activity) and dispatches `activityTemplate_deprecate` write resolver calls for templates with severity >= minSeverity (default 4) that are NOT in coreActivitySet. Three tasks: (1) filter_deprecation_candidates \u2014 iteration over reviews; condition: severity >= minSeverity AND NOT in coreActivitySet; aggregateAs=list; emits pruneCandidate[]; (2) dispatch_deprecate_impulses \u2014 iteration over pruneCandidates; body=impulse-resolve with pointer.type=`activityTemplate_deprecate` (write resolver); aggregateAs=list. GATE on admin scope (the deprecate handler is admin-only via SurrealDB PERMISSIONS); 401 responses are expected when the calling identity lacks admin scope. dryRun=true (default) skips this task entirely; emit_prune_report still runs and surfaces the pruneCandidates as an audit signal; (3) emit_prune_report \u2014 llm summarizes the deprecation attempts (success vs 401-blocked vs dry-run-skipped); emits auditReport + goalEnd. CONTEXT-BUDGET: per-template deprecate dispatch carries only the templateId in the pointer; no template bodies echoed. dryRun guard makes the chain observable-without-mutation by default.",
+  "category": "meta",
+  "version": "0.1.0",
+  "tags": [
+    "meta",
+    "registry.quality",
+    "activity.registry.prune",
+    "prune",
+    "deprecate",
+    "iteration",
+    "write.gated"
+  ],
+  "variables": [
+    {
+      "name": "minSeverity",
+      "type": "number",
+      "required": false,
+      "default": 4,
+      "description": "Minimum activityReview.severity for prune eligibility. Default 4 matches review-activity's score_severity scale: 4=serious (any 'fail' on idiom_alignment OR sandbox_hygiene), 5=should-deprecate. Lower (e.g. 3) is more aggressive; higher (5) is conservative-only-deprecate-the-worst. The filter_deprecation_candidates iteration body uses the elementVar's severity field to match; reviews with severity below the threshold are dropped from the candidate list."
+    },
+    {
+      "name": "dryRun",
+      "type": "boolean",
+      "required": false,
+      "default": true,
+      "description": "When true (the default), filter_deprecation_candidates emits the pruneCandidate list but dispatch_deprecate_impulses is skipped via conditional. emit_prune_report still runs and surfaces the dry-run candidates as an audit signal. Flip to false to actually issue activityTemplate_deprecate write calls \u2014 gated on admin scope (the deprecate handler is admin-only via SurrealDB PERMISSIONS); when the calling identity lacks admin scope, the write resolver returns 401/403 and the chain still completes with a structured failure report. RECOMMENDED: keep dryRun=true on first invocations; flip only after auditReport from the dry run shows expected candidate set."
+    }
+  ],
+  "tasks": [
+    {
+      "id": "filter_deprecation_candidates",
+      "description": "Iterate over the activityReview[] from the impulse pool (scored_reviews, emitted by review-activity's score_severity task).",
+      "resolver": "iteration",
+      "config": {
+        "over": "{{impulse:scored_reviews}}",
+        "elementVar": "review",
+        "body": {
+          "resolver": "llm",
+          "config": {
+            "prompt": "You are filtering an activity review for prune eligibility.\n\nREVIEW:\n{{review}}\n\nCORE ACTIVITY SET (do NOT prune these \u2014 they are the load-bearing core):\n{{impulse:targets_list}}\n\nGATES:\n1. review.severity >= {{minSeverity}}\n2. review.templateId NOT IN coreActivitySet\n\nIf BOTH gates pass, output a pruneCandidate. Otherwise output null.\n\nOutput EXACTLY this JSON (no markdown, no prose):\nIf eligible:\n{\"templateId\":\"<review.templateId>\",\"severity\":<number>,\"reason\":\"<one-line summary derived from review.findings + severityRationale>\",\"summary\":\"<copy review.summary>\"}\n\nIf not eligible:\nnull",
+            "maxTokens": 250
+          }
+        },
+        "aggregateAs": "list",
+        "stopOnError": false,
+        "outputShape": "pruneCandidate"
+      },
+      "inputShapes": [
+        "activityReview"
+      ],
+      "optionalInputShapes": [
+        "coreActivitySet"
+      ],
+      "outputShapes": [
+        "pruneCandidate"
+      ],
+      "outputImpulses": [
+        "prune_candidates"
+      ],
+      "notes": "For each review, the iteration body LLM checks: severity >= {{minSeverity}} AND templateId NOT IN coreActivitySet (read from impulse:targets_list \u2014 the coreActivitySet slice carried over from review-activity, OR coreActivitySet directly when both activities run in the same session). Reviews failing either guard are filtered out. The remaining set is emitted as pruneCandidate impulses with reason: severity, findings summary. SIMPLIFICATION: the filter is implemented in an LLM body for first ship \u2014 a deterministic `severity_filter` resolver is the proper fix once the heuristic stabilizes (post-ship ribosome extraction). When activityReview[] is empty (review-activity not run OR no candidates), the iteration emits zero pruneCandidates and the chain still terminates cleanly with an empty pruneCandidate list."
+    },
+    {
+      "id": "dispatch_deprecate_impulses",
+      "description": "Iterate over the pruneCandidates from filter_deprecation_candidates and dispatch `activityTemplate_deprecate` write resolver calls per candidate.",
+      "resolver": "iteration",
+      "config": {
+        "over": "{{impulse:prune_candidates}}",
+        "elementVar": "candidate",
+        "body": {
+          "resolver": "impulse-resolve",
+          "config": {
+            "pointer": {
+              "type": "activityTemplate_deprecate",
+              "target_id": "{{candidate.templateId}}",
+              "reason": "{{candidate.reason}}"
+            }
+          }
+        },
+        "aggregateAs": "list",
+        "stopOnError": false,
+        "outputShape": "activityTemplate_deprecate_result"
+      },
+      "dependencies": [
+        "filter_deprecation_candidates"
+      ],
+      "inputImpulses": [
+        "prune_candidates"
+      ],
+      "inputShapes": [
+        "pruneCandidate"
+      ],
+      "conditional": {
+        "expression": "{{variables.dryRun}} == 'false'"
+      },
+      "outputShapes": [
+        "activityTemplate_deprecate_result"
+      ],
+      "outputImpulses": [
+        "deprecate_results"
+      ],
+      "notes": "Each per-iteration body calls impulse-resolve with pointer.type=activityTemplate_deprecate, target_id=candidate.templateId, reason=candidate.reason. ADMIN-SCOPE GATE: the deprecate handler is admin-only via SurrealDB PERMISSIONS (per docs/impulse-types/LEARNING_LOOP_WRITE_RESOLVERS.md). When the calling identity lacks admin scope, the resolver returns 401/403 and aggregateAs=list captures the per-iteration error. Conditional gate: dryRun != true \u2014 when dryRun=true (the default), this task is skipped entirely. SIMPLIFICATION: the spec's intended idiom is a per-task scope check before dispatch (with a single 401 short-circuiting the whole iteration); we let each iteration's resolver call surface its own scope error so the audit signal is per-template (which template actually got deprecated, which 401-blocked). When iteration is NOT registered (sibling work), this task fails with `resolver not found` and the trace records the failure_mode for ribosome."
+    },
+    {
+      "id": "emit_prune_report",
+      "description": "LLM summarizes the prune attempt and emits an auditReport + goalEnd matching make-activity's emission contract at make-activity.json:declare_complete.",
+      "resolver": "llm",
+      "config": {
+        "prompt": "You are emitting the final prune report for a prune-activity invocation.\n\nINPUTS:\n- PRUNE CANDIDATES (from filter_deprecation_candidates): {{impulse:prune_candidates}}\n- DEPRECATE RESULTS (from dispatch_deprecate_impulses; null when dryRun=true): {{impulse:deprecate_results}}\n- DRY RUN FLAG: {{variables.dryRun}}\n- MIN SEVERITY: {{variables.minSeverity}}\n\nProduce a structured audit report with these sections:\n1. total_candidates \u2014 count of pruneCandidates\n2. dispatched_count \u2014 count of deprecate dispatch attempts (0 when dryRun=true)\n3. success_count \u2014 deprecate_results entries with no `error` field\n4. error_count \u2014 deprecate_results entries with `error` (typically 401/403 from admin-scope gate)\n5. dry_run_flag \u2014 copy from variables.dryRun\n6. candidates \u2014 array of {templateId, severity, reason, summary} (all pruneCandidates)\n7. errors \u2014 array of {templateId, error_message, status_code} for any error_count entries\n8. forward_pointers \u2014 replace-activity (severity 2-3, not touched here); extract-pattern (longer-horizon)\n\nThen call markGoalComplete with:\n- summary: 2-3 sentence description (e.g. 'identified N prune candidates at minSeverity={{variables.minSeverity}}; dryRun=true so no deprecate calls dispatched' OR 'dispatched M deprecate calls; K succeeded, L failed with 401 (admin scope required)')\n- achievedShapes: ['pruneCandidate', 'auditReport'] (and 'activityTemplate_deprecate_result' when dryRun=false)\n- evidence: array of {kind: 'impulse', ref: <impulse-id>, observation}\n\nOutput EXACTLY this JSON (no markdown, no prose):\n{\"text\":\"<summary>\",\"achievedShapes\":[\"pruneCandidate\",\"auditReport\"],\"evidence\":[<rows>],\"goalSucceeded\":<true|false>,\"completedAt\":\"<ISO-8601>\",\"auditReport\":{\"total_candidates\":<n>,\"dispatched_count\":<n>,\"success_count\":<n>,\"error_count\":<n>,\"dry_run_flag\":<bool>,\"candidates\":[...],\"errors\":[...],\"forward_pointers\":[...]}}\n\nNo other fields. No commentary.",
+        "maxTokens": 1500,
+        "_tool_note": "Same prompt-enforced markGoalComplete contract as make-activity.json:declare_complete and core-activity-audit.json:emit_audit_report."
+      },
+      "dependencies": [
+        "dispatch_deprecate_impulses"
+      ],
+      "inputImpulses": [
+        "prune_candidates"
+      ],
+      "optionalInputImpulses": [
+        "deprecate_results"
+      ],
+      "inputShapes": [
+        "pruneCandidate"
+      ],
+      "optionalInputShapes": [
+        "activityTemplate_deprecate_result"
+      ],
+      "outputShapes": [
+        "pruneCandidate",
+        "auditReport",
+        "goalEnd"
+      ],
+      "outputImpulses": [
+        "prune_report_result"
+      ],
+      "notes": "The auditReport carries: total_candidates (count of pruneCandidates from filter_deprecation_candidates), dispatched_count (count of dispatch attempts; 0 when dryRun=true), success_count (deprecate_results with no error field), error_count (deprecate_results with error \u2014 typically 401/403 when calling identity lacks admin scope), dry_run_flag, candidates (the full pruneCandidate list, each with severity + reason). When dryRun=true the report's success_count and error_count are 0 and the candidates section is the actionable signal; when dryRun=false the report stratifies success vs error and the operator can read the audit trail. forward_pointers: replace-activity for severity 2-3 reviews (which prune-activity does not touch); extract-pattern for traces from successfully-deprecated templates (longer-horizon)."
+    }
+  ],
+  "metadata": {
+    "created": "2026-04-27",
+    "author": "activity-registry-quality-pass",
+    "embedded": true,
+    "bootstrapTemplate": false,
+    "openSpec": "2026-04-27-activity-registry-quality-pass",
+    "readOnly": false,
+    "writeGated": true,
+    "shapeNotes": {
+      "preexisting": [
+        "activityReview (informal \u2014 emitted by review-activity)",
+        "activityTemplate_deprecate (write resolver, advertised by activity-api per docs/impulse-types/LEARNING_LOOP_WRITE_RESOLVERS.md)",
+        "activityTemplate_deprecate_result (response shape from the write resolver)",
+        "coreActivitySet (informal \u2014 emitted by core-activity-audit)",
+        "goalEnd"
+      ],
+      "newOrInformal": [
+        "pruneCandidate \u2014 filtered subset of activityReview[] eligible for deprecation; carries {templateId, severity, reason, summary}",
+        "auditReport \u2014 registry-wide prune summary"
+      ]
+    },
+    "openQuestions": [
+      "DEFAULT-DRY-RUN POSTURE: dryRun defaults to true so first invocations are observable-without-mutation. The trade-off is that operators must explicitly flip the flag to actually deprecate; this is intentional given that activityTemplate_deprecate is admin-gated and irreversible-in-effect (the deprecated tag is set; subsequent invocations of that template are blocked). FOLLOW-UP: when the audit pipeline matures (after enough auditReports show predictable candidate sets), consider flipping the default to false in the boredom-task variant of this activity.",
+      "401/403 HANDLING: when the calling identity lacks admin scope, each per-iteration impulse-resolve call to activityTemplate_deprecate returns 401 or 403. The iteration aggregateAs=list captures these as per-iteration errors, so the audit signal is per-template (which templates got deprecated, which were blocked). SIMPLIFICATION: the chain does not short-circuit on the first 401 \u2014 it tries each candidate and reports the full success/error split. Operators reading the auditReport see whether a scope misconfiguration is the issue (all errors) vs a partial-permission case (some errors, some successes). FOLLOW-UP: add a precursor scope-check task that calls a hypothetical `identity.has_scope` resolver and short-circuits the chain when the scope is missing.",
+      "FILTER-IN-LLM: filter_deprecation_candidates uses an LLM iteration body to apply the severity + coreActivitySet exclusion gates. This is per-review LLM cost when a deterministic filter would suffice. SIMPLIFICATION: today the LLM body is bounded at maxTokens=250 per iteration; total cost for typical N=10 reviews is ~2.5K output tokens. FOLLOW-UP: register a deterministic `severity_filter` resolver that consumes the activityReview list + minSeverity + coreActivitySet and emits the pruneCandidate list without an LLM call (post-ship ribosome extraction).",
+      "REASON STRING ESCAPING: the iteration body's pointer config interpolates {{candidate.reason}} into the activityTemplate_deprecate pointer. When candidate.reason contains JSON-special characters (quotes, backslashes), the impulse-resolve call may produce malformed JSON. SIMPLIFICATION: the LLM body in filter_deprecation_candidates is instructed to emit reason as a one-line string (no quotes, no newlines); the JSON-stringification at iteration-resolve time handles escaping. FOLLOW-UP: add explicit escaping in the iteration resolver's interpolation path, OR enforce a max-length + alphanumeric+space-only constraint on reason."
+    ],
+    "limitations": [
+      "WRITE-GATED \u2014 gated on admin scope (activityTemplate_deprecate is admin-only). Default dryRun=true makes the chain observable-without-mutation; flip to false only after an audit run shows the expected candidate set.",
+      "Severity filter is heuristic \u2014 relies on review-activity's severity scoring (which is itself heuristic). Treat the prune candidate list as informative-not-canonical; an operator review step is recommended before flipping dryRun=false.",
+      "When activityReview[] is empty (review-activity not run in current session), the chain emits a goalEnd impulse describing the no-op (zero candidates).",
+      "401/403 errors do not short-circuit the iteration \u2014 each candidate is attempted and reported separately. The auditReport stratifies success vs error so an operator can diagnose scope misconfiguration vs partial permissions."
+    ],
+    "outputContract": "Always emits an `auditReport` impulse via emit_prune_report plus a `goalEnd` for explicit completion. When dryRun=false AND any deprecate call succeeds, also emits per-iteration `activityTemplate_deprecate_result` impulses (aggregated in deprecate_results).",
+    "subscriberContract": "Not a lifecycle subscriber. Dispatched explicitly \u2014 typically after review-activity completes and the operator (or a registry-quality orchestrator) decides to escalate to deprecation.",
+    "spec_reference": "OpenSpec change 2026-04-27-activity-registry-quality-pass (sibling #3 of 6). Sibling spec to 2026-04-27-meta-activity-builder."
+  }
+}

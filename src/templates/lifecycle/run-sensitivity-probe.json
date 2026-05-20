@@ -1,0 +1,157 @@
+{
+  "id": "run-sensitivity-probe",
+  "name": "Run Sensitivity Probe (test-audit-loop)",
+  "description": "Periodic perturbation runner for the test-audit loop (OpenSpec 2026-05-18-test-audit-loop §C). Takes a test_registration, iterates over its perturbation_schedule, executes the registered test once per perturbation (applying the perturbation to the test's declared inputs), captures the resulting test_report, compares observed vs predicted outcome, and emits one sensitivity_evidence impulse per (test, perturbation, run) triple. Aggregated over the trailing ≥7-day window the evidence drives audit-test-report's check_sensitivity_evidence task (insensitive-test detection). Default cadence is weekly via the existing weekly cron at validation/scripts/run-weekly-harness.sh; registrations may override via perturbation_cadence ∈ {daily, weekly, monthly}. Triggered immediately on lifecycle:test_registration:updated so a modified test is re-probed without waiting for the next cycle.",
+  "category": "meta",
+  "version": "0.1.0",
+  "tags": [
+    "lifecycle",
+    "meta",
+    "audit",
+    "sensitivity",
+    "test.audit.loop"
+  ],
+  "input_shapes": [
+    "test_registration"
+  ],
+  "output_shapes": [
+    "sensitivity_evidence"
+  ],
+  "variables": [
+    {
+      "name": "test_registration_id",
+      "type": "string",
+      "required": true,
+      "description": "Test id (test_registration.id) of the registration to probe. The weekly cron supplies one of these per registered test per dispatch; ad-hoc invocations (workbench, lifecycle:test_registration:updated handler) supply it directly."
+    },
+    {
+      "name": "run_id_prefix",
+      "type": "string",
+      "required": false,
+      "default": "probe",
+      "description": "Prefix for the run_id stamped on each emitted sensitivity_evidence row. Defaults to 'probe'; harness invocations may override with 'weekly-{date}' to make the trailing-window query deterministic per cron tick."
+    }
+  ],
+  "tasks": [
+    {
+      "id": "fetch_registration",
+      "description": "Read the test_registration to probe — needed for the perturbation_schedule and the inputs_schema (so the perturbation_application step knows how to map input_path to a concrete location in the test's input variables).",
+      "resolver": "impulse-resolve",
+      "config": {
+        "pointer": {
+          "type": "test_registration",
+          "test_id": "{{test_registration_id}}",
+          "limit": 1
+        }
+      },
+      "inputShapes": [],
+      "outputShapes": [
+        "test_registration"
+      ],
+      "outputImpulses": [
+        "fetch_registration_result"
+      ],
+      "notes": "Uses the new test_registration read shape (Phase A). When the registration is missing, the read returns an empty entries[] and the downstream iteration short-circuits with maxIterations=0; no perturbations execute, no evidence is emitted."
+    },
+    {
+      "id": "enumerate_perturbations",
+      "description": "Iterate over the registration's perturbation_schedule, executing the perturbed test once per entry and recording per-perturbation outcomes.",
+      "resolver": "iteration",
+      "config": {
+        "over": "{{impulse:fetch_registration_result.entries[0].perturbation_schedule}}",
+        "elementVar": "perturbation",
+        "indexVar": "i",
+        "body": {
+          "resolver": "activity",
+          "config": {
+            "templateId": "{{test_registration_id}}",
+            "reason": "sensitivity probe — perturbation {{perturbation.id}}",
+            "variables": {
+              "__perturbation_apply": "{{perturbation.apply}}",
+              "__perturbation_id": "{{perturbation.id}}",
+              "__sensitivity_probe_run_id": "{{run_id_prefix}}-{{lifecycle.executionId}}-{{i}}",
+              "_note": "The dispatched test reads the __perturbation_apply block to mutate its declared inputs per Perturbation.apply.{ input_path, transform }. Transforms recognised by the perturbation-application helper resolver: set_to_existing (replaces with an arbitrary existing-but-different value drawn from the live registry), unset (deletes the field), set:<value> (overrides with the literal value after the colon)."
+            }
+          },
+          "outputShapes": [
+            "test_report"
+          ]
+        },
+        "maxIterations": 32,
+        "stopOnError": false,
+        "aggregateAs": "list",
+        "outputShape": "enumerate_perturbations_result"
+      },
+      "dependencies": ["fetch_registration"],
+      "inputImpulses": ["fetch_registration_result"],
+      "inputShapes": [
+        "test_registration"
+      ],
+      "outputShapes": [
+        "test_report",
+        "enumerate_perturbations_result"
+      ],
+      "outputImpulses": [
+        "enumerate_perturbations_result"
+      ],
+      "notes": "The iteration body dispatches the registered test as an activity (templateId = test_registration.id, since tests are activities with output_shapes: ['test_report'] per design.md §E.1). The __perturbation_apply variable carries the transform spec the perturbation-application helper resolver (registered separately per tasks.md C.1.2) reads to mutate the test's declared inputs before execution. stopOnError=false ensures one failing perturbation does not abort the probe — each iteration's outcome (success/failure/error) becomes an observed_effect on the per-iteration sensitivity_evidence row."
+    },
+    {
+      "id": "compare_and_emit_evidence",
+      "description": "For each (perturbation, observed test_report) pair, compare observed_effect to perturbation.expected_effect and emit one sensitivity_evidence row via the sensitivity_evidence_write resolver. varied_as_predicted is true iff (expected_effect, observed_effect) match the predicted direction; numerical expected_delta vs observed_delta carries the magnitude for audit-test-report's downstream insensitive/noisy classification.",
+      "resolver": "iteration",
+      "config": {
+        "over": "{{impulse:enumerate_perturbations_result}}",
+        "elementVar": "iteration_outcome",
+        "indexVar": "i",
+        "body": {
+          "resolver": "impulse-resolve",
+          "config": {
+            "pointer": {
+              "type": "sensitivity_evidence_write",
+              "evidenceData": {
+                "test_registration_id": "{{test_registration_id}}",
+                "perturbation_id": "{{iteration_outcome.variables.__perturbation_id}}",
+                "run_id": "{{iteration_outcome.variables.__sensitivity_probe_run_id}}",
+                "expected_effect": "{{iteration_outcome.expected_effect}}",
+                "observed_effect": "__derived_from_iteration_outcome__",
+                "expected_delta": "{{iteration_outcome.expected_delta}}",
+                "observed_delta": "__derived_from_iteration_outcome__",
+                "varied_as_predicted": "__derived__",
+                "details": {
+                  "iteration_index": "{{i}}",
+                  "trace_status": "{{iteration_outcome.status}}"
+                }
+              }
+            }
+          }
+        },
+        "maxIterations": 32,
+        "stopOnError": false,
+        "aggregateAs": "list",
+        "outputShape": "compare_and_emit_evidence_result"
+      },
+      "dependencies": ["enumerate_perturbations"],
+      "inputImpulses": ["enumerate_perturbations_result"],
+      "inputShapes": [
+        "test_report"
+      ],
+      "outputShapes": [
+        "sensitivity_evidence"
+      ],
+      "outputImpulses": [
+        "compare_and_emit_evidence_result"
+      ],
+      "notes": "The __derived_from_iteration_outcome__ / __derived__ placeholders mark fields that need a tiny deterministic post-step the dispatch resolver runs before forwarding: observed_effect is computed from iteration_outcome.status (pass/fail) and the test_report's assertion verdict; varied_as_predicted is the boolean match against perturbation.expected_effect; observed_delta is derived from the per-test metric when the report carries one (else null). Until that post-step is fully wired in the iteration resolver, callers can pre-compute and inject the derived fields via a synthesise_evidence_rows resolver — the schema (SensitivityEvidenceSchema) tolerates either path. The aggregation result is the list of emitted ids, available to downstream audit-test-report dispatches that follow this probe."
+    }
+  ],
+  "metadata": {
+    "created": "2026-05-18",
+    "author": "test-audit-loop",
+    "embedded": true,
+    "openSpec": "2026-05-18-test-audit-loop",
+    "cadenceContract": "Default cadence is weekly via validation/scripts/run-weekly-harness.sh (Phase G). Registrations may override via test_registration.perturbation_cadence ∈ {daily, weekly, monthly}; cadence changes (or any testRegistration_write) fire lifecycle:test_registration:updated which triggers an immediate probe on the next dispatch tick (spec Requirement R3).",
+    "evidenceContract": "Emits one sensitivity_evidence impulse per (test, perturbation, run) triple. audit-test-report's check_sensitivity_evidence task queries the trailing ≥7-day window with ≥3 runs per perturbation. Below the window, audit-test-report tags the report with caveat 'missing_sensitivity_history' rather than failing — the probe is build-up history, not gate.",
+    "perturbationTransforms": "perturbation.apply.transform values recognised: 'set_to_existing' (replace with another existing value drawn from the live registry, useful for swapping missing_shape → existing_shape per the worked example in design.md §I), 'unset' (delete the field, e.g. unset ANTHROPIC_API_KEY), 'set:<literal>' (override with the literal after the colon, e.g. set:0.10 for budget_usd). Extensions land via the perturbation-application helper resolver per tasks.md C.1.2."
+  }
+}
