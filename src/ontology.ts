@@ -50,6 +50,28 @@ export interface ActivityTask {
   subActivityId?: string;
 }
 
+/**
+ * Subscription declaration for meta-activities that fire on lifecycle events.
+ * See openspec/changes/2026-05-19-ias-executor-as-canonical-host/design.md §E.
+ */
+export interface ActivityTemplateSubscription {
+  /** Lifecycle event type to subscribe to (e.g. "lifecycle:task:preBinding"). */
+  shape: string;
+  /** Optional structural filter; supports `_contains` / `_equals` suffix predicates. */
+  filter?: Record<string, unknown>;
+  /** When true, bypass top-K winnowing. Not load-bearing in the Phase 1 port. */
+  must_fire?: boolean;
+  /**
+   * Optional dedupe-key template (test-audit-loop spec §H). Placeholders
+   * `{field}` and `{nested.field}` resolve against the lifecycle payload.
+   * Example: `"{test_registration_id}:{audit_subtype}"`.
+   * May also live on the template directly (`ActivityTemplate.dedupe_key`)
+   * for parity with minibob's split between subscription-level and
+   * template-level dedupe keys.
+   */
+  dedupe_key?: string;
+}
+
 export interface ActivityTemplate {
   id: string;
   name: string;
@@ -57,6 +79,14 @@ export interface ActivityTemplate {
   inputShapes?: string[];
   outputShapes?: string[];
   tasks: ActivityTask[];
+  /** Tags for classification; consumed by depth-cap (`tags ∋ "audit"`). */
+  tags?: string[];
+  /** Free-form metadata (e.g. `auditDepthCap` consumed by the lifecycle subscriber). */
+  metadata?: Record<string, unknown>;
+  /** Lifecycle subscription declaration (design §E). */
+  subscription?: ActivityTemplateSubscription;
+  /** Top-level dedupe-key template (mirrors subscription.dedupe_key for parity). */
+  dedupe_key?: string;
 }
 
 export type ResolverTier = "deterministic" | "pattern" | "llm" | "external";
@@ -97,16 +127,26 @@ export interface ExecutionTrace {
   durationMs?: number;
 }
 
+/**
+ * Built-in lifecycle event types emitted by ActivityExecutor. Open-ended:
+ * the `lifecycle-subscriber` vessel (see lifecycle-subscriber.ts) matches on
+ * arbitrary string types like `"lifecycle:task:preBinding"` once future
+ * emissions are wired up. Keep the union as a documentation aid; the engine
+ * accepts any string.
+ */
+export type LifecycleEventType =
+  | "activity.started"
+  | "task.started"
+  | "task.completed"
+  | "activity.completed"
+  | "activity.failed"
+  | "impulse.created"
+  | "impulse.loaded"
+  | "lifecycle.emitted"
+  | (string & {});
+
 export interface LifecycleEvent {
-  type:
-    | "activity.started"
-    | "task.started"
-    | "task.completed"
-    | "activity.completed"
-    | "activity.failed"
-    | "impulse.created"
-    | "impulse.loaded"
-    | "lifecycle.emitted";
+  type: LifecycleEventType;
   timestamp: number;
   data: Record<string, unknown>;
 }
