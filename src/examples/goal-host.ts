@@ -178,8 +178,31 @@ class CatalogueWithFallback implements TemplateProvider {
   async getTemplate(id: string): Promise<ActivityTemplate | null> {
     const hit = await this.local.getTemplate(id);
     if (hit) return hit;
-    return this.remote.getTemplate(id);
+    const remote = await this.remote.getTemplate(id);
+    return remote ? normalizeMinibobTemplate(remote) : null;
   }
+}
+
+/**
+ * Template-load-time adapter: rewrites minibob-authored tasks to use the
+ * canonical resolver id. Minibob tasks with `resolver: null` and a
+ * `prompt: { template }` block get `resolver: "llm-prompt"` so the
+ * canonical-host substrate dispatches them correctly. SHARED_TEMPLATES
+ * (already in the local catalogue) are untouched.
+ *
+ * Spec: openspec/changes/2026-05-19-ias-executor-as-canonical-host §I
+ *   ("do not smuggle hidden built-ins" → keep engine dispatcher explicit;
+ *    fold null→llm-prompt at the adapter layer instead).
+ */
+function normalizeMinibobTemplate(template: ActivityTemplate): ActivityTemplate {
+  const tasks = (template.tasks ?? []).map((t) => {
+    const task = t as { resolver?: string | null; prompt?: { template?: string } };
+    if ((task.resolver == null) && typeof task.prompt?.template === "string") {
+      return { ...t, resolver: "llm-prompt" } as typeof t;
+    }
+    return t;
+  });
+  return { ...template, tasks } as ActivityTemplate;
 }
 
 // ────────────────────────────────────────────────────────────────────────
