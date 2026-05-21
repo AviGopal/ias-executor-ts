@@ -329,21 +329,31 @@ export class GoalHost {
       const parentExecutionId = data.executionId;
       const parentChain = data.compositionChain ?? [];
       const chain = parentExecutionId ? [...parentChain, parentExecutionId] : parentChain;
-      // 2026-05-20: WIP. Subscribers like slot-binding/validator-dispatch
-      // declare inputShapes:["lifecycle:task:preBinding"] etc., expecting
-      // the lifecycle payload as an impulse in scope. Seeding the impulse
-      // (impulses: [{shape: event.type, content: event.data}]) introduces
-      // a hang — likely a recursion path the universal depth-cap doesn't
-      // catch. Keeping the dispatcher minimal (no seed) until the
-      // recursion source is isolated. Failed subscriber executions surface
-      // via activity.failed with error="Task X requires shape Y..." — see
-      // validation/scripts/test-slot-binding-chain.ts. Track via task 39.
+      // 2026-05-20 task 40 fix: seed the lifecycle event payload as an
+      // impulse so subscriber templates with inputShapes:["lifecycle:*"]
+      // can satisfy their input-shape requirements at task time. The prior
+      // attempt hung because lifecycle:task:completed events lacked
+      // parentDepth/compositionChain in the payload, so the universal
+      // depth-cap never fired and runaway mutual recursion happened
+      // (slot-binding emits completed → validator-dispatch fires → emits
+      // preBinding/completed → slot-binding/validator-dispatch fire → ...).
+      // Fix landed in engine.ts: lifecycle:task:completed now includes
+      // parentDepth + compositionChain, so the cap correctly refuses past
+      // depth 2.
       // Subscriber failures must not cascade (spec §E.2). The vessel's
       // emit() already wraps this in try/catch; the executor itself isolates
       // its own errors via the failed-trace branch in engine.ts.
+      const lifecycleImpulse = {
+        id: this.runtime.random.id(`lifecycle:${event.type}`),
+        pointer: { type: "memo" as const },
+        metadata: { shape: event.type, source: "lifecycle-event" },
+        loaded: true as const,
+        content: event.data,
+      };
       await executor.execute(template, {
         parentExecutionId,
         compositionChain: chain,
+        impulses: [lifecycleImpulse],
       });
     };
 

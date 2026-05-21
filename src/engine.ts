@@ -256,6 +256,13 @@ export class ActivityExecutor {
             outputImpulseIds: storedOutputs.map((impulse) => impulse.id),
             inputShapes: declaredInputShapeNames,
             outputShapes: this.shapesOfImpulses(task, storedOutputs),
+            // 2026-05-20 fix (task 40): include depth info so the
+            // lifecycle-subscriber's universal depth-cap can refuse runaway
+            // recursion. Without this, subscribers on lifecycle:task:completed
+            // (validator-dispatch et al.) read parentDepth=undefined → cap
+            // never fires → unbounded mutual recursion when seeding.
+            parentDepth: compositionChain.length,
+            compositionChain,
           },
         });
       }
