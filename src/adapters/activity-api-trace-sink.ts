@@ -74,11 +74,26 @@ export class TranslatingTraceSink implements TraceSink {
       cost_usd: trace.costUsd ?? 0,
       execution_trace: {
         tasks: trace.tasks.map((t) => ({
-          id: t.taskId,
+          // Field names match activity-api's normalizePersistedTask reader
+          // (execution-traces.ts:82-130) — task_id / resolver_id / success /
+          // duration_ms / cost_usd are read at the top level, not nested.
+          // Earlier nested shape stored empty rows (task_id=undefined,
+          // resolver_id=undefined) which broke learning-loop attribution.
+          taskId: t.taskId,
+          task_id: t.taskId,
           description: (t as { description?: string }).description ?? t.taskId,
+          status: t.success ? "success" : "failure",
+          success: t.success,
+          resolver_id: t.resolverId,
+          duration_ms: (t as { durationMs?: number }).durationMs,
+          cost_usd: (t as { costUsd?: number }).costUsd,
           actualPrompt: (t as { actualPrompt?: string }).actualPrompt ?? "",
           toolCalls: [],
           response: (t as { response?: string }).response ?? "",
+          input_impulse_ids: t.inputImpulseIds ?? [],
+          output_impulse_ids: t.outputImpulseIds ?? [],
+          error: t.error,
+          // Keep nested result block too for any reader expecting the legacy shape.
           result: {
             status: t.success ? "success" : "failure",
             error: t.error,
