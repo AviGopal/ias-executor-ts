@@ -56,10 +56,15 @@ export function makeHelmfileSyncResolver(
       const imageRepo = colonIdx > 0 ? imageUri.slice(0, colonIdx) : imageUri;
       const imageTag = colonIdx > 0 ? imageUri.slice(colonIdx + 1) : "latest";
 
+      // deploymentWorkdir (from forge template config) takes precedence over
+      // the generic workingDirectory fallback so the chart path resolves to
+      // the deployment repo root rather than the caller's cwd.
       const workingDir =
-        typeof context.variables["workingDirectory"] === "string"
-          ? context.variables["workingDirectory"]
-          : process.cwd();
+        typeof context.variables["deploymentWorkdir"] === "string"
+          ? context.variables["deploymentWorkdir"]
+          : typeof context.variables["workingDirectory"] === "string"
+            ? context.variables["workingDirectory"]
+            : process.cwd();
 
       const uuid = context.random.id("overlay");
       const releaseName = `forge-${specShape.replace(/_/g, "-")}`;
