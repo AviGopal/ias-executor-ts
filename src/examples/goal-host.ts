@@ -205,7 +205,13 @@ class CatalogueWithFallback implements TemplateProvider {
 function normalizeMinibobTemplate(template: ActivityTemplate): ActivityTemplate {
   const tasks = (template.tasks ?? []).map((t) => {
     const task = t as { resolver?: string | null; prompt?: { template?: string } };
-    if ((task.resolver == null) && typeof task.prompt?.template === "string") {
+    const hasPromptTemplate = typeof task.prompt?.template === "string";
+    // Minibob's default LLM path: tasks with task.prompt.template either
+    // omit resolver entirely (resolver:null) or set resolver:"llm". Our
+    // built-in "llm" resolver expects task.config.prompt, not task.prompt
+    // — so route both forms to llm-prompt, which reads task.prompt.template
+    // + {{var}}/{{a.b.c}} interpolation directly.
+    if (hasPromptTemplate && (task.resolver == null || task.resolver === "llm")) {
       return { ...t, resolver: "llm-prompt" } as typeof t;
     }
     return t;
