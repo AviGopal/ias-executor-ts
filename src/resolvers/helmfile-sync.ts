@@ -49,7 +49,7 @@ export function makeHelmfileSyncResolver(
         spec = specImpulse.content as typeof spec;
       }
       // Flatten: LLM often returns {"vesselSpec": {"shape": ...}}
-      const specShape = spec.shape ?? spec.vesselSpec?.shape ?? context.variables["missingShape"] ?? "forged";
+      const specShape = String(spec.shape ?? spec.vesselSpec?.shape ?? context.variables["missingShape"] ?? "forged");
 
       // Derive image tag from the URI (last colon-separated segment)
       const colonIdx = imageUri.lastIndexOf(":");

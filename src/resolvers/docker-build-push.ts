@@ -44,7 +44,7 @@ export function makeDockerBuildPushResolver(docker: DockerPort): Resolver {
       } else {
         specObj = specImpulse.content as typeof specObj;
       }
-      const specShape = specObj.shape ?? specObj.vesselSpec?.shape ?? context.variables["missingShape"] ?? "forged";
+      const specShape = String(specObj.shape ?? specObj.vesselSpec?.shape ?? context.variables["missingShape"] ?? "forged");
 
       // Generate tag: metabobapp/forge-{shape}:{timestamp}-{short-uuid}
       // Shape name sanitized: underscores → dashes, lowercase

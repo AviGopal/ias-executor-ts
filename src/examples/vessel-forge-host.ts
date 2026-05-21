@@ -113,11 +113,11 @@ function makeForgeLLMResolver(llm: LLMPort): Resolver {
     id: "llm",
     tier: "llm",
     async resolve(context) {
-      let prompt = context.task.config?.prompt;
-      const systemPrompt = typeof context.task.config?.systemPrompt === "string" ? context.task.config.systemPrompt : undefined;
-      if (typeof prompt !== "string") throw new Error(`llm requires task.config.prompt`);
+      const rawPrompt = context.task.config?.["prompt"];
+      const systemPrompt = typeof context.task.config?.["systemPrompt"] === "string" ? context.task.config["systemPrompt"] : undefined;
+      if (typeof rawPrompt !== "string") throw new Error(`llm requires task.config.prompt`);
       // Interpolate {{variableName}} placeholders from context.variables
-      prompt = prompt.replace(/\{\{(\w+)\}\}/g, (_match: string, key: string) => {
+      const prompt = rawPrompt.replace(/\{\{(\w+)\}\}/g, (_match: string, key: string) => {
         const val = context.variables[key];
         return val !== undefined ? String(val) : `{{${key}}}`;
       });

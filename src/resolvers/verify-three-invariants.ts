@@ -55,7 +55,7 @@ export function makeVerifyThreeInvariantsResolver(
       } else {
         specObj = specImpulse.content as typeof specObj;
       }
-      const specShape = specObj.shape ?? specObj.vesselSpec?.shape ?? context.variables["missingShape"] ?? "";
+      const specShape = String(specObj.shape ?? specObj.vesselSpec?.shape ?? context.variables["missingShape"] ?? "");
       const spec = { shape: specShape };
 
       // Run all 3 probes in parallel
