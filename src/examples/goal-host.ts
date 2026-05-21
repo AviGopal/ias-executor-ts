@@ -57,6 +57,7 @@ import { makeLLMPromptResolver } from "../resolvers/llm-prompt";
 import { makeImpulsePreparationResolver } from "../resolvers/impulse-preparation";
 import { makeIterationResolver } from "../resolvers/iteration";
 import { makeImpulsePoolSelectionResolver } from "../resolvers/impulse-pool-selection";
+import { makeProducerSelectionResolver } from "../resolvers/producer-selection";
 import {
   BunFileSystemAdapter,
   BunProcessAdapter,
@@ -396,6 +397,17 @@ export class GoalHost {
     // requires HTTP fetch from activity-api impulse_relevance_metrics —
     // separate iteration.
     this.runtime.resolvers.register(makeImpulsePoolSelectionResolver());
+    // producer_selection: queries activity-api discover-by-shapes for
+    // producers of a missing shape. Graceful degradation: marks
+    // unbindable:true on HTTP failure or empty result so slot-binding's
+    // escalation chain (escalate_unbindable / agent_fill_fallback /
+    // forge_missing_shape) fires correctly. Thompson ranking deferred.
+    this.runtime.resolvers.register(
+      makeProducerSelectionResolver({
+        activityApiEndpoint: options.activityApiEndpoint,
+        activityApiKey: options.apiKey,
+      }),
+    );
 
     this.executor = new ActivityExecutor(this.runtime);
     executor = this.executor; // close the loop for the dispatcher
