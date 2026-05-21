@@ -55,6 +55,7 @@ import type {
 import type { Resolver } from "../resolvers";
 import { makeLLMPromptResolver } from "../resolvers/llm-prompt";
 import { makeImpulsePreparationResolver } from "../resolvers/impulse-preparation";
+import { makeIterationResolver } from "../resolvers/iteration";
 import {
   BunFileSystemAdapter,
   BunProcessAdapter,
@@ -380,6 +381,15 @@ export class GoalHost {
     // {inputShapes:["goal"], variables:{goal:"..."}} pattern without
     // spending an LLM call. Other operations (agent_fill, etc.) land later.
     this.runtime.resolvers.register(makeImpulsePreparationResolver());
+    // iteration resolver: foreach over an array, dispatch named inner
+    // resolver per element. Slot-binding tasks 2-3 (pool_precheck +
+    // select_or_produce) use this to iterate over missingShapes.
+    // Resolver lookup closure binds the registry at construction time —
+    // resolvers registered after this point are still looked up at call
+    // time because the closure reads from runtime.resolvers (mutable Map).
+    this.runtime.resolvers.register(
+      makeIterationResolver((id) => this.runtime.resolvers.get(id)),
+    );
 
     this.executor = new ActivityExecutor(this.runtime);
     executor = this.executor; // close the loop for the dispatcher
