@@ -59,6 +59,7 @@ import { makeIterationResolver } from "../resolvers/iteration";
 import { makeImpulsePoolSelectionResolver } from "../resolvers/impulse-pool-selection";
 import { makeProducerSelectionResolver } from "../resolvers/producer-selection";
 import { makeImpulseResolveResolver } from "../resolvers/impulse-resolve";
+import { makeValidationResolver } from "../resolvers/validation";
 import {
   BunFileSystemAdapter,
   BunProcessAdapter,
@@ -444,6 +445,10 @@ export class GoalHost {
         activityApiKey: options.apiKey,
       }),
     );
+    // validation: rule-mode validator used by audit-test-report's
+    // check_decision_record_complete and check_witness_presence tasks.
+    // Pattern-mode (requiredPatterns / forbiddenPatterns) deferred.
+    this.runtime.resolvers.register(makeValidationResolver());
 
     this.executor = new ActivityExecutor(this.runtime);
     executor = this.executor; // close the loop for the dispatcher
