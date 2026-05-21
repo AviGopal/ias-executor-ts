@@ -60,6 +60,7 @@ import { makeImpulsePoolSelectionResolver } from "../resolvers/impulse-pool-sele
 import { makeProducerSelectionResolver } from "../resolvers/producer-selection";
 import { makeImpulseResolveResolver } from "../resolvers/impulse-resolve";
 import { makeValidationResolver } from "../resolvers/validation";
+import { makeActivityResolver } from "../resolvers/activity";
 import {
   BunFileSystemAdapter,
   BunProcessAdapter,
@@ -449,6 +450,14 @@ export class GoalHost {
     // check_decision_record_complete and check_witness_presence tasks.
     // Pattern-mode (requiredPatterns / forbiddenPatterns) deferred.
     this.runtime.resolvers.register(makeValidationResolver());
+    // activity resolver: nested template dispatch via the injected executor.
+    // Used by validator-dispatch.dispatch_validators, slot-binding
+    // .escalate_unbindable, and any composition meta-activity that dispatches
+    // a sibling template. Executor closure mirrors the lifecycle-subscriber
+    // pattern — registered before the executor exists, looked up at call time.
+    this.runtime.resolvers.register(
+      makeActivityResolver({ executor: () => executor }),
+    );
 
     this.executor = new ActivityExecutor(this.runtime);
     executor = this.executor; // close the loop for the dispatcher

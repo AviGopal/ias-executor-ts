@@ -1,0 +1,129 @@
+/**
+ * activity resolver tests — nested template dispatch via injected executor.
+ */
+import { describe, expect, test } from "bun:test";
+import { makeActivityResolver } from "../src/resolvers/activity";
+import { ActivityExecutor } from "../src/engine";
+import { ExecutionRuntime } from "../src/runtime";
+import { SequentialRandom, SteppingClock, EventSinkSpy } from "./fakes";
+import type { ResolverContext } from "../src/resolvers";
+import type { ActivityTemplate } from "../src/ontology";
+import type { TemplateProvider } from "../src/ports";
+
+function makeNoopResolver(id: string) {
+  return {
+    id,
+    tier: "deterministic" as const,
+    async resolve(ctx: ResolverContext) {
+      return [
+        {
+          id: ctx.random.id(id),
+          pointer: { type: "memo" as const },
+          metadata: { shape: `${id}_result` },
+          loaded: true as const,
+          content: { ok: true },
+        },
+      ];
+    },
+  };
+}
+
+const childTemplate: ActivityTemplate = {
+  id: "child_tpl",
+  name: "Child",
+  tasks: [{ id: "t1", description: "", resolver: "noop", config: {} } as never],
+};
+
+function makeRuntimeAndExecutor(templateProvider?: TemplateProvider) {
+  const runtime = new ExecutionRuntime({
+    clock: new SteppingClock(1_000_000, 5),
+    random: new SequentialRandom(),
+    eventSink: new EventSinkSpy(),
+    templateProvider,
+  });
+  runtime.resolvers.register(makeNoopResolver("noop"));
+  const executor = new ActivityExecutor(runtime);
+  runtime.resolvers.register(makeActivityResolver({ executor: () => executor }));
+  return { runtime, executor };
+}
+
+function makeContext(
+  runtime: ExecutionRuntime,
+  config: Record<string, unknown>,
+  variables: Record<string, unknown> = {},
+): ResolverContext {
+  return {
+    executionId: "exec_parent",
+    template: { id: "p", name: "P", tasks: [{ id: "x", resolver: "activity", config } as never] },
+    task: { id: "x", description: "", resolver: "activity", config } as never,
+    variables,
+    inputImpulses: [],
+    store: runtime.store,
+    clock: runtime.clock,
+    random: runtime.random,
+    eventSink: runtime.eventSink,
+    traceSink: runtime.traceSink,
+    templateProvider: runtime.templateProvider,
+    attachedVessels: runtime.attachedVessels,
+  };
+}
+
+describe("activity resolver", () => {
+  test("dispatches inline template and returns summary impulse", async () => {
+    const { runtime } = makeRuntimeAndExecutor();
+    const resolver = runtime.resolvers.get("activity")!;
+    const ctx = makeContext(runtime, { template: childTemplate });
+    const impulses = await resolver.resolve(ctx);
+    expect(impulses).toHaveLength(1);
+    expect(impulses[0]!.metadata.shape).toBe("activityExecutionSummary");
+    const content = impulses[0]!.content as { templateId: string; taskCount: number; status: string };
+    expect(content.templateId).toBe("child_tpl");
+    expect(content.taskCount).toBe(1);
+    expect(content.status).toBe("completed");
+  });
+
+  test("resolves templateId via templateProvider", async () => {
+    const provider: TemplateProvider = {
+      async getTemplate(id: string) {
+        return id === "child_tpl" ? childTemplate : null;
+      },
+    };
+    const { runtime } = makeRuntimeAndExecutor(provider);
+    const resolver = runtime.resolvers.get("activity")!;
+    const ctx = makeContext(runtime, { templateId: "child_tpl" });
+    const impulses = await resolver.resolve(ctx);
+    expect(impulses[0]!.metadata.shape).toBe("activityExecutionSummary");
+    expect((impulses[0]!.content as { templateId: string }).templateId).toBe("child_tpl");
+  });
+
+  test("returns error impulse when neither template nor templateId provided", async () => {
+    const { runtime } = makeRuntimeAndExecutor();
+    const resolver = runtime.resolvers.get("activity")!;
+    const ctx = makeContext(runtime, {});
+    const impulses = await resolver.resolve(ctx);
+    expect(impulses[0]!.metadata.shape).toBe("activityExecutionError");
+    expect((impulses[0]!.content as { error: string }).error).toContain("missing template");
+  });
+
+  test("returns error impulse when templateId unresolvable", async () => {
+    const provider: TemplateProvider = { async getTemplate() { return null; } };
+    const { runtime } = makeRuntimeAndExecutor(provider);
+    const resolver = runtime.resolvers.get("activity")!;
+    const ctx = makeContext(runtime, { templateId: "missing" });
+    const impulses = await resolver.resolve(ctx);
+    expect(impulses[0]!.metadata.shape).toBe("activityExecutionError");
+  });
+
+  test("inline template wins over templateId", async () => {
+    const provider: TemplateProvider = {
+      async getTemplate() {
+        return { id: "other", name: "O", tasks: [] };
+      },
+    };
+    const { runtime } = makeRuntimeAndExecutor(provider);
+    const resolver = runtime.resolvers.get("activity")!;
+    const ctx = makeContext(runtime, { template: childTemplate, templateId: "other" });
+    const impulses = await resolver.resolve(ctx);
+    expect((impulses[0]!.content as { templateId: string }).templateId).toBe("child_tpl");
+  });
+});
