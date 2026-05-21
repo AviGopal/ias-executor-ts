@@ -20,12 +20,15 @@
 
 import type { Resolver, ResolverContext } from "../resolvers";
 import type { Impulse } from "../ontology";
+import type { LLMPort } from "../ports";
 
 interface SynthesiseConfig {
   operation?: string;
   missingShapes?: string | string[];
   variables?: string | Record<string, unknown>;
   executionId?: string;
+  /** agent_fill: optional goal/task description hint. */
+  goalDescription?: string;
 }
 
 /** Tolerate both JSON-stringified and native shapes from template interpolation. */
@@ -59,19 +62,102 @@ function coerceObject(value: unknown): Record<string, unknown> {
   return {};
 }
 
-export function makeImpulsePreparationResolver(): Resolver {
+/**
+ * agent_fill: LLM-of-last-resort for unbindable shapes. Dispatched by
+ * slot-binding.agent_fill_fallback when no producer exists. The LLM is
+ * asked to synthesise a JSON value for each missing shape; the output is
+ * wrapped as a degraded impulse so downstream tasks can proceed.
+ *
+ * Graceful degradation:
+ *   - No LLM port injected → emit one placeholder impulse per missing
+ *     shape with `degraded:true` and empty content. Slot-binding's
+ *     downstream tasks treat these as caveats.
+ *   - LLM call throws → same fallback as no-LLM path.
+ *   - LLM returns unparseable text → wrap the raw string as content.
+ */
+async function runAgentFill(
+  context: ResolverContext,
+  config: SynthesiseConfig,
+  llm: LLMPort | undefined,
+): Promise<Impulse[]> {
+  const missingShapes = coerceArray(config.missingShapes);
+  const variables = Object.keys(config.variables ?? {}).length > 0
+    ? coerceObject(config.variables)
+    : context.variables;
+  const executionId =
+    typeof config.executionId === "string" && config.executionId.length > 0
+      ? config.executionId
+      : context.executionId;
+  const goalHint = config.goalDescription ?? context.task.description ?? "";
+
+  const out: Impulse[] = [];
+  for (const shape of missingShapes) {
+    let content: string = "";
+    let degraded = true;
+    if (llm) {
+      try {
+        const prompt =
+          `You are the agent_fill fallback. The activity requires an impulse with shape "${shape}" ` +
+          `but no producer exists. Synthesise a minimal JSON object that plausibly represents this shape.\n\n` +
+          (goalHint ? `Task hint: ${goalHint}\n` : "") +
+          (Object.keys(variables).length > 0
+            ? `Known variables: ${JSON.stringify(variables).slice(0, 500)}\n`
+            : "") +
+          `Reply with ONLY the JSON value (no markdown, no prose).`;
+        const raw = await llm.generate({ prompt });
+        content = typeof raw === "string" ? raw.trim() : "";
+        degraded = content.length === 0;
+      } catch {
+        content = "";
+        degraded = true;
+      }
+    }
+    out.push({
+      id: context.random.id(`agent-fill:${shape}:${executionId}`),
+      pointer: { type: "memo" },
+      metadata: {
+        shape,
+        source: "agent-fill",
+        degraded,
+      },
+      loaded: true,
+      content: content.length > 0 ? content : `{"_agent_fill_placeholder":true,"shape":"${shape}"}`,
+    });
+  }
+  return out;
+}
+
+export function makeImpulsePreparationResolver(options: {
+  /** Optional LLM port for agent_fill operation. */
+  llm?: LLMPort;
+  /** Gate the agent_fill operation. Default false to preserve the
+   *  fail-fast "unbindable" semantics that slot-binding's downstream
+   *  tasks (consult_gap_cache / escalate_unbindable) depend on for
+   *  the fast-fail loop. Hosts that want LLM-of-last-resort opt in
+   *  explicitly. */
+  enableAgentFill?: boolean;
+} = {}): Resolver {
   return {
     id: "impulse_preparation",
     tier: "deterministic",
     async resolve(context: ResolverContext): Promise<Impulse[]> {
       const config = (context.task.config ?? {}) as SynthesiseConfig;
       const operation = config.operation ?? "synthesise_from_variables";
+      if (operation === "agent_fill") {
+        if (!options.enableAgentFill) {
+          throw new Error(
+            `impulse_preparation: operation "agent_fill" not enabled — pass enableAgentFill:true to opt in. ` +
+              `Without it, slot-binding's fail-fast unbindable path is preserved. See spec §4.`,
+          );
+        }
+        return await runAgentFill(context, config, options.llm);
+      }
       if (operation !== "synthesise_from_variables") {
-        // Out of scope for the minimum-viable port. Other operations
-        // (agent_fill, infer_expected_shapes, etc.) land separately.
+        // Other operations (infer_expected_shapes, create_goal_impulse,
+        // prepare_impulses_for_goal) land separately if needed.
         throw new Error(
           `impulse_preparation: operation "${operation}" not yet ported to ias-executor-ts. ` +
-            `Only synthesise_from_variables is implemented. See spec §4.`,
+            `Only synthesise_from_variables and agent_fill are implemented. See spec §4.`,
         );
       }
       // Slot-binding's prepare_pool task fills config from lifecycle payload

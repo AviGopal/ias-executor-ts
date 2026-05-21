@@ -270,6 +270,13 @@ export interface GoalHostOptions {
    * pair so tests stay quiet.
    */
   logger?: { warn: (msg: string) => void; debug: (msg: string) => void };
+  /**
+   * Enable impulse_preparation's `agent_fill` operation (LLM-of-last-resort
+   * for unbindable shapes). Default false — slot-binding's fail-fast path
+   * is preserved so test harnesses don't cascade into the chain's tail.
+   * Set true in production GoalHost wiring where LLM agent_fill is desired.
+   */
+  enableAgentFill?: boolean;
 }
 
 export interface GoalRunResult {
@@ -416,7 +423,12 @@ export class GoalHost {
     // synthesise_from_variables is implemented today — covers the common
     // {inputShapes:["goal"], variables:{goal:"..."}} pattern without
     // spending an LLM call. Other operations (agent_fill, etc.) land later.
-    this.runtime.resolvers.register(makeImpulsePreparationResolver());
+    this.runtime.resolvers.register(
+      makeImpulsePreparationResolver({
+        llm: options.llm,
+        enableAgentFill: options.enableAgentFill === true,
+      }),
+    );
     // iteration resolver: foreach over an array, dispatch named inner
     // resolver per element. Slot-binding tasks 2-3 (pool_precheck +
     // select_or_produce) use this to iterate over missingShapes.

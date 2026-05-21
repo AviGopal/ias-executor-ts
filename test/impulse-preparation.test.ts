@@ -127,9 +127,50 @@ describe("impulse_preparation: synthesise_from_variables", () => {
     expect(impulses[0]!.content).toBe("from-context");
   });
 
-  test("throws on unported operation", async () => {
+  test("throws on truly unported operation", async () => {
     const resolver = makeImpulsePreparationResolver();
-    const ctx = makeContext({ operation: "agent_fill", missingShapes: ["x"] });
+    const ctx = makeContext({ operation: "infer_expected_shapes", missingShapes: ["x"] });
     await expect(resolver.resolve(ctx)).rejects.toThrow(/not yet ported/);
+  });
+});
+
+describe("impulse_preparation: agent_fill", () => {
+  test("not enabled → throws to preserve slot-binding fail-fast path", async () => {
+    const resolver = makeImpulsePreparationResolver();
+    const ctx = makeContext({ operation: "agent_fill", missingShapes: ["shape_a"] });
+    await expect(resolver.resolve(ctx)).rejects.toThrow(/not enabled/);
+  });
+
+  test("enabled + no LLM → placeholder impulse per missing shape with degraded:true", async () => {
+    const resolver = makeImpulsePreparationResolver({ enableAgentFill: true });
+    const ctx = makeContext({ operation: "agent_fill", missingShapes: ["test_registration", "goal"] });
+    const impulses = await resolver.resolve(ctx);
+    expect(impulses.length).toBe(2);
+    expect(impulses.map((i) => i.metadata.shape).sort()).toEqual(["goal", "test_registration"]);
+    for (const imp of impulses) {
+      expect(imp.metadata.degraded).toBe(true);
+      expect(typeof imp.content).toBe("string");
+      expect(imp.content as string).toContain("_agent_fill_placeholder");
+    }
+  });
+
+  test("enabled + LLM → uses LLM output as content; not degraded", async () => {
+    const stubLLM = { async generate() { return '{"id":"reg-1","witness_types":["differential_solve"]}'; } };
+    const resolver = makeImpulsePreparationResolver({ llm: stubLLM, enableAgentFill: true });
+    const ctx = makeContext({ operation: "agent_fill", missingShapes: ["test_registration"] });
+    const impulses = await resolver.resolve(ctx);
+    expect(impulses.length).toBe(1);
+    expect(impulses[0]!.metadata.shape).toBe("test_registration");
+    expect(impulses[0]!.metadata.degraded).toBe(false);
+    expect(impulses[0]!.content).toContain("differential_solve");
+  });
+
+  test("enabled + LLM throws → degraded placeholder fallback", async () => {
+    const stubLLM = { async generate(): Promise<string> { throw new Error("upstream timeout"); } };
+    const resolver = makeImpulsePreparationResolver({ llm: stubLLM, enableAgentFill: true });
+    const ctx = makeContext({ operation: "agent_fill", missingShapes: ["shape_a"] });
+    const impulses = await resolver.resolve(ctx);
+    expect(impulses.length).toBe(1);
+    expect(impulses[0]!.metadata.degraded).toBe(true);
   });
 });
