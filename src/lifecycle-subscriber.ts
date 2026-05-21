@@ -223,8 +223,17 @@ export function refuseForDepthCap(
   template: ActivityTemplate,
   payload: Record<string, unknown>,
 ): boolean {
+  // 2026-05-20: depth-cap now applies to ALL subscriber templates, not just
+  // those tagged "audit". Reason: cross-template mutual recursion
+  // (slot-binding subscribes to preBinding; firing slot-binding emits more
+  // preBindings; validator-dispatch subscribes to completed, firing it
+  // emits more completed events). Self-subscription guard only catches
+  // SAME-template-id recursion, not cycles across subscriber pairs. A
+  // universal depth cap is the simplest correct guard.
+  // - Default cap: 2 (matches the prior audit-tag default). Composition
+  //   chains deeper than 2 nested subscriber dispatches refused.
+  // - Audit-tagged templates can override via metadata.auditDepthCap (≤4).
   const tags = template.tags ?? [];
-  if (!tags.includes("audit")) return false;
   const meta = (template.metadata ?? {}) as Record<string, unknown>;
   const declared =
     typeof meta.auditDepthCap === "number" ? meta.auditDepthCap : undefined;

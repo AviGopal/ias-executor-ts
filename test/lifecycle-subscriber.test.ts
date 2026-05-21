@@ -138,12 +138,15 @@ describe("resolveDedupeKey", () => {
 });
 
 describe("refuseForDepthCap", () => {
-  test("only audit-tagged templates participate", () => {
+  test("ALL subscriber templates participate (2026-05-20: was audit-only; universal cap prevents mutual recursion)", () => {
     const nonAudit = makeTemplate("t", { shape: "x" }, { tags: ["other"] });
-    expect(refuseForDepthCap(nonAudit, { parentDepth: 99 })).toBe(false);
+    // Below cap: allowed.
+    expect(refuseForDepthCap(nonAudit, { parentDepth: 1 })).toBe(false);
+    // At cap: refused.
+    expect(refuseForDepthCap(nonAudit, { parentDepth: 2 })).toBe(true);
   });
 
-  test("default cap = 2; parentDepth >= cap refuses", () => {
+  test("default cap = 2; parentDepth >= cap refuses (audit-tagged baseline behaviour)", () => {
     const audit = makeTemplate("t", { shape: "x" }, { tags: ["audit"] });
     expect(refuseForDepthCap(audit, { parentDepth: 1 })).toBe(false);
     expect(refuseForDepthCap(audit, { parentDepth: 2 })).toBe(true);
@@ -321,13 +324,17 @@ describe("LifecycleSubscriberVessel", () => {
     expect(warnings.some((m) => m.includes("depth-cap"))).toBe(true);
   });
 
-  test("untagged templates are never depth-refused", async () => {
+  test("untagged templates ARE depth-refused at the universal cap (2026-05-20 behaviour change)", async () => {
     const { calls, dispatcher } = recordingDispatcher();
     const vessel = new LifecycleSubscriberVessel({ dispatcher });
     vessel.register(makeTemplate("plain", { shape: "x" }));
 
-    await vessel.emit(makeEvent("x", { parentDepth: 100 }));
+    // Below cap: dispatches.
+    await vessel.emit(makeEvent("x", { parentDepth: 1 }));
+    expect(calls).toHaveLength(1);
 
+    // At/above cap: refused.
+    await vessel.emit(makeEvent("x", { parentDepth: 100 }));
     expect(calls).toHaveLength(1);
   });
 
