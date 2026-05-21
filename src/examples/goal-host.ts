@@ -56,6 +56,7 @@ import type { Resolver } from "../resolvers";
 import { makeLLMPromptResolver } from "../resolvers/llm-prompt";
 import { makeImpulsePreparationResolver } from "../resolvers/impulse-preparation";
 import { makeIterationResolver } from "../resolvers/iteration";
+import { makeImpulsePoolSelectionResolver } from "../resolvers/impulse-pool-selection";
 import {
   BunFileSystemAdapter,
   BunProcessAdapter,
@@ -390,6 +391,11 @@ export class GoalHost {
     this.runtime.resolvers.register(
       makeIterationResolver((id) => this.runtime.resolvers.get(id)),
     );
+    // impulse_pool_selection (minimal port — heuristic, returns first
+    // shape-matching candidate with degraded:true). Real Thompson ranking
+    // requires HTTP fetch from activity-api impulse_relevance_metrics —
+    // separate iteration.
+    this.runtime.resolvers.register(makeImpulsePoolSelectionResolver());
 
     this.executor = new ActivityExecutor(this.runtime);
     executor = this.executor; // close the loop for the dispatcher
