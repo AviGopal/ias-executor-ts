@@ -61,6 +61,7 @@ import { makeProducerSelectionResolver } from "../resolvers/producer-selection";
 import { makeImpulseResolveResolver } from "../resolvers/impulse-resolve";
 import { makeValidationResolver } from "../resolvers/validation";
 import { makeActivityResolver } from "../resolvers/activity";
+import { makeLearningSignalWriterResolver } from "../resolvers/learning-signal-writer";
 import {
   BunFileSystemAdapter,
   BunProcessAdapter,
@@ -457,6 +458,16 @@ export class GoalHost {
     // pattern — registered before the executor exists, looked up at call time.
     this.runtime.resolvers.register(
       makeActivityResolver({ executor: () => executor }),
+    );
+    // learning_signal_writer: validator-dispatch.write_learning_signals (task 5)
+    // writes α/β + tool-argument-pattern signals back to activity-api after
+    // the per-task validator chain settles. Best-effort: HTTP failures are
+    // captured into the result impulse, never thrown.
+    this.runtime.resolvers.register(
+      makeLearningSignalWriterResolver({
+        activityApiEndpoint: options.activityApiEndpoint,
+        activityApiKey: options.apiKey,
+      }),
     );
 
     this.executor = new ActivityExecutor(this.runtime);
