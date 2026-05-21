@@ -157,6 +157,7 @@ export class ActivityExecutor {
             traceSink: this.runtime.traceSink,
             templateProvider: this.runtime.templateProvider,
             attachedVessels: this.runtime.attachedVessels,
+            compositionChain,
           };
 
           // Retry semantics (design §J.4): read max_attempts (snake_case) or

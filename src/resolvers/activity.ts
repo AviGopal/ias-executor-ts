@@ -53,16 +53,14 @@ export function makeActivityResolver(options: {
       const templateId = config.templateId;
       const maxDepth = typeof config.maxDepth === "number" ? config.maxDepth : DEFAULT_MAX_DEPTH;
 
-      // Recursion guard via compositionChain length. Parent template stack
-      // available on context via `template.id` chain — we can't easily track
-      // the chain here, so we use the impulse-pool depth (executionId chain
-      // length) as a proxy. Tighter tracking lives in the engine's
-      // composition_chain field on traces.
-      // Minibob uses a global per-executionId map; we use the simpler
-      // template-provider-based lookup since each runtime is independent.
-      const currentDepth = 0; // depth proxy: not threaded through ResolverContext yet
+      // Recursion guard via compositionChain length. The engine populates
+      // context.compositionChain (root-first ancestor executionIds) — empty
+      // for top-level runs, growing by 1 per nested execute(). Defense-in-
+      // depth alongside the lifecycle-subscriber's refuseForDepthCap which
+      // bounds subscriber-driven recursion separately.
+      const currentDepth = context.compositionChain?.length ?? 0;
       if (currentDepth >= maxDepth) {
-        return [errorImpulse(context, `activity resolver: max recursion depth ${maxDepth} reached`)];
+        return [errorImpulse(context, `activity resolver: max recursion depth ${maxDepth} reached (chain length ${currentDepth})`)];
       }
 
       // Resolve the template to run.
@@ -90,10 +88,12 @@ export function makeActivityResolver(options: {
         const trace = await executor.execute(template, {
           variables,
           parentExecutionId: context.executionId,
-          // Use the resolver's own executionId as the chain anchor. The
-          // dispatcher in GoalHost would normally provide the chain; for
-          // direct-dispatched activities the chain starts here.
-          compositionChain: [context.executionId],
+          // Extend the parent's chain by appending the current executionId.
+          // When the engine is invoked top-level, context.compositionChain
+          // is empty → child chain = [parentExec]. When the activity resolver
+          // is itself called from a nested execution, the chain grows
+          // monotonically so recursion depth is observable + capped.
+          compositionChain: [...(context.compositionChain ?? []), context.executionId],
           reason: config.reason,
           goalContext: config.goal ? { goal: config.goal } : undefined,
         });

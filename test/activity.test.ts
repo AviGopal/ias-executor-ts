@@ -114,6 +114,33 @@ describe("activity resolver", () => {
     expect(impulses[0]!.metadata.shape).toBe("activityExecutionError");
   });
 
+  test("recursion guard fires when compositionChain meets maxDepth", async () => {
+    const { runtime } = makeRuntimeAndExecutor();
+    const resolver = runtime.resolvers.get("activity")!;
+    const ctx: ResolverContext = {
+      ...makeContext(runtime, { template: childTemplate, maxDepth: 3 }),
+      compositionChain: ["e1", "e2", "e3"], // depth = 3, equals cap
+    };
+    const impulses = await resolver.resolve(ctx);
+    expect(impulses[0]!.metadata.shape).toBe("activityExecutionError");
+    expect((impulses[0]!.content as { error: string }).error).toContain("max recursion depth");
+  });
+
+  test("child compositionChain extends parent's chain", async () => {
+    const { runtime } = makeRuntimeAndExecutor();
+    const resolver = runtime.resolvers.get("activity")!;
+    const ctx: ResolverContext = {
+      ...makeContext(runtime, { template: childTemplate }),
+      compositionChain: ["root"],
+    };
+    const impulses = await resolver.resolve(ctx);
+    // Success means depth-guard passed (depth=1 < default 10) — chain
+    // extension happens inside executor.execute, observable indirectly via
+    // the trace's nested-execution emission. The smoke check here is just
+    // that we didn't hit the cap.
+    expect(impulses[0]!.metadata.shape).toBe("activityExecutionSummary");
+  });
+
   test("inline template wins over templateId", async () => {
     const provider: TemplateProvider = {
       async getTemplate() {

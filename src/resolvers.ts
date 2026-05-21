@@ -15,6 +15,13 @@ export interface ResolverContext {
   traceSink: TraceSink;
   templateProvider?: TemplateProvider;
   attachedVessels: AttachedVesselRegistry;
+  /**
+   * Ancestor executionIds (root-first), populated by the engine from the
+   * execute() options. Empty for top-level runs. Resolvers that dispatch
+   * nested executions (e.g. activity, compose) read `.length` for recursion
+   * guards. Read-only — resolvers must not mutate.
+   */
+  compositionChain?: readonly string[];
 }
 
 export interface Resolver {
