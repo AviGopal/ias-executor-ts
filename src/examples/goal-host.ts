@@ -54,6 +54,7 @@ import type {
 } from "../ports";
 import type { Resolver } from "../resolvers";
 import { makeLLMPromptResolver } from "../resolvers/llm-prompt";
+import { makeImpulsePreparationResolver } from "../resolvers/impulse-preparation";
 import {
   BunFileSystemAdapter,
   BunProcessAdapter,
@@ -374,6 +375,11 @@ export class GoalHost {
     // task.prompt.template + {{var}} interpolation (minibob's default-LLM
     // path) without rewriting them.
     this.runtime.resolvers.register(makeLLMPromptResolver(options.llm));
+    // Slot-binding resolver chain port (canonical-host §4). Only
+    // synthesise_from_variables is implemented today — covers the common
+    // {inputShapes:["goal"], variables:{goal:"..."}} pattern without
+    // spending an LLM call. Other operations (agent_fill, etc.) land later.
+    this.runtime.resolvers.register(makeImpulsePreparationResolver());
 
     this.executor = new ActivityExecutor(this.runtime);
     executor = this.executor; // close the loop for the dispatcher
