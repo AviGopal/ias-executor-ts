@@ -58,6 +58,7 @@ import { makeImpulsePreparationResolver } from "../resolvers/impulse-preparation
 import { makeIterationResolver } from "../resolvers/iteration";
 import { makeImpulsePoolSelectionResolver } from "../resolvers/impulse-pool-selection";
 import { makeProducerSelectionResolver } from "../resolvers/producer-selection";
+import { makeImpulseResolveResolver } from "../resolvers/impulse-resolve";
 import {
   BunFileSystemAdapter,
   BunProcessAdapter,
@@ -423,6 +424,17 @@ export class GoalHost {
     // forge_missing_shape) fires correctly. Thompson ranking deferred.
     this.runtime.resolvers.register(
       makeProducerSelectionResolver({
+        activityApiEndpoint: options.activityApiEndpoint,
+        activityApiKey: options.apiKey,
+      }),
+    );
+    // impulse-resolve: generic shape-pointer dispatcher. Used by
+    // audit-test-report.fetch_test_report (pointer.type=test_report),
+    // slot-binding.consult_gap_cache (pointer.type=shape_gap_resolution),
+    // and many other lifecycle/registry-quality templates. POSTs to
+    // activity-api /v2/impulses/resolve with the static pointer.
+    this.runtime.resolvers.register(
+      makeImpulseResolveResolver({
         activityApiEndpoint: options.activityApiEndpoint,
         activityApiKey: options.apiKey,
       }),
