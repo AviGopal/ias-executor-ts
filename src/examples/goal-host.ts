@@ -365,8 +365,13 @@ export class GoalHost {
     });
 
     // Pre-register every subscriber template from the shared catalogue
-    // unless the host overrode the set (spec R4).
-    const subscribers = options.subscriberTemplates ?? loadSubscriberTemplates();
+    // unless the host overrode the set (spec R4). Apply the same
+    // template-normalization (resolver:null + prompt → "llm-prompt") that
+    // remote-fetched templates get — without this, SHARED_TEMPLATES with
+    // null-resolver tasks fail at "Resolver 'undefined' is not registered"
+    // even though they have a valid prompt.template (2026-05-21).
+    const rawSubscribers = options.subscriberTemplates ?? loadSubscriberTemplates();
+    const subscribers = rawSubscribers.map(normalizeMinibobTemplate);
     for (const sub of subscribers) {
       this.subscriber.register(sub);
     }
