@@ -131,6 +131,41 @@ describe("TranslatingTraceSink wire format", () => {
     await expect(sink.record(makeTrace())).resolves.toBeUndefined();
   });
 
+  test("canonical failure_mode passes through to activity-api", async () => {
+    const fetch = new CapturingFetch();
+    const sink = new TranslatingTraceSink("https://activity.test", "k", { fetch });
+    await sink.record(
+      makeTrace({
+        status: "failed",
+        failureMode: {
+          type: "budget_exhausted",
+          reason: "cost cap hit",
+          context: { budget_type: "cost", consumed: 1, allowed: 0.5 },
+        },
+      }),
+    );
+    const body = JSON.parse(fetch.capturedInit!.body as string) as Record<string, unknown>;
+    expect((body.failure_mode as { type: string }).type).toBe("budget_exhausted");
+  });
+
+  test("non-canonical failure_mode (execution_error) is stripped at wire boundary", async () => {
+    // activity-api's FailureModeSchema is a discriminatedUnion of 5 literal
+    // types. Sending `type: "execution_error"` (engine's internal label for
+    // unhandled resolver throws) would fail the discriminator. The sink
+    // filters it so the trace still lands with status=failed.
+    const fetch = new CapturingFetch();
+    const sink = new TranslatingTraceSink("https://activity.test", "k", { fetch });
+    await sink.record(
+      makeTrace({
+        status: "failed",
+        failureMode: { type: "execution_error", reason: "resolver threw" },
+      }),
+    );
+    const body = JSON.parse(fetch.capturedInit!.body as string) as Record<string, unknown>;
+    expect(body.failure_mode).toBeUndefined();
+    expect(body.status).toBe("failure");
+  });
+
   test("network error is logged and swallowed", async () => {
     const fetch: FetchPort = {
       async request() {

@@ -37,6 +37,20 @@ export interface TranslatingTraceSinkOptions {
   fetch?: FetchPort;
 }
 
+/**
+ * Canonical failure types accepted by activity-api's FailureModeSchema
+ * (discriminatedUnion in repos/metabob-activity-api/src/models/schemas.ts).
+ * Any other type the engine produces (e.g. "execution_error" for unhandled
+ * resolver throws) is filtered out at the wire boundary.
+ */
+const CANONICAL_FAILURE_TYPES = new Set([
+  "verifier_negative",
+  "budget_exhausted",
+  "safety_breach",
+  "cascading",
+  "user_abort",
+]);
+
 export class TranslatingTraceSink implements TraceSink {
   private readonly fetch: FetchPort;
 
@@ -120,7 +134,17 @@ export class TranslatingTraceSink implements TraceSink {
       },
       parent_execution_id: trace.parentExecutionId,
       composition_chain: trace.compositionChain,
-      failure_mode: trace.failureMode,
+      // activity-api's FailureModeSchema is a closed discriminatedUnion over
+      // five canonical types: verifier_negative, budget_exhausted,
+      // safety_breach, cascading, user_abort. The engine sometimes emits
+      // `type: "execution_error"` for unhandled resolver throws — useful
+      // internally but rejected by the discriminator. Filter at the wire
+      // boundary so the trace still lands (status: "failure" is the load-
+      // bearing signal); rich error info travels in the per-task error
+      // field instead.
+      failure_mode: CANONICAL_FAILURE_TYPES.has(trace.failureMode?.type as string)
+        ? trace.failureMode
+        : undefined,
     };
     try {
       const res = await this.fetch.request(
