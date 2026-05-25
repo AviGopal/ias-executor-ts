@@ -209,6 +209,7 @@
     },
     {
       "id": "compose_goal",
+      "resolver": "llm-prompt",
       "description": "Final task \u2014 LLM composes the goal-shaped output impulse from all five signals plus the parent-chain context.",
       "dependencies": [
         "forward_chain_producers",
