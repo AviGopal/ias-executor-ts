@@ -1,4 +1,4 @@
-export { GoalHost } from "./goal-host";
+export { GoalHost, InProcessLLMPort, HttpLLMPort, createLLMPort } from "./goal-host";
 export type { GoalHostOptions, GoalRunResult } from "./goal-host";
 export { VesselDaemon } from "./vessel-daemon";
 export type { VesselDaemonConfig, ResolverHandler, ResolverContext as DaemonResolverContext } from "./vessel-daemon";

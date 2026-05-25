@@ -698,6 +698,9 @@ export class GoalHost {
       variables?: Record<string, unknown>;
       targetTemplateId?: string;
       expectedOutputShapes?: string[];
+      /** For cross-vessel composition chain threading (design §D3). */
+      parentExecutionId?: string;
+      compositionChain?: string[];
     } = {},
   ): Promise<GoalRunResult> {
     const variables = opts.variables ?? {};
@@ -740,6 +743,8 @@ export class GoalHost {
       variables,
       impulses: [goalImpulse],
       goalContext: { goal: goalText },
+      ...(opts.parentExecutionId ? { parentExecutionId: opts.parentExecutionId } : {}),
+      ...(opts.compositionChain?.length ? { compositionChain: opts.compositionChain } : {}),
     });
 
     return { trace, selectedTemplateId: templateId, recommendCandidates: candidates };
