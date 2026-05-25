@@ -60,7 +60,7 @@
       "description": "Abort if parentDepth >= 2 to prevent infinite forge recursion.",
       "resolver": "bash",
       "config": {
-        "command": ["bash", "-c", "if [ '{{parentDepth}}' -ge 2 ]; then echo 'DEPTH_EXCEEDED'; exit 1; fi; echo 'OK'"],
+        "command": ["bash", "-c", "if [ '{{parentDepth}}' -ge 2 ]; then echo 'DEPTH_EXCEEDED'; exit 1; fi; if ! command -v docker >/dev/null 2>&1; then echo 'FORGE_ENV_NOT_SUPPORTED: docker not available'; exit 1; fi; if ! command -v helmfile >/dev/null 2>&1; then echo 'FORGE_ENV_NOT_SUPPORTED: helmfile not available'; exit 1; fi; echo 'OK'"],
         "timeout": 3000
       },
       "outputShapes": ["recursion_guard"],
