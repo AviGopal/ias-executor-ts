@@ -20,10 +20,7 @@
     "dedupe_key": "{test_registration_id}:{audit_subtype}"
   },
   "input_shapes": [
-    {
-      "shape": "test_audit_report",
-      "predicate": { "passed": false }
-    }
+    "test_audit_report"
   ],
   "output_shapes": [
     "code_modification_proposal",
