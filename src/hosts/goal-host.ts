@@ -220,6 +220,190 @@ function normalizeMinibobTemplate(template: ActivityTemplate): ActivityTemplate 
 }
 
 // ────────────────────────────────────────────────────────────────────────
+// LLM port implementations
+//
+// InProcessLLMPort — wraps an Anthropic/OpenAI client in-process.
+// HttpLLMPort      — delegates to llm-resolver-vessel via HTTP.
+//
+// Usage:
+//   // In-process (default; for tests or when LLM_VESSEL_ENDPOINT is absent):
+//   const llm = new InProcessLLMPort(anthropicClient);
+//
+//   // HTTP (when LLM_VESSEL_ENDPOINT env var is set):
+//   const llm = new HttpLLMPort("http://127.0.0.1:8220");
+//
+//   // Factory (reads env automatically):
+//   const llm = createLLMPort(anthropicClientOrUndefined);
+//
+// Spec: openspec/changes/2026-05-23-substrate-explicit-vessels Phase 2, task 2.5.
+// ────────────────────────────────────────────────────────────────────────
+
+/**
+ * InProcessLLMPort — wraps any object with an Anthropic-SDK-compatible
+ * `messages.create` shape into the `LLMPort` interface.
+ *
+ * Callers that already hold an Anthropic client instance should prefer this
+ * path for tests (zero HTTP overhead) and for single-process deploys where
+ * llm-resolver-vessel is not running.
+ */
+export class InProcessLLMPort implements LLMPort {
+  constructor(
+    private readonly client: {
+      messages: {
+        create(body: {
+          model: string;
+          max_tokens: number;
+          system?: string;
+          messages: Array<{ role: "user"; content: string }>;
+        }): Promise<{
+          content: Array<{ type: string; text?: string }>;
+        }>;
+      };
+    },
+    private readonly defaultModel = "claude-sonnet-4-20250514",
+    private readonly defaultMaxTokens = 4096,
+  ) {}
+
+  async generate(input: {
+    prompt: string;
+    systemPrompt?: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<string> {
+    const model = (input.metadata?.model as string | undefined) ?? this.defaultModel;
+    const maxTokens = (input.metadata?.max_tokens as number | undefined) ?? this.defaultMaxTokens;
+
+    const response = await this.client.messages.create({
+      model,
+      max_tokens: maxTokens,
+      ...(input.systemPrompt ? { system: input.systemPrompt } : {}),
+      messages: [{ role: "user", content: input.prompt }],
+    });
+
+    return response.content
+      .filter((b) => b.type === "text")
+      .map((b) => b.text ?? "")
+      .join("");
+  }
+}
+
+/**
+ * HttpLLMPort — calls llm-resolver-vessel's `llm_completion` resolver over
+ * localhost HTTP. Used when `LLM_VESSEL_ENDPOINT` is set, so that
+ * ANTHROPIC_API_KEY lives only in llm-resolver-vessel's env and is not
+ * needed by other vessels.
+ *
+ * Spec: openspec/changes/2026-05-23-substrate-explicit-vessels Phase 2, task 2.5.
+ *   D4 — credentials live only where they're needed (llm-resolver-vessel).
+ *   D2 — localhost HTTP overhead is negligible vs ≥500ms LLM call latency.
+ */
+export class HttpLLMPort implements LLMPort {
+  private readonly resolveUrl: string;
+
+  constructor(
+    vesselEndpoint: string,
+    private readonly defaultModel = "claude-sonnet-4-20250514",
+    private readonly defaultMaxTokens = 4096,
+  ) {
+    // Normalise: allow bare host ("http://127.0.0.1:8220") or full path
+    this.resolveUrl = vesselEndpoint.endsWith("/resolve")
+      ? vesselEndpoint
+      : `${vesselEndpoint.replace(/\/$/, "")}/resolve`;
+  }
+
+  async generate(input: {
+    prompt: string;
+    systemPrompt?: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<string> {
+    const model = (input.metadata?.model as string | undefined) ?? this.defaultModel;
+    const maxTokens = (input.metadata?.max_tokens as number | undefined) ?? this.defaultMaxTokens;
+
+    const body = {
+      type: "llm_completion",
+      prompt: input.prompt,
+      model,
+      max_tokens: maxTokens,
+      ...(input.systemPrompt ? { system: input.systemPrompt } : {}),
+    };
+
+    let response: Response;
+    try {
+      response = await fetch(this.resolveUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      throw new Error(
+        `HttpLLMPort: network error calling ${this.resolveUrl}: ${(err as Error).message}`,
+      );
+    }
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => "(no body)");
+      throw new Error(
+        `HttpLLMPort: llm-resolver-vessel returned HTTP ${response.status}: ${text}`,
+      );
+    }
+
+    const json = (await response.json()) as {
+      resolved: boolean;
+      content?: string;
+      error?: string;
+    };
+
+    if (!json.resolved || !json.content) {
+      throw new Error(
+        `HttpLLMPort: llm-resolver-vessel responded with resolved=false: ${json.error ?? "(unknown)"}`,
+      );
+    }
+
+    return json.content;
+  }
+}
+
+/**
+ * Factory that selects the correct `LLMPort` implementation based on
+ * the `LLM_VESSEL_ENDPOINT` environment variable.
+ *
+ * - When `LLM_VESSEL_ENDPOINT` is set: returns `HttpLLMPort` pointing at
+ *   llm-resolver-vessel. No Anthropic client is required; ANTHROPIC_API_KEY
+ *   lives only in llm-resolver-vessel's environment (spec D4).
+ * - Otherwise: returns `InProcessLLMPort` wrapping the supplied client.
+ *   This is the pre-Phase-2 behaviour — no behavioural change today.
+ *
+ * @param inProcessClient An Anthropic-SDK-compatible client. May be
+ *   `undefined` when `LLM_VESSEL_ENDPOINT` is set (the HTTP path does not
+ *   need a client).
+ */
+export function createLLMPort(
+  inProcessClient?: {
+    messages: {
+      create(body: {
+        model: string;
+        max_tokens: number;
+        system?: string;
+        messages: Array<{ role: "user"; content: string }>;
+      }): Promise<{
+        content: Array<{ type: string; text?: string }>;
+      }>;
+    };
+  },
+): LLMPort {
+  const vesselEndpoint = process.env.LLM_VESSEL_ENDPOINT;
+  if (vesselEndpoint) {
+    return new HttpLLMPort(vesselEndpoint);
+  }
+  if (!inProcessClient) {
+    throw new Error(
+      "createLLMPort: LLM_VESSEL_ENDPOINT is not set and no inProcessClient was provided. " +
+      "Either set LLM_VESSEL_ENDPOINT=http://127.0.0.1:8220 or supply an Anthropic client.",
+    );
+  }
+  return new InProcessLLMPort(inProcessClient);
+}
+
+// ────────────────────────────────────────────────────────────────────────
 // Options + result types
 // ────────────────────────────────────────────────────────────────────────
 
