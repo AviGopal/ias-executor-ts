@@ -24,6 +24,12 @@ export interface DiscoveryRegistrationLoopConfig {
   port: number;
   /** Heartbeat interval in ms. Default 60_000. */
   heartbeatIntervalMs?: number;
+  /**
+   * Mark this vessel as a system-level vessel (not tenant-scoped).
+   * Required for substrate services so they appear in all org-scoped discovery
+   * queries. Vessels without orgId AND without systemVessel=true are invisible.
+   */
+  systemVessel?: boolean;
 }
 
 export class DiscoveryRegistrationLoop {
@@ -82,6 +88,7 @@ export class DiscoveryRegistrationLoop {
       auth_scheme: "ApiKey",
       resolve_timeout_ms: 10_000,
       port: this.config.port,
+      ...(this.config.systemVessel ? { systemVessel: true } : {}),
     };
   }
 

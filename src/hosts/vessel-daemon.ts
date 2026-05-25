@@ -53,6 +53,12 @@ export interface VesselDaemonConfig {
    * Set false only in tests.
    */
   enforceCompositionChain?: boolean;
+  /**
+   * Mark this vessel as a system-level substrate service (not tenant-scoped).
+   * Propagated to DiscoveryRegistrationLoop so the vessel appears in all
+   * org-scoped discovery queries. Required for substrate services.
+   */
+  systemVessel?: boolean;
 }
 
 export class VesselDaemon {
@@ -78,6 +84,7 @@ export class VesselDaemon {
         resolveEndpoint: `http://localhost:${config.port}/resolve`,
         apiKey: config.apiKey,
         port: config.port,
+        ...(config.systemVessel ? { systemVessel: true } : {}),
       });
 
       this.discoveryLoop.onUnhealthy(() => {
