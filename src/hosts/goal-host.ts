@@ -701,6 +701,8 @@ export class GoalHost {
       /** For cross-vessel composition chain threading (design §D3). */
       parentExecutionId?: string;
       compositionChain?: string[];
+      /** Classification tags written into the execution trace (e.g. "intent:topology_discovery"). */
+      tags?: string[];
     } = {},
   ): Promise<GoalRunResult> {
     const variables = opts.variables ?? {};
@@ -743,6 +745,7 @@ export class GoalHost {
       variables,
       impulses: [goalImpulse],
       goalContext: { goal: goalText },
+      ...(opts.tags?.length ? { tags: opts.tags } : {}),
       ...(opts.parentExecutionId ? { parentExecutionId: opts.parentExecutionId } : {}),
       ...(opts.compositionChain?.length ? { compositionChain: opts.compositionChain } : {}),
     });

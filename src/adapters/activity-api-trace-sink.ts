@@ -132,6 +132,7 @@ export class TranslatingTraceSink implements TraceSink {
         impulsesCreated: trace.outputImpulseIds ?? [],
         filesModified: [],
       },
+      tags: trace.tags,
       parent_execution_id: trace.parentExecutionId,
       composition_chain: trace.compositionChain,
       // activity-api's FailureModeSchema is a closed discriminatedUnion over

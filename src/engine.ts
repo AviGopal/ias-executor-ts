@@ -17,6 +17,8 @@ export interface ExecuteOptions {
   budget?: ExecutionBudget;
   parentExecutionId?: string;
   compositionChain?: string[];
+  /** Classification tags written into the execution trace (e.g. "intent:topology_discovery"). */
+  tags?: string[];
   /** Optional goal context forwarded into `lifecycle:*` payloads so subscribers
    *  (e.g. slot-binding's escalate_unbindable → create-shape-provider-goal)
    *  can read the parent goal without recomputing from variables. Matches
@@ -275,6 +277,7 @@ export class ActivityExecutor {
         templateName: template.name,
         status: "completed",
         reason: options.reason,
+        tags: options.tags,
         parentExecutionId: options.parentExecutionId,
         compositionChain: compositionChain.length > 0 ? compositionChain : undefined,
         inputImpulseIds,
@@ -349,6 +352,7 @@ export class ActivityExecutor {
         templateName: template.name,
         status: "failed",
         reason: options.reason,
+        tags: options.tags,
         parentExecutionId: options.parentExecutionId,
         compositionChain: compositionChain.length > 0 ? compositionChain : undefined,
         inputImpulseIds,
