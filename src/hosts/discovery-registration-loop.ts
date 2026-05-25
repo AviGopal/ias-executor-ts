@@ -71,9 +71,11 @@ export class DiscoveryRegistrationLoop {
   // ────────────────────────────────────────────────────────────────────────
 
   private registrationPayload() {
+    const baseUrl = `http://127.0.0.1:${this.config.port}`;
     return {
-      id: this.config.vesselId,
+      vesselId: this.config.vesselId,
       name: this.config.vesselName,
+      endpoint: baseUrl,
       shapes: this.config.shapes,
       resolve_endpoint: this.config.resolveEndpoint,
       resolve_request_format: "pointer",
@@ -115,7 +117,7 @@ export class DiscoveryRegistrationLoop {
       const res = await fetch(`${this.config.discoveryEndpoint}/heartbeat`, {
         method: "POST",
         headers: this.headers(),
-        body: JSON.stringify({ id: this.config.vesselId }),
+        body: JSON.stringify({ vesselId: this.config.vesselId }),
       });
       if (res.ok) {
         this.failureCount = 0;
