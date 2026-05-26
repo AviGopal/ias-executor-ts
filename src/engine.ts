@@ -107,6 +107,21 @@ export class ActivityExecutor {
               parentGoalText: options.goalContext?.goal,
             },
           });
+          if (missingShapes.length > 0) {
+            await this.emit({
+              type: "lifecycle:gap:classified",
+              timestamp: this.runtime.clock.now(),
+              data: {
+                gapType: "missing_input_shapes",
+                taskId: task.id,
+                templateId: template.id,
+                executionId,
+                missingShapes,
+                presentShapes: poolShapes,
+                parentDepth: compositionChain.length,
+              },
+            });
+          }
         }
 
         await this.emit({
@@ -143,6 +158,18 @@ export class ActivityExecutor {
         } else {
           const resolver = this.runtime.resolvers.get(task.resolver);
           if (!resolver) {
+            await this.emit({
+              type: "lifecycle:gap:classified",
+              timestamp: this.runtime.clock.now(),
+              data: {
+                gapType: "resolver_not_registered",
+                taskId: task.id,
+                templateId: template.id,
+                executionId,
+                resolverId: task.resolver,
+                parentDepth: compositionChain.length,
+              },
+            });
             throw new Error(`Resolver '${task.resolver}' is not registered`);
           }
 
