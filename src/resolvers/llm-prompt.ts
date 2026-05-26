@@ -97,6 +97,27 @@ export function makeLLMPromptResolver(llm: LLMPort): Resolver {
       const systemPrompt = typeof taskAny.prompt?.systemPrompt === "string"
         ? taskAny.prompt.systemPrompt
         : undefined;
+
+      // Emit lifecycle:llm:dispatched before the LLM call so audit subscribers can
+      // verify the rendered prompt contains the expected input-impulse content.
+      // This is the audit primitive that makes the inputImpulses fix verifiable
+      // without log archaeology (investigation-027 §lifecycle:llm:dispatched).
+      await context.eventSink.emit({
+        type: "lifecycle:llm:dispatched",
+        timestamp: context.clock.now(),
+        data: {
+          executionId: context.executionId,
+          taskId: context.task.id,
+          templateId: context.template.id,
+          renderedPrompt: prompt,
+          inputImpulseIds: context.inputImpulses.map((imp) => imp.id),
+          inputShapes: context.inputImpulses.map(
+            (imp) => (imp.metadata as Record<string, unknown> | undefined)?.["shape"] ?? imp.pointer.type,
+          ),
+          variables: context.variables,
+        },
+      });
+
       const text = await llm.generate({ prompt, systemPrompt });
       return [
         {

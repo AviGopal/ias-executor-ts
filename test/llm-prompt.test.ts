@@ -24,11 +24,12 @@ class CapturingLLM implements LLMPort {
 function makeContext(
   task: Record<string, unknown>,
   variables: Record<string, unknown> = {},
-): ResolverContext {
+): ResolverContext & { eventSpy: EventSinkSpy } {
+  const eventSpy = new EventSinkSpy();
   const runtime = new ExecutionRuntime({
     clock: new SteppingClock(1_000_000, 5),
     random: new SequentialRandom(),
-    eventSink: new EventSinkSpy(),
+    eventSink: eventSpy,
   });
   return {
     executionId: "exec_test",
@@ -42,6 +43,7 @@ function makeContext(
     eventSink: runtime.eventSink,
     traceSink: runtime.traceSink,
     attachedVessels: runtime.attachedVessels,
+    eventSpy,
   };
 }
 
@@ -157,5 +159,31 @@ describe("makeLLMPromptResolver", () => {
     const resolver = makeLLMPromptResolver(new CapturingLLM());
     expect(resolver.id).toBe("llm-prompt");
     expect(resolver.tier).toBe("llm");
+  });
+
+  test("emits lifecycle:llm:dispatched with rendered prompt and input impulse metadata", async () => {
+    const llm = new CapturingLLM("result");
+    const resolver = makeLLMPromptResolver(llm);
+    const ctx = makeContext(
+      { id: "task-audit", description: "", resolver: null, prompt: { template: "data: {{myReport}}" } },
+      {},
+    );
+    (ctx.inputImpulses as unknown[]).push({
+      id: "imp_audit",
+      pointer: { type: "memo" },
+      metadata: { shape: "myReport", summary: "..." },
+      loaded: true,
+      content: "the-report",
+    });
+    await resolver.resolve(ctx);
+    const events = ctx.eventSpy.ofType("lifecycle:llm:dispatched");
+    expect(events.length).toBe(1);
+    const ev = events[0]!;
+    expect(ev.data["executionId"]).toBe("exec_test");
+    expect(ev.data["taskId"]).toBe("task-audit");
+    expect(ev.data["templateId"]).toBe("t");
+    expect(ev.data["renderedPrompt"]).toBe("data: the-report");
+    expect(ev.data["inputImpulseIds"]).toEqual(["imp_audit"]);
+    expect(ev.data["inputShapes"]).toEqual(["myReport"]);
   });
 });
