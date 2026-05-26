@@ -82,7 +82,18 @@ export function makeLLMPromptResolver(llm: LLMPort): Resolver {
           `llm-prompt resolver requires task.prompt.template (got ${JSON.stringify(taskAny.prompt)})`,
         );
       }
-      const prompt = interpolate(template, context.variables);
+      // Merge resolved inputImpulses into variables, keyed by shape name.
+      // This makes declared inputShapes available as {{shapeName}} placeholders —
+      // the foundation-native path that was already wired but never honored here.
+      // context.variables wins on collision so explicit overrides still work.
+      const impulseVars: Record<string, unknown> = {};
+      for (const imp of context.inputImpulses) {
+        const shape = (imp.metadata as Record<string, unknown> | undefined)?.["shape"] as string | undefined;
+        if (shape && imp.loaded && imp.content != null && !(shape in impulseVars)) {
+          impulseVars[shape] = imp.content;
+        }
+      }
+      const prompt = interpolate(template, { ...impulseVars, ...context.variables });
       const systemPrompt = typeof taskAny.prompt?.systemPrompt === "string"
         ? taskAny.prompt.systemPrompt
         : undefined;

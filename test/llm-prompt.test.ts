@@ -105,6 +105,54 @@ describe("makeLLMPromptResolver", () => {
     await expect(resolver.resolve(context)).rejects.toThrow(/requires task.prompt.template/);
   });
 
+  test("injects resolved inputImpulses as {{shapeName}} variables (vars win on collision)", async () => {
+    const llm = new CapturingLLM("result");
+    const resolver = makeLLMPromptResolver(llm);
+    const context = makeContext(
+      { id: "t", description: "", resolver: null, prompt: { template: "report: {{failureModeReport}} goal: {{goal}}" } },
+      { goal: "find gaps", failureModeReport: "override-wins" },
+    );
+    // Add a loaded impulse with shape failureModeReport — should be shadowed by the explicit variable
+    (context.inputImpulses as unknown[]).push({
+      id: "imp_1",
+      pointer: { type: "memo" },
+      metadata: { shape: "failureModeReport", summary: "..." },
+      loaded: true,
+      content: "impulse-content-should-not-appear",
+    });
+    // Add a second impulse with a different shape — should be injected
+    (context.inputImpulses as unknown[]).push({
+      id: "imp_2",
+      pointer: { type: "memo" },
+      metadata: { shape: "coverageReport", summary: "..." },
+      loaded: true,
+      content: "coverage-data",
+    });
+    const impulses = await resolver.resolve(context);
+    // explicit variable wins over impulse: "report: override-wins goal: find gaps"
+    expect(llm.lastInput?.prompt).toContain("report: override-wins");
+    expect(llm.lastInput?.prompt).toContain("goal: find gaps");
+    expect(impulses[0]!.metadata.shape).toBe("llmText");
+  });
+
+  test("inputImpulse content available as {{shapeName}} when no variable collision", async () => {
+    const llm = new CapturingLLM("done");
+    const resolver = makeLLMPromptResolver(llm);
+    const context = makeContext(
+      { id: "t", description: "", resolver: null, prompt: { template: "data: {{myReport}}" } },
+      {},
+    );
+    (context.inputImpulses as unknown[]).push({
+      id: "imp_1",
+      pointer: { type: "memo" },
+      metadata: { shape: "myReport", summary: "..." },
+      loaded: true,
+      content: "the-report-body",
+    });
+    await resolver.resolve(context);
+    expect(llm.lastInput?.prompt).toBe("data: the-report-body");
+  });
+
   test("resolver id is 'llm-prompt' (distinct from 'llm')", () => {
     const resolver = makeLLMPromptResolver(new CapturingLLM());
     expect(resolver.id).toBe("llm-prompt");
