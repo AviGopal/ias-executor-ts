@@ -16,3 +16,5 @@ export type {
 } from "./activity-api-adapter";
 export { TranslatingTraceSink } from "./activity-api-trace-sink";
 export type { TranslatingTraceSinkOptions } from "./activity-api-trace-sink";
+export { BusForwardingEventSink, mapEventTypeToBusForm } from "./bus-forwarder";
+export type { BusForwardingEventSinkOptions } from "./bus-forwarder";
