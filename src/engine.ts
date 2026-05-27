@@ -131,7 +131,7 @@ export class ActivityExecutor {
         });
 
         const taskStart = this.runtime.clock.now();
-        const inputImpulses = this.resolveInputs(task.inputShapes ?? [], task.id);
+        const inputImpulses = await this.resolveInputs(task.inputShapes ?? [], task.id);
 
         let storedOutputs: Impulse[];
         let taskCostUsd: number | undefined;
@@ -447,23 +447,73 @@ export class ActivityExecutor {
     return { outputs, childTrace };
   }
 
-  private resolveInputs(shapes: (string | InputShapeRef)[], taskId: string): Impulse[] {
-    return shapes.flatMap((entry) => {
+  /**
+   * Resolve declared input shapes against the current impulse store.
+   *
+   * Per audit investigation-028 recommendation C (inv-028 C, 2026-05-27):
+   * the previous implementation threw immediately if a declared shape was
+   * absent from the store, even though slot-binding subscribers fire on
+   * `lifecycle:task:preBinding` and are expected to populate the missing
+   * shape before this point. The previous "synchronous-enough" assumption
+   * was the fragility the audit flagged.
+   *
+   * This version polls the store for each missing shape with a configurable
+   * deadline. Default `EXECUTOR_INPUT_RESOLUTION_TIMEOUT_MS = 0` preserves
+   * the original behavior (no waiting). Set to a positive value (e.g. 5000)
+   * to give lifecycle subscribers a deterministic window to populate the
+   * store before this throws.
+   *
+   * Implementation: per-shape independent polling. As soon as a shape's
+   * candidates appear (and meet the cardinality requirement), it's
+   * resolved. The deadline applies to the slowest shape, not the sum.
+   *
+   * Polling cadence: 50ms. Microtask-friendly — gives event loop time to
+   * dispatch subscribers between checks.
+   */
+  private async resolveInputs(
+    shapes: (string | InputShapeRef)[],
+    taskId: string,
+  ): Promise<Impulse[]> {
+    const timeoutMs = parseInt(
+      process.env["EXECUTOR_INPUT_RESOLUTION_TIMEOUT_MS"] ?? "0",
+      10,
+    );
+    const deadline = Date.now() + (Number.isFinite(timeoutMs) ? Math.max(0, timeoutMs) : 0);
+    const POLL_INTERVAL_MS = 50;
+
+    const resolved: Impulse[] = [];
+
+    for (const entry of shapes) {
       const ref: InputShapeRef = typeof entry === "string"
         ? { shape: entry, cardinality: "any" }
         : { cardinality: "any", ...entry };
 
-      const byShape = this.runtime.store.findByShape(ref.shape);
+      const filterCandidates = (): Impulse[] => {
+        const byShape = this.runtime.store.findByShape(ref.shape);
+        return ref.producedBy
+          ? byShape.filter((imp) =>
+              imp.metadata.producedBy === ref.producedBy
+              || imp.metadata.produced_at_task_id === ref.producedBy,
+            )
+          : byShape;
+      };
 
-      // Predicate filter: producedBy narrows to impulses with matching metadata
-      const candidates = ref.producedBy
-        ? byShape.filter((imp) => imp.metadata.producedBy === ref.producedBy || imp.metadata.produced_at_task_id === ref.producedBy)
-        : byShape;
+      let candidates = filterCandidates();
+
+      // Poll loop: wait for slot-binding subscribers to populate the store.
+      // No-op when EXECUTOR_INPUT_RESOLUTION_TIMEOUT_MS=0 (default).
+      while (candidates.length === 0 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+        candidates = filterCandidates();
+      }
 
       if (candidates.length === 0) {
         const predDesc = ref.producedBy ? ` (producedBy=${ref.producedBy})` : "";
+        const waitDesc = timeoutMs > 0
+          ? ` (waited ${timeoutMs}ms for slot-binding subscribers)`
+          : "";
         throw new Error(
-          `Task '${taskId}' requires shape '${ref.shape}'${predDesc} but no matching impulses were found`,
+          `Task '${taskId}' requires shape '${ref.shape}'${predDesc} but no matching impulses were found${waitDesc}`,
         );
       }
 
@@ -473,8 +523,10 @@ export class ActivityExecutor {
         );
       }
 
-      return candidates;
-    });
+      resolved.push(...candidates);
+    }
+
+    return resolved;
   }
 
   /**
