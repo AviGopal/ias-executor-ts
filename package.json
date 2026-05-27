@@ -31,7 +31,8 @@
   "scripts": {
     "build": "tsc --project tsconfig.build.json",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "dist:check": "bun run scripts/verify-dist-fresh.ts"
   },
   "keywords": [
     "impulse",
