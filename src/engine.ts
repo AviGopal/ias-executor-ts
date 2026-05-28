@@ -66,6 +66,23 @@ export class ActivityExecutor {
     let totalCostUsd = 0;
     const budget = options.budget;
 
+    // Accumulated variables across tasks. Starts as request-level variables and
+    // grows after each task succeeds with minibob-convention keys:
+    //   <taskId>_text       — string content of the first output impulse (if any)
+    //   <taskId>_content    — same as _text (alias)
+    //   <taskId>_valueJson  — JSON-stringified content (for json_path_extract et al.)
+    //   <taskId>_<shapeName>— content keyed by output impulse shape (when single shape)
+    //
+    // Without this propagation, multi-task chains like draft-gap-closing-activity
+    // (whose register_variant uses `{{draft_via_llm_text}}`) silently fail —
+    // the placeholder remains literal because context.variables only contained
+    // request-level vars. The engine reports task=success because the resolver
+    // (e.g. activity_create_variant) is called with malformed input but the
+    // proxy didn't propagate the structuredError. This was the load-bearing
+    // gap blocking lift: substrate-authored templates couldn't reach
+    // activity-api with their LLM-drafted content.
+    const accumulatedVariables: Record<string, unknown> = { ...(options.variables ?? {}) };
+
     try {
       for (const task of template.tasks) {
         if (budget?.maxTaskCount !== undefined && taskRecords.length >= budget.maxTaskCount) {
@@ -143,7 +160,7 @@ export class ActivityExecutor {
             executionId,
             inputImpulses,
             compositionChain,
-            variables: options.variables ?? {},
+            variables: accumulatedVariables,
             budget,
           });
           storedOutputs = result.outputs;
@@ -177,7 +194,11 @@ export class ActivityExecutor {
             executionId,
             template,
             task,
-            variables: options.variables ?? {},
+            // Use accumulatedVariables (request-level + prior-task outputs)
+            // instead of just options.variables so chains like draft-gap-
+            // closing-activity see their upstream task outputs as
+            // {{<taskId>_text}} / {{<taskId>_valueJson}} substitutions.
+            variables: accumulatedVariables,
             inputImpulses,
             store: this.runtime.store,
             clock: this.runtime.clock,
@@ -233,6 +254,36 @@ export class ActivityExecutor {
           });
 
           // Cost attribution is opt-in via trace sink; not inferred from impulse fields.
+        }
+
+        // Propagate this task's outputs into accumulatedVariables so subsequent
+        // tasks can substitute {{<taskId>_text}} / {{<taskId>_content}} /
+        // {{<taskId>_valueJson}} / {{<taskId>_<shapeName>}} placeholders.
+        // First output impulse is canonical for unsuffixed access.
+        if (storedOutputs.length > 0) {
+          const first = storedOutputs[0]!;
+          const firstContent = first.content;
+          const firstText = typeof firstContent === "string"
+            ? firstContent
+            : firstContent !== undefined && firstContent !== null
+              ? JSON.stringify(firstContent)
+              : "";
+          accumulatedVariables[`${task.id}_text`] = firstText;
+          accumulatedVariables[`${task.id}_content`] = firstContent ?? "";
+          accumulatedVariables[`${task.id}_valueJson`] = firstText;
+          // Shape-keyed access: {{<taskId>_<shape>}} maps to the first impulse
+          // matching that shape.
+          for (const impulse of storedOutputs) {
+            const shape = (impulse.metadata as { shape?: string } | undefined)?.shape;
+            if (shape) {
+              const key = `${task.id}_${shape}`;
+              if (!(key in accumulatedVariables)) {
+                accumulatedVariables[key] = typeof impulse.content === "string"
+                  ? impulse.content
+                  : JSON.stringify(impulse.content ?? "");
+              }
+            }
+          }
         }
 
         const taskDurationMs = this.runtime.clock.now() - taskStart;
