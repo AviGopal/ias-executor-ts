@@ -186,12 +186,118 @@ export class VesselDaemon {
     const headers: Record<string, string> = {};
     req.headers.forEach((v, k) => { headers[k] = v; });
 
+    const startedAt = Date.now();
     try {
       const result = await handler({ body, pointerType, headers });
+      // Fire-and-forget trace emission. Triggers an `impulse.resolved`-equivalent
+      // WS event (we use `task.completed` shape because that's what concept-db's
+      // ExecutionObserver currently filters on; see openspec 2026-05-23
+      // substrate-explicit-vessels and concept-db/src/services/execution-observer.ts).
+      this.emitResolveTrace({
+        pointerType,
+        result,
+        latencyMs: Date.now() - startedAt,
+        success: !(result && typeof result === "object" && "error" in (result as Record<string, unknown>)),
+      });
       return Response.json(result);
     } catch (err) {
+      this.emitResolveTrace({
+        pointerType,
+        result: { error: (err as Error).message },
+        latencyMs: Date.now() - startedAt,
+        success: false,
+      });
       return Response.json({ error: (err as Error).message }, { status: 500 });
     }
+  }
+
+  /**
+   * Fire-and-forget emission to activity-api's neutral event bus so that
+   * standalone /resolve hits (no surrounding goal execution) still produce a
+   * WS event visible to substrate-wide observers (concept-db, dashboard,
+   * ribosome, etc.). Disabled when activityApiEndpoint or apiKey is absent.
+   *
+   * Non-blocking: errors are logged via console.error but never thrown.
+   */
+  private emitResolveTrace(args: {
+    pointerType: string;
+    result: unknown;
+    latencyMs: number;
+    success: boolean;
+  }): void {
+    const { activityApiEndpoint, apiKey, vesselId } = this.config;
+    if (!activityApiEndpoint || !apiKey) return;
+
+    const { pointerType, result, latencyMs, success } = args;
+    const ts = Date.now();
+    // Synthesize ids so the event is self-consistent even though no
+    // persisted execution row exists. Observers key off shape/impulse_id,
+    // not execution_id, so a synthetic id is acceptable.
+    const executionId = `resolve-${vesselId}-${ts}`;
+    const taskId = `resolve-${pointerType}-${ts}`;
+    const impulseId = `impulse:${pointerType}:${ts}`;
+
+    // Pull shape from resolver result when available; otherwise use pointer type.
+    let shape: string = pointerType;
+    if (result && typeof result === "object") {
+      const candidate = (result as Record<string, unknown>).shape;
+      if (typeof candidate === "string" && candidate.length > 0) {
+        shape = candidate;
+      }
+    }
+
+    // task.completed payload mirrors what activity-api's broadcaster emits
+    // during full goal execution; observer code in concept-db already knows
+    // how to parse this shape.
+    const data = {
+      execution_id: executionId,
+      task_id: taskId,
+      task_index: 0,
+      success,
+      duration_ms: latencyMs,
+      completed_at: new Date(ts).toISOString(),
+      input_impulse_ids: [] as string[],
+      output_impulse_ids: success ? [impulseId] : [],
+      impulse_resolutions: [{
+        impulse_id: impulseId,
+        resolver_id: pointerType,
+        resolver_tier: "deterministic" as const,
+        vessel_id: vesselId,
+        shape,
+        latency_ms: latencyMs,
+        cost_usd: 0,
+      }],
+      source: "vessel_daemon_resolve",
+    };
+
+    // Activity-api's /v2/events/publish accepts <source>.<noun>.<verb> form.
+    // `task.completed` matches its regex and dispatches the standard
+    // task.completed WS message that concept-db's ExecutionObserver consumes.
+    const payload = {
+      type: "task.completed",
+      source_vessel_id: vesselId,
+      scope: "broadcast",
+      data,
+    };
+
+    const url = `${activityApiEndpoint.replace(/\/+$/, "")}/v2/events/publish`;
+
+    // Detached promise; never awaited. Bun's fetch returns a Promise that
+    // would otherwise hold the event loop, so we attach a no-op .catch and
+    // discard the handle deliberately.
+    void fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `ApiKey ${apiKey}`,
+      },
+      body: JSON.stringify(payload),
+    }).catch((err: unknown) => {
+      console.error(
+        `[VesselDaemon:${vesselId}] trace emit failed (non-fatal):`,
+        (err as Error)?.message ?? err,
+      );
+    });
   }
 
   private async handleRunGoal(req: Request, enforceChain: boolean): Promise<Response> {
