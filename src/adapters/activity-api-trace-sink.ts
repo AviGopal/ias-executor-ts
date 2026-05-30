@@ -146,6 +146,17 @@ export class TranslatingTraceSink implements TraceSink {
       failure_mode: CANONICAL_FAILURE_TYPES.has(trace.failureMode?.type as string)
         ? trace.failureMode
         : undefined,
+      // extras-bag Phase 1 (inv-071): pass raw failure_mode regardless of canonical type.
+      // Diagnostic data lost by the filter above is preserved here so audit agents
+      // and harnesses can see `execution_error` and other non-canonical types.
+      // activity-api stores this in the loose metadata bag; it never influences selection.
+      failure_mode_raw: trace.failureMode,
+      // Collect declared input shapes from all tasks for state_space_signature derivation.
+      // activity-api already has computeStateSpaceSignature() gated on receiving this field
+      // (execution-traces.ts:2387-2397); engine just needed to thread it through.
+      // Uses task.inputShapes (string[] of declared shape names like "gapScenario",
+      // "activityExecutionTrace") not task.inputImpulseIds (which are opaque IDs).
+      input_impulse_shapes: [...new Set(trace.tasks.flatMap(t => (t as { inputShapes?: string[] }).inputShapes ?? []))],
     };
     try {
       const res = await this.fetch.request(
