@@ -299,6 +299,12 @@ export class ActivityExecutor {
           resolverTier: task.resolver === "compose" ? "deterministic" : this.runtime.resolvers.get(task.resolver)?.tier,
           inputImpulseIds: inputImpulses.map((impulse) => impulse.id),
           outputImpulseIds: storedOutputs.map((impulse) => impulse.id),
+          // Record actual shapes of output impulses so coverage_tick and
+          // activity-api can distinguish "shape actually produced" from
+          // "shape the template declares it might produce". Previously all
+          // 600 traces had output_shapes=None, making coverage_tick fall
+          // back to template declarations — a proxy, not a measurement.
+          outputShapes: this.shapesOfImpulses(task, storedOutputs),
           success: true,
           costUsd: taskCostUsd,
           durationMs: taskDurationMs,

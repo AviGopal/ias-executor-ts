@@ -143,6 +143,11 @@ export interface ExecutionTaskRecord {
   resolverTier?: ResolverTier;
   inputImpulseIds: string[];
   outputImpulseIds: string[];
+  /** Actual shapes of the output impulses produced by this task.
+   *  Populated from impulse.metadata.shape at execution time so coverage_tick
+   *  and activity-api trace queries reflect what was genuinely produced,
+   *  not just what the template declares it might produce. */
+  outputShapes?: string[];
   success: boolean;
   error?: string;
   costUsd?: number;

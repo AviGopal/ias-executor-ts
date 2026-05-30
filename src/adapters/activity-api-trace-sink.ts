@@ -152,11 +152,12 @@ export class TranslatingTraceSink implements TraceSink {
       // activity-api stores this in the loose metadata bag; it never influences selection.
       failure_mode_raw: trace.failureMode,
       // Collect declared input shapes from all tasks for state_space_signature derivation.
-      // activity-api already has computeStateSpaceSignature() gated on receiving this field
-      // (execution-traces.ts:2387-2397); engine just needed to thread it through.
-      // Uses task.inputShapes (string[] of declared shape names like "gapScenario",
-      // "activityExecutionTrace") not task.inputImpulseIds (which are opaque IDs).
       input_impulse_shapes: [...new Set(trace.tasks.flatMap(t => (t as { inputShapes?: string[] }).inputShapes ?? []))],
+      // Aggregate actual output shapes from all tasks into the top-level trace.
+      // activity-api accepts this as "output_impulse_shapes" (its field name for this concept).
+      // coverage_tick reads "output_impulse_shapes" from trace rows.
+      // Previously absent → coverage_tick fell back to template.output_shapes (a proxy, not a measurement).
+      output_impulse_shapes: [...new Set(trace.tasks.flatMap(t => t.outputShapes ?? []))],
     };
     try {
       const res = await this.fetch.request(
