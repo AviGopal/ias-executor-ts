@@ -425,20 +425,41 @@ export class LifecycleSubscriberVessel implements EventSink {
       }
       if (!this.shouldDispatchAfterDedupe(template, payload)) continue;
 
-      try {
-        await this.dispatcher(template, event, {
-          lifecycleShape: event.type,
-          payload,
-        });
-      } catch (err) {
-        // Spec §E.2: subscriber failures MUST NOT cascade to the parent
-        // execution. Log and continue.
-        this.logger.warn(
-          `[LifecycleSubscriberVessel] subscriber ${template.id} dispatch ` +
-            `failed (non-fatal): ` +
-            (err instanceof Error ? err.message : String(err)),
-        );
-      }
+      // Spec §E.2: subscriber dispatch MUST NOT block the parent execution.
+      // Previously this awaited the dispatcher — meaning a multi-task
+      // subscriber (e.g. validator-dispatch, which fires LLM calls and
+      // dispatches nested validator activities) blocked the engine's task
+      // loop. For a 5-task parent template that fires
+      // `lifecycle:task:completed` once per task, this multiplied parent
+      // duration by the cumulative subscriber-dispatch time and could
+      // breach upstream HTTP timeouts (Bun's 300s, MCP's ~290s) before the
+      // parent reached its later tasks. Concretely: ingest-doc-as-concepts
+      // (5 tasks; task 2 = llm_completion_dispatch) consistently aborted
+      // after task 2 because validator-dispatch fired LLM tasks of its own
+      // and the parent engine never reached task 3.
+      //
+      // Fire-and-forget restores the spec-stated isolation: subscriber
+      // failures and slowness are quarantined to the subscriber's own
+      // execution. The engine returns from emit() as soon as the subscriber
+      // is queued. The captured `template` binding is shadowed in the IIFE
+      // so we report the right template id even if subsequent loop
+      // iterations reassign it.
+      const dispatchTemplate = template;
+      const dispatchEvent = event;
+      void (async () => {
+        try {
+          await this.dispatcher(dispatchTemplate, dispatchEvent, {
+            lifecycleShape: dispatchEvent.type,
+            payload,
+          });
+        } catch (err) {
+          this.logger.warn(
+            `[LifecycleSubscriberVessel] subscriber ${dispatchTemplate.id} dispatch ` +
+              `failed (non-fatal): ` +
+              (err instanceof Error ? err.message : String(err)),
+          );
+        }
+      })();
     }
   }
 
