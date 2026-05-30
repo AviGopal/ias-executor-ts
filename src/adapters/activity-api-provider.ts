@@ -112,18 +112,48 @@ interface RawTask {
   resolver?: string;
   config?: Record<string, unknown>;
   prompt?: Record<string, unknown>;
+  // Snake_case shape fields as returned by activity-api / catalogue JSON.
+  input_shapes?: (string | Record<string, unknown>)[];
+  output_shapes?: string[];
+  // CamelCase aliases — some catalogue templates already store them this way.
+  inputShapes?: (string | Record<string, unknown>)[];
+  outputShapes?: string[];
+  // Retry policy + impulse declarations carried by shared catalogue tasks.
+  retry?: Record<string, unknown>;
+  output_impulses?: unknown[];
+  outputImpulses?: unknown[];
+  input_impulses?: unknown[];
+  inputImpulses?: unknown[];
+  // Sub-activity dispatch id (compose resolver).
+  sub_activity_id?: string;
+  subActivityId?: string;
   [key: string]: unknown;
 }
 
 function mapTemplate(raw: RawTemplate): ActivityTemplate {
-  return {
+  const out: ActivityTemplate = {
     id: raw.id ?? "",
     name: raw.name ?? "",
     description: raw.description,
-    inputShapes: raw.input_shapes,
-    outputShapes: raw.output_shapes ?? [],
+    inputShapes: raw.input_shapes ?? (raw.inputShapes as string[] | undefined),
+    outputShapes: raw.output_shapes ?? (raw.outputShapes as string[] | undefined) ?? [],
     tasks: (raw.tasks ?? []).map(mapTask),
   };
+  // Pass through catalogue-canonical template-level extras (subscription,
+  // tags, variables, metadata, dedupe_key, category, version, ...) so the
+  // lifecycle subscriber / depth-cap / iteration paths see them.
+  const KNOWN = new Set([
+    "id", "name", "description",
+    "input_shapes", "inputShapes",
+    "output_shapes", "outputShapes",
+    "tasks",
+  ]);
+  for (const [k, v] of Object.entries(raw)) {
+    if (!KNOWN.has(k) && v !== undefined) {
+      (out as Record<string, unknown>)[k] = v;
+    }
+  }
+  return out;
 }
 
 function mapTask(raw: RawTask): import("../ontology").ActivityTask {
@@ -136,14 +166,52 @@ function mapTask(raw: RawTask): import("../ontology").ActivityTask {
   // ALSO preserve raw.prompt on the output ActivityTask — previously it was
   // dropped, leaving the llm-prompt resolver with no template to read.
   const resolver = raw.resolver ?? (raw.prompt ? "llm-prompt" : "bash");
+
+  // 2026-05-30: previously mapTask stripped inputShapes / outputShapes / retry /
+  // outputImpulses (and other catalogue fields). The engine's iteration,
+  // slot-binding, and validation paths all read these — silently dropping
+  // them caused iteration-by-shape to return zero candidates and forced a
+  // chunking workaround in ingest-doc-as-concepts. Now we (a) map the
+  // snake_case shape fields to camelCase, and (b) pass through any remaining
+  // catalogue-canonical fields via the ActivityTask `[extra]` index signature.
+  const inputShapes =
+    (raw.inputShapes as (string | import("../ontology").InputShapeRef)[] | undefined) ??
+    (raw.input_shapes as (string | import("../ontology").InputShapeRef)[] | undefined);
+  const outputShapes = raw.outputShapes ?? raw.output_shapes;
+  const outputImpulses = raw.outputImpulses ?? raw.output_impulses;
+  const inputImpulses = raw.inputImpulses ?? raw.input_impulses;
+  const subActivityId = raw.subActivityId ?? raw.sub_activity_id;
+
   const out: import("../ontology").ActivityTask = {
     id: raw.id ?? "",
     description: raw.description ?? "",
     resolver,
     config: raw.config as Record<string, unknown> | undefined,
   };
+  if (inputShapes !== undefined) out.inputShapes = inputShapes;
+  if (outputShapes !== undefined) out.outputShapes = outputShapes;
+  if (raw.retry !== undefined) (out as Record<string, unknown>).retry = raw.retry;
+  if (outputImpulses !== undefined) (out as Record<string, unknown>).outputImpulses = outputImpulses;
+  if (inputImpulses !== undefined) (out as Record<string, unknown>).inputImpulses = inputImpulses;
+  if (subActivityId !== undefined) out.subActivityId = subActivityId;
   if (raw.prompt) {
     (out as { prompt?: unknown }).prompt = raw.prompt;
+  }
+
+  // Pass through any other catalogue-canonical extras (validation,
+  // dependencies, optional_input_shapes / optionalInputShapes, conditional,
+  // notes, ...) without re-keying — host-side resolvers consume them.
+  const KNOWN = new Set([
+    "id", "description", "resolver", "config", "prompt",
+    "input_shapes", "inputShapes", "output_shapes", "outputShapes",
+    "retry", "output_impulses", "outputImpulses",
+    "input_impulses", "inputImpulses",
+    "sub_activity_id", "subActivityId",
+  ]);
+  for (const [k, v] of Object.entries(raw)) {
+    if (!KNOWN.has(k) && v !== undefined) {
+      (out as Record<string, unknown>)[k] = v;
+    }
   }
   return out;
 }
