@@ -146,6 +146,19 @@ export class BusForwardingEventSink implements EventSink {
           this.logger.warn("[BusForwardingEventSink] bus recovered");
           this.outageLogged = false;
         }
+        // CRITICAL: drain the response body even on success. Bun's native
+        // HTTP layer retains the response's underlying readable stream
+        // (anonymous mmap'd pipe buffers) until consumed or cancelled.
+        // Leaving this dangling is invisible to V8 heap accounting but
+        // shows up in cgroup memory + /proc/<pid>/maps as anonymous rw-p
+        // mappings. With one publish per lifecycle event (~6–12 per task,
+        // dozens per execution), this is the dominant per-runGoal leak.
+        // See `concept_response_pattern_oom_cascade_solved`.
+        try {
+          await res.body?.cancel();
+        } catch {
+          // body may already be closed; swallow.
+        }
       } catch (err) {
         if (!this.outageLogged) {
           this.logger.warn(

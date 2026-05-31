@@ -41,6 +41,14 @@ export class BunProcessAdapter implements ProcessPort {
       return { exitCode, stdout, stderr };
     } finally {
       if (timer !== undefined) clearTimeout(timer);
+      // On the timeout path, the stdout/stderr ReadableStreams started
+      // by `new Response(proc.stdout).text()` are still pending — they
+      // hold native pipe FDs + buffers. Explicit cancel + await exited
+      // releases them. Idempotent on the success path (streams already
+      // closed). See `concept_response_pattern_oom_cascade_solved`.
+      try { (proc.stdout as ReadableStream | null)?.cancel?.(); } catch { /* swallow */ }
+      try { (proc.stderr as ReadableStream | null)?.cancel?.(); } catch { /* swallow */ }
+      try { await proc.exited; } catch { /* swallow */ }
     }
   }
 }

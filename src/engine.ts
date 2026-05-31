@@ -483,6 +483,11 @@ export class ActivityExecutor {
           ...(options.goalContext ? { goalContext: options.goalContext } : {}),
         },
       });
+      this.evictExecutionScope({
+        inputImpulseIds,
+        outputImpulseIds,
+        isTopLevel: !options.parentExecutionId && compositionChain.length === 0,
+      });
       return trace;
     } catch (error) {
       const totalDurationMs = this.runtime.clock.now() - startedAt;
@@ -527,7 +532,64 @@ export class ActivityExecutor {
         timestamp: this.runtime.clock.now(),
         data: { executionId, templateId: template.id, error: message },
       });
+      this.evictExecutionScope({
+        inputImpulseIds,
+        outputImpulseIds,
+        isTopLevel: !options.parentExecutionId && compositionChain.length === 0,
+      });
       return trace;
+    }
+  }
+
+  /**
+   * Release impulses added during this execution back to GC.
+   *
+   * The `ExecutionRuntime.store` is shared across all executions on a long-
+   * lived `GoalHost` instance (constructed once, reused for every runGoal).
+   * Without explicit eviction it accumulates impulses indefinitely — every
+   * subscriber dispatch, every nested compose, every recommend->execute pass
+   * adds rows. Content fields routinely hold LLM completions / file bodies
+   * (KB–MB per impulse). Over thousands of executions the store retains
+   * hundreds of MB of strings, none of which V8 can free because the store
+   * still references them. Anonymous mmap mappings under Bun's allocator
+   * track those string buffers and grow without bound; `process.memoryUsage()`
+   * understates the cost because Bun's native allocator is not surfaced in
+   * heapUsed. This matches the cgroup-vs-JS divergence signature in
+   * concept_T-CTTOEl97IM.
+   *
+   * Top-level executions clear the entire store (clean slate per runGoal).
+   * Nested executions only evict their own seeded inputs + intermediate
+   * outputs that the parent doesn't need — declared outputs survive because
+   * `dispatchCompose` reads them via `runtime.store.get(id)` after the
+   * child returns. We treat all tracked output impulse ids as keepable for
+   * nested executions; the parent's eviction at top level reaps them.
+   */
+  private evictExecutionScope(opts: {
+    inputImpulseIds: string[];
+    outputImpulseIds: Set<string>;
+    isTopLevel: boolean;
+  }): void {
+    try {
+      if (opts.isTopLevel) {
+        // Clean slate: every impulse seen during this top-level execution
+        // (seeded inputs, every output of every task, every subscriber-
+        // injected lifecycle impulse, every nested compose output) is no
+        // longer needed in-process. The trace + impulse refs are durable
+        // via traceSink.record() already.
+        const store = this.runtime.store as unknown as { impulses: Map<string, Impulse> };
+        if (store.impulses && typeof store.impulses.clear === "function") {
+          store.impulses.clear();
+        }
+      } else {
+        // Nested execution: evict only seeded inputs. Outputs stay live so
+        // the parent's compose path can read them via `runtime.store.get`.
+        for (const id of opts.inputImpulseIds) {
+          const store = this.runtime.store as unknown as { impulses: Map<string, Impulse> };
+          store.impulses?.delete?.(id);
+        }
+      }
+    } catch {
+      // Eviction is a cleanup; never fail an execution because of it.
     }
   }
 

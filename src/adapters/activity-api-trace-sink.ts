@@ -193,6 +193,11 @@ export class TranslatingTraceSink implements TraceSink {
         console.warn(
           `[TranslatingTraceSink] ${res.status} recording trace ${trace.id}: ${text.slice(0, 200)}`,
         );
+      } else {
+        // Drain response body to release Bun's native HTTP stream buffers.
+        // Without this, anonymous mmap'd response buffers accumulate per
+        // recordTrace call (once per execution). See bus-forwarder.ts.
+        try { await res.body?.cancel(); } catch { /* swallow */ }
       }
     } catch (err) {
       console.warn(

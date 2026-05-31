@@ -99,6 +99,9 @@ export function makeLearningSignalWriterResolver(options: {
             signal: ctrl.signal,
           });
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          // Drain body to release Bun's native HTTP buffers — multiple
+          // posts per validator-dispatch would otherwise accumulate.
+          try { await res.body?.cancel(); } catch { /* swallow */ }
         } finally {
           clearTimeout(timer);
         }

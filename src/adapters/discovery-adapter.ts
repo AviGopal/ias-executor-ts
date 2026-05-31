@@ -72,6 +72,9 @@ export class HttpDiscoveryAdapter implements DiscoveryPort {
       const text = await res.text().catch(() => "");
       throw new Error(`discovery registerVessel failed (${res.status}): ${text}`);
     }
+    // Drain success body to release Bun's native HTTP buffers (heartbeat
+    // fires every ~30s and would otherwise leak a response per beat).
+    try { await res.body?.cancel(); } catch { /* swallow */ }
 
     // Invalidate the cache for all shapes this vessel produces.
     for (const shape of payload.shapes) {
