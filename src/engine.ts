@@ -24,6 +24,11 @@ export interface ExecuteOptions {
    *  can read the parent goal without recomputing from variables. Matches
    *  minibob's `currentGoalContext` plumbing. */
   goalContext?: { goal?: string };
+  /** Caller's originally-requested template id (when dispatch bypassed
+   *  recommendation). Threaded onto the resulting `ExecutionTrace` so the
+   *  substrate can audit dispatch-target drift without operator inspection.
+   *  See ontology `ExecutionTrace.dispatchTargetTemplateId`. */
+  dispatchTargetTemplateId?: string;
 }
 
 class BudgetExceededError extends Error {
@@ -436,6 +441,7 @@ export class ActivityExecutor {
         tasks: taskRecords,
         costUsd: totalCostUsd > 0 ? totalCostUsd : undefined,
         durationMs: totalDurationMs,
+        dispatchTargetTemplateId: options.dispatchTargetTemplateId,
       };
 
       await this.runtime.traceSink.record(trace);
@@ -512,6 +518,7 @@ export class ActivityExecutor {
         failureMode,
         costUsd: totalCostUsd > 0 ? totalCostUsd : undefined,
         durationMs: totalDurationMs,
+        dispatchTargetTemplateId: options.dispatchTargetTemplateId,
       };
 
       await this.runtime.traceSink.record(trace);

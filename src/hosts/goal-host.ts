@@ -748,6 +748,13 @@ export class GoalHost {
       ...(opts.tags?.length ? { tags: opts.tags } : {}),
       ...(opts.parentExecutionId ? { parentExecutionId: opts.parentExecutionId } : {}),
       ...(opts.compositionChain?.length ? { compositionChain: opts.compositionChain } : {}),
+      // Record the caller's originally-requested template id (only when the
+      // caller bypassed recommend). The substrate's audit-dispatch-target-drift
+      // detector reads `metadata.dispatch_target_template_id` from AET rows
+      // and flags rows where target != selected variant. Recording is
+      // unconditional in the bypass path; when recommend ran, we leave the
+      // field absent (the schema is open).
+      ...(opts.targetTemplateId ? { dispatchTargetTemplateId: opts.targetTemplateId } : {}),
     });
 
     return { trace, selectedTemplateId: templateId, recommendCandidates: candidates };

@@ -158,6 +158,23 @@ export class TranslatingTraceSink implements TraceSink {
       // coverage_tick reads "output_impulse_shapes" from trace rows.
       // Previously absent → coverage_tick fell back to template.output_shapes (a proxy, not a measurement).
       output_impulse_shapes: [...new Set(trace.tasks.flatMap(t => t.outputShapes ?? []))],
+      // Stash any non-canonical metadata (free-form bag accepted by activity-api
+      // execution-traces POST → ExecutionRecordSchema.metadata). The
+      // dispatch-target field is the first instrumentation member: it records
+      // the caller's originally-requested template id when /run-goal was
+      // dispatched with `targetTemplateId`. Substrate-side
+      // audit-dispatch-target-drift reads `metadata.dispatch_target_template_id`
+      // and compares against `variant_id` to surface
+      // selection-vs-dispatch divergence (concept_t2jHO8I-LxD3).
+      ...(() => {
+        const meta: Record<string, unknown> = {
+          ...(trace.metadata ?? {}),
+          ...(trace.dispatchTargetTemplateId
+            ? { dispatch_target_template_id: trace.dispatchTargetTemplateId }
+            : {}),
+        };
+        return Object.keys(meta).length > 0 ? { metadata: meta } : {};
+      })(),
     };
     try {
       const res = await this.fetch.request(

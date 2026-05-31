@@ -169,6 +169,25 @@ export interface ExecutionTrace {
   failureMode?: FailureMode;
   costUsd?: number;
   durationMs?: number;
+  /** Classification tags propagated from `ExecuteOptions.tags`; consumed by
+   *  trace-sinks and depth-cap predicates (e.g. `tags ∋ "audit"`). */
+  tags?: string[];
+  /**
+   * Caller's originally-requested template id, when dispatch bypassed
+   * recommendation (e.g. `POST /run-goal { targetTemplateId }`). When the
+   * caller did NOT pin a target — i.e. selection ran and `templateId` is
+   * whatever recommend returned — this field is undefined.
+   *
+   * Recorded so the substrate can detect dispatch-target drift
+   * (caller pinned X, recommend/Thompson selected Y) without operator
+   * inspection. See `concept_t2jHO8I-LxD3` (detection_template_pattern_dispatch_drift).
+   */
+  dispatchTargetTemplateId?: string;
+  /** Optional free-form bag for cross-vessel metadata. The activity-api
+   *  trace-sink stores this verbatim into `body.metadata` so future schema-
+   *  free additions (e.g. dispatch-target instrumentation) don't require
+   *  another wire-level rev. */
+  metadata?: Record<string, unknown>;
 }
 
 /**

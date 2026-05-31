@@ -217,6 +217,12 @@ function mapTask(raw: RawTask): import("../ontology").ActivityTask {
 }
 
 function mapTraceToApiBody(trace: ExecutionTrace): Record<string, unknown> {
+  const meta: Record<string, unknown> = {
+    ...(trace.metadata ?? {}),
+    ...(trace.dispatchTargetTemplateId
+      ? { dispatch_target_template_id: trace.dispatchTargetTemplateId }
+      : {}),
+  };
   return {
     execution_id: trace.id,
     template_id: trace.templateId,
@@ -241,5 +247,6 @@ function mapTraceToApiBody(trace: ExecutionTrace): Record<string, unknown> {
       cost_usd: t.costUsd,
       duration_ms: t.durationMs,
     })),
+    ...(Object.keys(meta).length > 0 ? { metadata: meta } : {}),
   };
 }
