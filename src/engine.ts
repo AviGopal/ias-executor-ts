@@ -256,6 +256,73 @@ export class ActivityExecutor {
           // Cost attribution is opt-in via trace sink; not inferred from impulse fields.
         }
 
+        // ── Convergent validity checks ─────────────────────────────────────────
+        // Independent signals that must agree with the resolver's self-report
+        // before success=true is recorded. Each check throws on disagreement,
+        // causing the task to record success=false + β+=1 rather than silently
+        // polluting Thompson posteriors with a ghost success.
+        //
+        // Check 1 — degraded impulse detection.
+        // The proxy resolver in goal-host-vessel used to swallow exceptions and
+        // return a degraded impulse with metadata.degraded=true, letting the
+        // engine see success while the actual work failed (F13, inv-058/083).
+        // F13 re-throws now, but third-party resolvers may still follow the old
+        // pattern. Reject any task where ALL outputs are degraded: unanimously
+        // degraded outputs means the resolver produced no usable signal.
+        if (storedOutputs.length > 0 &&
+            storedOutputs.every(i => (i.metadata as Record<string, unknown>)?.["degraded"] === true)) {
+          throw new Error(
+            `convergent_validity[degraded]: all ${storedOutputs.length} output(s) carry ` +
+            `metadata.degraded=true — resolver self-reports failure via degraded impulse pattern`
+          );
+        }
+
+        // Check 2 — fs_write artifact verification.
+        // An fs_write resolver that reports success but leaves no file behind is
+        // a ghost write. Verify the written path actually exists. Only applies to
+        // workspace-scoped paths (outside /workspace the engine has no read access).
+        if (task.resolver === "fs_write") {
+          const rawPath = (task.config as Record<string, unknown> | undefined)?.["path"];
+          if (typeof rawPath === "string") {
+            // Resolve any {{variable}} placeholders that were already interpolated
+            // into accumulatedVariables before the task ran.
+            const resolvedPath = rawPath.replace(/\{\{([^}]+)\}\}/g, (_, k) => {
+              const v = accumulatedVariables[k.trim()];
+              return v !== undefined ? String(v) : _;
+            });
+            if (resolvedPath.startsWith("/workspace/") && !resolvedPath.includes("{{")) {
+              const exists = await Bun.file(resolvedPath).exists();
+              if (!exists) {
+                throw new Error(
+                  `convergent_validity[artifact]: fs_write reported success but ` +
+                  `no file found at ${resolvedPath}`
+                );
+              }
+            }
+          }
+        }
+
+        // Check 3 — declared outputShapes with zero outputs (informational).
+        // Some resolvers legitimately produce no impulses (side-effect-only),
+        // but a task that declares outputShapes and produces nothing is worth
+        // flagging. Emit a lifecycle event rather than failing — the resolver
+        // did not throw, so we treat this as a low-confidence success.
+        if ((task.outputShapes ?? []).length > 0 && storedOutputs.length === 0) {
+          await this.emit({
+            type: "lifecycle:task:completed",
+            timestamp: this.runtime.clock.now(),
+            data: {
+              taskId: task.id,
+              templateId: template.id,
+              executionId,
+              resolverId: task.resolver,
+              success: true,
+              warning: "convergent_validity[empty_output]: task declared outputShapes but produced 0 impulses",
+            },
+          });
+        }
+        // ── end convergent validity checks ────────────────────────────────────
+
         // Propagate this task's outputs into accumulatedVariables so subsequent
         // tasks can substitute {{<taskId>_text}} / {{<taskId>_content}} /
         // {{<taskId>_valueJson}} / {{<taskId>_<shapeName>}} placeholders.
