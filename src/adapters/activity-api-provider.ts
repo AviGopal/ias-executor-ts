@@ -20,9 +20,13 @@ export class ActivityApiTemplateProvider implements TemplateProvider {
     const res = await globalThis.fetch(url, {
       headers: { Authorization: `ApiKey ${this.apiKey}` },
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      try { await res.body?.cancel(); } catch { /* swallow */ }
+      return null;
+    }
 
     const raw = await res.json() as RawTemplate;
+    try { await res.body?.cancel(); } catch { /* swallow */ }
     if (!raw?.id) return null;
     return mapTemplate(raw);
   }
@@ -52,9 +56,13 @@ export class ActivityApiRecommendationProvider implements RecommendationProvider
       },
       body: JSON.stringify(body),
     });
-    if (!res.ok) return [];
+    if (!res.ok) {
+      try { await res.body?.cancel(); } catch { /* swallow */ }
+      return [];
+    }
 
     const data = await res.json() as { recommendations?: RawTemplate[] };
+    try { await res.body?.cancel(); } catch { /* swallow */ }
     return (data.recommendations ?? []).map(mapTemplate);
   }
 }
@@ -84,7 +92,10 @@ export class ActivityApiTraceSink implements TraceSink {
       });
       if (!res.ok) {
         const text = await res.text().catch(() => "");
+        try { await res.body?.cancel(); } catch { /* swallow */ }
         console.warn(`[ActivityApiTraceSink] trace POST failed (${res.status}): ${text}`);
+      } else {
+        try { await res.body?.cancel(); } catch { /* swallow */ }
       }
     } catch (err) {
       console.warn("[ActivityApiTraceSink] trace POST threw:", err);

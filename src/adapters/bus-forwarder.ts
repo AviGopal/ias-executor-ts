@@ -124,6 +124,14 @@ export class BusForwardingEventSink implements EventSink {
     });
 
     void (async () => {
+      // ITER-4 fix: manual AbortController + clearTimeout rather than
+      // AbortSignal.timeout. Bun 1.3.14 retains the timer + signal natively
+      // until the underlying timer fires, even if the fetch completes first.
+      // Cumulative leak per emission (one per lifecycle event). Defense-in-depth
+      // even though the NoOp test in iter-4 showed bus path was not the dominant
+      // contributor.
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), this.publishTimeoutMs);
       try {
         const res = await this.fetchFn(this.publishUrl, {
           method: "POST",
@@ -132,8 +140,9 @@ export class BusForwardingEventSink implements EventSink {
             ...(this.apiKey ? { Authorization: `ApiKey ${this.apiKey}` } : {}),
           },
           body,
-          signal: AbortSignal.timeout(this.publishTimeoutMs),
+          signal: ctrl.signal,
         });
+        clearTimeout(timer);
         if (!res.ok) {
           if (!this.outageLogged) {
             this.logger.warn(
@@ -160,6 +169,7 @@ export class BusForwardingEventSink implements EventSink {
           // body may already be closed; swallow.
         }
       } catch (err) {
+        clearTimeout(timer);
         if (!this.outageLogged) {
           this.logger.warn(
             `[BusForwardingEventSink] publish failed for ${busType}: ${(err as Error).message} ` +

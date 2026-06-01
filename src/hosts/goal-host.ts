@@ -351,6 +351,10 @@ export class HttpLLMPort implements LLMPort {
       content?: string;
       error?: string;
     };
+    // ITER-4 fix: drain response body even though .json() consumed it.
+    // Bun's native HTTP layer retains underlying readable-stream mmap buffers
+    // until the body stream is explicitly cancelled. Cumulative leak at scale.
+    try { await response.body?.cancel(); } catch { /* swallow */ }
 
     if (!json.resolved || !json.content) {
       throw new Error(

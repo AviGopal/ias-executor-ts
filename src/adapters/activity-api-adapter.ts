@@ -121,6 +121,7 @@ export class ActivityApiAdapter {
       });
       if (!res.ok) {
         const text = await res.text().catch(() => "");
+        try { await res.body?.cancel(); } catch { /* swallow */ }
         console.warn(
           `[ActivityApiAdapter] recommend non-2xx (${res.status}): ${text.slice(0, 200)}`,
         );
@@ -136,6 +137,7 @@ export class ActivityApiAdapter {
         fallback_tier?: string | null;
         decision_record?: Record<string, unknown>;
       };
+      try { await res.body?.cancel(); } catch { /* swallow */ }
       const recommendations: RecommendCandidate[] = [];
       for (const r of data.recommendations ?? []) {
         // template_id is the canonical field; accept activity_id/variant_id
