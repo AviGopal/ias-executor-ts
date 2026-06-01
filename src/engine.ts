@@ -29,6 +29,14 @@ export interface ExecuteOptions {
    *  substrate can audit dispatch-target drift without operator inspection.
    *  See ontology `ExecutionTrace.dispatchTargetTemplateId`. */
   dispatchTargetTemplateId?: string;
+  /** Forward-dispatch composition depth cap (Phase 2 of obsidian meta-skill,
+   *  2026-06-01). Complements the existing read-time `parent_execution_id`
+   *  depth-16 walk by gating each `compose` dispatch BEFORE the child
+   *  execution starts. When `compositionChain.length >= maxCompositionDepth`
+   *  on a `compose` task, the engine refuses the dispatch with a
+   *  `safety_breach` failure_mode rather than letting an authored template
+   *  recurse without bound. Default: 16. */
+  maxCompositionDepth?: number;
 }
 
 class BudgetExceededError extends Error {
@@ -167,6 +175,7 @@ export class ActivityExecutor {
             compositionChain,
             variables: accumulatedVariables,
             budget,
+            maxCompositionDepth: options.maxCompositionDepth,
           });
           storedOutputs = result.outputs;
           taskCostUsd = result.childTrace.costUsd;
@@ -601,6 +610,7 @@ export class ActivityExecutor {
       compositionChain: string[];
       variables: Record<string, unknown>;
       budget?: ExecutionBudget;
+      maxCompositionDepth?: number;
     },
   ): Promise<{ outputs: Impulse[]; childTrace: ExecutionTrace }> {
     if (!task.subActivityId) {
@@ -609,6 +619,21 @@ export class ActivityExecutor {
     if (!this.runtime.templateProvider) {
       throw new Error(
         `Task '${task.id}' requires templateProvider to dispatch compose to '${task.subActivityId}'`,
+      );
+    }
+
+    // Forward-dispatch composition-depth gate (Phase 2 of obsidian meta-skill,
+    // 2026-06-01). Complements the existing parent_execution_id read-walk
+    // cap (16) at the trace level. When an authored template tries to
+    // recurse beyond maxCompositionDepth, refuse BEFORE the child execution
+    // starts so the cap is observable as a safety_breach rather than as a
+    // budget-exhausted cascade.
+    const cap = opts.maxCompositionDepth ?? 16;
+    if (opts.compositionChain.length >= cap) {
+      throw new Error(
+        `safety_breach: compose dispatch refused — composition chain depth ` +
+        `(${opts.compositionChain.length}) has reached the cap (${cap}). ` +
+        `Task '${task.id}' would target '${task.subActivityId}'.`,
       );
     }
 
@@ -625,6 +650,7 @@ export class ActivityExecutor {
       budget: opts.budget,
       parentExecutionId: opts.executionId,
       compositionChain: childChain,
+      maxCompositionDepth: opts.maxCompositionDepth,
     });
 
     if (childTrace.status === "failed") {
