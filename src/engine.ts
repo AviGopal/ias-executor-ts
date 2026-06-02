@@ -162,6 +162,27 @@ export class ActivityExecutor {
 
         const taskStart = this.runtime.clock.now();
         const inputImpulses = await this.resolveInputs(task.inputShapes ?? [], task.id);
+        // Named-input slot lookup (Idiom-6 ribosome closure): when a task
+        // declares `inputImpulses: string[]`, pull matching impulses from the
+        // store by their stamped `metadata.outputImpulseKey`. This is what
+        // makes `{{impulse:<slot>}}` placeholders resolvable in proxy resolver
+        // configs even when the task didn't declare `inputShapes` for the
+        // corresponding upstream output.
+        const namedInputSlots = (task as Record<string, unknown>)["inputImpulses"];
+        if (Array.isArray(namedInputSlots)) {
+          const seen = new Set(inputImpulses.map((i) => i.id));
+          for (const slot of namedInputSlots) {
+            if (typeof slot !== "string") continue;
+            const match = this.runtime.store.all().find((imp) => {
+              const meta = imp.metadata as Record<string, unknown> | undefined;
+              return meta?.["outputImpulseKey"] === slot;
+            });
+            if (match && !seen.has(match.id)) {
+              inputImpulses.push(match);
+              seen.add(match.id);
+            }
+          }
+        }
 
         let storedOutputs: Impulse[];
         let taskCostUsd: number | undefined;
@@ -260,11 +281,27 @@ export class ActivityExecutor {
           }
           if (lastError !== undefined) throw lastError;
 
+          // Named-output slot stamping (Idiom-6 ribosome closure):
+          // when a task declares `outputImpulses: string[]`, stamp the slot
+          // name on the corresponding output impulse's metadata so downstream
+          // tasks that reference it via `inputImpulses` (and template authors
+          // who reference it via `{{impulse:<slot>}}`) can find the exact
+          // impulse instance unambiguously. Without this stamp the only handle
+          // is `metadata.shape`, which collides when two tasks emit the same
+          // shape under different slot names.
+          const namedOutputSlots = (task as Record<string, unknown>)["outputImpulses"];
+          const namedOutputSlotArray = Array.isArray(namedOutputSlots)
+            ? (namedOutputSlots as unknown[]).filter((v): v is string => typeof v === "string")
+            : [];
           storedOutputs = outputs.map((impulse, index) => {
             const complete = this.ensureImpulse(task.outputShapes ?? [], impulse, index);
-            this.runtime.store.put(complete);
-            outputImpulseIds.add(complete.id);
-            return complete;
+            const slot = namedOutputSlotArray[index];
+            const stamped = slot
+              ? { ...complete, metadata: { ...complete.metadata, outputImpulseKey: slot } }
+              : complete;
+            this.runtime.store.put(stamped);
+            outputImpulseIds.add(stamped.id);
+            return stamped;
           });
 
           // Cost attribution is opt-in via trace sink; not inferred from impulse fields.
