@@ -44,6 +44,7 @@ import type {
   ExecutionTrace,
   Impulse,
 } from "../ontology";
+import { getImpulseShape } from "../ontology";
 import type {
   EventSink,
   FileSystemPort,
@@ -70,6 +71,7 @@ import {
 } from "../adapters/index";
 import {
   ActivityApiAdapter,
+  type ImpulseStateEntry,
   type RecommendCandidate,
 } from "../adapters/activity-api-adapter";
 import {
@@ -756,9 +758,26 @@ export class GoalHost {
     let candidates: RecommendCandidate[] | undefined;
 
     if (!templateId) {
+      // Build impulse_state_space from the current pool + the about-to-be-seeded
+      // goal impulse. This activates activity-api's v1 precondition-conditioned
+      // Thompson path (context_thompson_scores). Without this field the endpoint
+      // falls back to the shape-blind posterior and context_thompson_scores
+      // accumulates zero v1 rows.
+      const poolEntries: ImpulseStateEntry[] = this.runtime.store.all().map((imp) => {
+        const entry: ImpulseStateEntry = { shape: getImpulseShape(imp) };
+        const producedBy =
+          (imp.metadata.produced_at_task_id as string | undefined) ??
+          (imp.metadata.producedBy as string | undefined);
+        if (producedBy) entry.task_id = producedBy;
+        return entry;
+      });
+      // Include the goal impulse that will seed this execution.
+      poolEntries.push({ shape: "goal" });
+
       const response = await this.activityApi.recommend({
         goal: goalText,
         expectedOutputShapes: opts.expectedOutputShapes,
+        impulseStateSpace: poolEntries,
       });
       candidates = response.recommendations;
       const top = candidates[0];

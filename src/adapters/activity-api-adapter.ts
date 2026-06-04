@@ -34,6 +34,18 @@ import {
 } from "./activity-api-provider";
 import { TranslatingTraceSink } from "./activity-api-trace-sink";
 
+export interface ImpulseStateEntry {
+  /** Shape name of the impulse currently in the pool. */
+  shape: string;
+  /**
+   * Task id that produced this impulse (i.e. `produced_at_task_id` /
+   * `producedBy` on the impulse metadata), when known. Enables
+   * activity-api's v1 precondition-conditioned Thompson path to score
+   * against the full pool provenance, not just shape membership.
+   */
+  task_id?: string;
+}
+
 export interface RecommendRequest {
   /** Free-form goal text. Required — activity-api 400s without it. */
   goal: string;
@@ -41,6 +53,16 @@ export interface RecommendRequest {
   expectedOutputShapes?: string[];
   /** Top-K cap; default 3 matches activity-api's default. */
   limit?: number;
+  /**
+   * Current impulse pool snapshot — enables activity-api's v1
+   * precondition-conditioned Thompson path (`context_thompson_scores`).
+   * Without this field the endpoint falls back to the shape-blind posterior
+   * and context_thompson_scores accumulates zero v1 rows.
+   *
+   * Set RECOMMEND_SIGNATURE_SAMPLING_FLOOR=2 (env on activity-api) for
+   * early-phase operation when the corpus is thin.
+   */
+  impulseStateSpace?: ImpulseStateEntry[];
 }
 
 export interface RecommendCandidate {
@@ -108,6 +130,11 @@ export class ActivityApiAdapter {
     }
     if (req.limit !== undefined) {
       body.limit = req.limit;
+    }
+    if (req.impulseStateSpace?.length) {
+      // Activates activity-api's v1 precondition-conditioned Thompson path.
+      // Field name matches the activity-api schema: impulse_state_space.
+      body.impulse_state_space = req.impulseStateSpace;
     }
 
     try {
