@@ -450,6 +450,13 @@ export class ActivityExecutor {
           resolverTier: task.resolver === "compose" ? "deterministic" : this.runtime.resolvers.get(task.resolver)?.tier,
           inputImpulseIds: inputImpulses.map((impulse) => impulse.id),
           outputImpulseIds: storedOutputs.map((impulse) => impulse.id),
+          // Record declared input shapes so the trace sink can union them into
+          // trace.input_impulse_shapes. Required by activity-api's server-side
+          // state_signature path (execution-traces.ts:2381-2390) which gates
+          // M1 context_thompson_scores writes. Without this, autonomous traces
+          // ship empty input_impulse_shapes and the trainer reports
+          // n_training_samples=0 every cycle.
+          inputShapes: declaredInputShapeNames,
           // Record actual shapes of output impulses so coverage_tick and
           // activity-api can distinguish "shape actually produced" from
           // "shape the template declares it might produce". Previously all

@@ -143,6 +143,14 @@ export interface ExecutionTaskRecord {
   resolverTier?: ResolverTier;
   inputImpulseIds: string[];
   outputImpulseIds: string[];
+  /** Declared input shapes for this task (template.tasks[i].inputShapes, normalized
+   *  to bare shape names). Populated by the engine so the trace sink can union
+   *  per-task inputShapes into the top-level trace.input_impulse_shapes — the
+   *  field that activity-api's server-side state_signature path
+   *  (execution-traces.ts:2381-2390) requires for context_thompson_scores.
+   *  Without this, autonomous traces ship empty input_impulse_shapes and the
+   *  M1 continuous trainer reports n_training_samples=0 every cycle. */
+  inputShapes?: string[];
   /** Actual shapes of the output impulses produced by this task.
    *  Populated from impulse.metadata.shape at execution time so coverage_tick
    *  and activity-api trace queries reflect what was genuinely produced,
