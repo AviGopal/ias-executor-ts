@@ -312,6 +312,19 @@ export interface LifecycleSubscriberVesselOptions {
  * Spec §E.2: every matched subscriber MUST eventually be dispatched OR
  * suppressed via dedupe / depth-cap; dispatcher errors are isolated.
  */
+// Bounded concurrency cap for fire-and-forget subscriber dispatches. Each
+// in-flight dispatch closes over a `LifecycleEvent` (with its data payload)
+// and triggers a full nested execution; without a cap, subscriber-amplified
+// event storms (slot-binding → preBinding → completed → ...) accumulate
+// dispatcher Promises and their captured event/template references until
+// each runs, dominating per-runGoal memory pressure. Default 64; override
+// via env `IAS_SUBSCRIBER_MAX_INFLIGHT`.
+const SUBSCRIBER_MAX_INFLIGHT = (() => {
+  const raw = typeof process !== "undefined" ? process.env?.IAS_SUBSCRIBER_MAX_INFLIGHT : undefined;
+  const n = raw ? parseInt(raw, 10) : 64;
+  return Number.isFinite(n) && n > 0 ? n : 64;
+})();
+
 export class LifecycleSubscriberVessel implements EventSink {
   /** Subscribers indexed by `subscription.shape` for O(1) lookup. */
   private readonly registry: Map<string, ActivityTemplate[]> = new Map();
@@ -324,6 +337,12 @@ export class LifecycleSubscriberVessel implements EventSink {
     warn: (msg: string) => void;
     debug: (msg: string) => void;
   };
+  /** In-flight fire-and-forget dispatcher invocations. Bounded by
+   *  SUBSCRIBER_MAX_INFLIGHT to prevent unbounded closure retention under
+   *  subscriber-amplified event storms. */
+  private readonly inflightDispatches: Set<Promise<void>> = new Set();
+  private droppedDispatches = 0;
+  private lastDispatchDropLogAt = 0;
 
   constructor(options: LifecycleSubscriberVesselOptions) {
     this.dispatcher = options.dispatcher;
@@ -444,9 +463,30 @@ export class LifecycleSubscriberVessel implements EventSink {
       // is queued. The captured `template` binding is shadowed in the IIFE
       // so we report the right template id even if subsequent loop
       // iterations reassign it.
+      // Bounded-concurrency guard: when the in-flight set is at capacity,
+      // drop the dispatch. The downstream sink is still notified below; we
+      // only skip the recursive subscriber execution. Dropping is preferable
+      // to retaining: each captured `dispatchEvent` carries the full event
+      // payload, and nested executions allocate impulse stores + emit more
+      // events of their own. Under storm conditions the unawaited Promises
+      // pile up and dominate per-runGoal RSS growth.
+      if (this.inflightDispatches.size >= SUBSCRIBER_MAX_INFLIGHT) {
+        this.droppedDispatches++;
+        const now = Date.now();
+        if (now - this.lastDispatchDropLogAt > 30_000) {
+          this.logger.warn(
+            `[LifecycleSubscriberVessel] dropped ${this.droppedDispatches} subscriber ` +
+              `dispatches (in-flight cap ${SUBSCRIBER_MAX_INFLIGHT} reached)`,
+          );
+          this.lastDispatchDropLogAt = now;
+          this.droppedDispatches = 0;
+        }
+        continue;
+      }
       const dispatchTemplate = template;
       const dispatchEvent = event;
-      void (async () => {
+      const inflight = this.inflightDispatches;
+      const dispatchTask: Promise<void> = (async () => {
         try {
           await this.dispatcher(dispatchTemplate, dispatchEvent, {
             lifecycleShape: dispatchEvent.type,
@@ -460,6 +500,10 @@ export class LifecycleSubscriberVessel implements EventSink {
           );
         }
       })();
+      inflight.add(dispatchTask);
+      void dispatchTask.finally(() => {
+        inflight.delete(dispatchTask);
+      });
     }
   }
 

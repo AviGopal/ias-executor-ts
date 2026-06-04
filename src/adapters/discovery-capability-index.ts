@@ -44,11 +44,13 @@ export class DiscoveryCapabilityIndex implements CapabilityIndex {
 
     if (!res.ok) {
       // Fail gracefully — return stale cache if available, empty list otherwise
+      try { await res.body?.cancel(); } catch { /* swallow */ }
       if (this.cachedIds) return this.cachedIds;
       return [];
     }
 
     const body = await res.json() as { shapes?: string[] };
+    try { await res.body?.cancel(); } catch { /* swallow */ }
     const ids = Array.isArray(body.shapes) ? body.shapes : [];
     this.cachedIds = ids;
     this.cacheExpiresAt = now + this.cacheTtlMs;

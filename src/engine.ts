@@ -39,6 +39,23 @@ export interface ExecuteOptions {
   maxCompositionDepth?: number;
 }
 
+// Per-key cap on accumulatedVariables string projections (bytes). Tunable via
+// `IAS_ACCUMULATED_VAR_MAX_BYTES`; default 262144 (256 KiB). Caps protect
+// long task chains from retaining MBs of LLM-output strings PER variable per
+// task — the canonical impulse store already keeps the original content and
+// is cleared on top-level execution completion.
+const ACCUMULATED_VAR_MAX_BYTES = (() => {
+  const raw = typeof process !== "undefined" ? process.env?.IAS_ACCUMULATED_VAR_MAX_BYTES : undefined;
+  const n = raw ? parseInt(raw, 10) : 262_144;
+  return Number.isFinite(n) && n > 0 ? n : 262_144;
+})();
+
+function capForAccumulator(value: string): string {
+  if (typeof value !== "string" || value.length <= ACCUMULATED_VAR_MAX_BYTES) return value;
+  return value.slice(0, ACCUMULATED_VAR_MAX_BYTES) +
+    `…[truncated ${value.length - ACCUMULATED_VAR_MAX_BYTES} bytes]`;
+}
+
 class BudgetExceededError extends Error {
   constructor(
     readonly budgetType: "cost" | "duration" | "task_count",
@@ -378,6 +395,16 @@ export class ActivityExecutor {
         // tasks can substitute {{<taskId>_text}} / {{<taskId>_content}} /
         // {{<taskId>_valueJson}} / {{<taskId>_<shapeName>}} placeholders.
         // First output impulse is canonical for unsuffixed access.
+        //
+        // Memory bound: each task output that lands here is a string projected
+        // from the impulse content. For LLM-heavy chains the content can be
+        // MB-scale, and the impulse store ALREADY retains the canonical copy
+        // (and is cleared by evictExecutionScope on top-level completion).
+        // Mirroring the same content into accumulatedVariables doubles the
+        // retention — and the string projection lives until the trace returns
+        // and the closure goes out of scope. Cap each per-task projection at
+        // 256 KB; downstream resolvers that need the full body should read
+        // from the impulse via inputImpulses, not the {{<task>_text}} sugar.
         if (storedOutputs.length > 0) {
           const first = storedOutputs[0]!;
           const firstContent = first.content;
@@ -386,9 +413,14 @@ export class ActivityExecutor {
             : firstContent !== undefined && firstContent !== null
               ? JSON.stringify(firstContent)
               : "";
-          accumulatedVariables[`${task.id}_text`] = firstText;
-          accumulatedVariables[`${task.id}_content`] = firstContent ?? "";
-          accumulatedVariables[`${task.id}_valueJson`] = firstText;
+          const cappedFirstText = capForAccumulator(firstText);
+          accumulatedVariables[`${task.id}_text`] = cappedFirstText;
+          // _content keeps the structural reference so resolvers that read
+          // .content as an object (rather than .text) still see the full
+          // payload. Strings get capped here too; objects fall through.
+          accumulatedVariables[`${task.id}_content`] =
+            typeof firstContent === "string" ? cappedFirstText : (firstContent ?? "");
+          accumulatedVariables[`${task.id}_valueJson`] = cappedFirstText;
           // Shape-keyed access: {{<taskId>_<shape>}} maps to the first impulse
           // matching that shape.
           for (const impulse of storedOutputs) {
@@ -396,9 +428,10 @@ export class ActivityExecutor {
             if (shape) {
               const key = `${task.id}_${shape}`;
               if (!(key in accumulatedVariables)) {
-                accumulatedVariables[key] = typeof impulse.content === "string"
+                const text = typeof impulse.content === "string"
                   ? impulse.content
                   : JSON.stringify(impulse.content ?? "");
+                accumulatedVariables[key] = capForAccumulator(text);
               }
             }
           }

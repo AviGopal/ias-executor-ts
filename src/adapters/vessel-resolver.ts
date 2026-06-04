@@ -85,6 +85,10 @@ export class VesselResolver implements Resolver {
     }
 
     const body = await res.json() as { success: boolean; content?: unknown; error?: string; metadata?: Record<string, unknown> };
+    // Drain Bun's native HTTP buffers — without this the response's mmap'd
+    // read stream is retained until the runtime's incremental GC catches it,
+    // and at high vessel-resolver call rates this dominates per-runGoal RSS.
+    try { await res.body?.cancel(); } catch { /* swallow */ }
 
     if (!body.success) {
       throw new Error(`VesselResolver(${this.id}): vessel returned error — ${body.error ?? res.status}`);

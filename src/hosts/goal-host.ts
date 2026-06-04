@@ -178,16 +178,50 @@ function makeLLMResolver(llm: LLMPort): Resolver {
 // ────────────────────────────────────────────────────────────────────────
 
 class CatalogueWithFallback implements TemplateProvider {
+  // Bounded TTL cache for remote fetches. Every runGoal() calls
+  // templateProvider.getTemplate(id); without caching, a 5-task chain that
+  // references the same authored template via `compose` re-fetches it from
+  // activity-api per task — each fetch allocating the full JSON body
+  // (templates can be 50-200 KB) and holding it in V8 until the next GC.
+  // TTL default 60 s; cap at REMOTE_CACHE_MAX entries (LRU-ish via insertion
+  // order). Negative results (template not found) are cached for a shorter
+  // window to avoid wedging on transient 404s.
+  private readonly remoteCache: Map<string, { value: ActivityTemplate | null; expiresAt: number }> = new Map();
+  private readonly remoteCacheTtlMs: number;
+  private readonly remoteCacheNegativeTtlMs: number;
+  private readonly remoteCacheMax = 128;
+
   constructor(
     private readonly local: InMemoryTemplateProvider,
     private readonly remote: { getTemplate(id: string): Promise<ActivityTemplate | null> },
-  ) {}
+  ) {
+    const rawTtl = typeof process !== "undefined" ? process.env?.IAS_TEMPLATE_CACHE_TTL_MS : undefined;
+    const ttl = rawTtl ? parseInt(rawTtl, 10) : 60_000;
+    this.remoteCacheTtlMs = Number.isFinite(ttl) && ttl > 0 ? ttl : 60_000;
+    this.remoteCacheNegativeTtlMs = Math.min(5_000, this.remoteCacheTtlMs);
+  }
 
   async getTemplate(id: string): Promise<ActivityTemplate | null> {
     const hit = await this.local.getTemplate(id);
     if (hit) return hit;
+    const now = Date.now();
+    const cached = this.remoteCache.get(id);
+    if (cached && cached.expiresAt > now) {
+      return cached.value;
+    }
     const remote = await this.remote.getTemplate(id);
-    return remote ? normalizeMinibobTemplate(remote) : null;
+    const value = remote ? normalizeMinibobTemplate(remote) : null;
+    const ttl = value ? this.remoteCacheTtlMs : this.remoteCacheNegativeTtlMs;
+    // LRU-ish eviction: drop the oldest insertion when over cap. Map's
+    // iteration order is insertion order; refresh on hit by deleting + re-
+    // inserting so frequently-fetched ids stay live.
+    if (this.remoteCache.size >= this.remoteCacheMax) {
+      const oldest = this.remoteCache.keys().next().value;
+      if (oldest !== undefined) this.remoteCache.delete(oldest);
+    }
+    this.remoteCache.delete(id);
+    this.remoteCache.set(id, { value, expiresAt: now + ttl });
+    return value;
   }
 }
 

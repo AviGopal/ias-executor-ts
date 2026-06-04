@@ -88,6 +88,7 @@ export function makeImpulseResolveResolver(options: {
         }).finally(() => clearTimeout(timeoutId));
         if (!res.ok) {
           const text = await res.text().catch(() => "");
+          try { await res.body?.cancel(); } catch { /* swallow */ }
           return [
             {
               id: context.random.id(`resolve:${pointer.type}`),
@@ -105,6 +106,7 @@ export function makeImpulseResolveResolver(options: {
           ];
         }
         const data = (await res.json()) as { content?: unknown; metadata?: Record<string, unknown> };
+        try { await res.body?.cancel(); } catch { /* swallow */ }
         return [
           {
             id: context.random.id(`resolve:${pointer.type}`),

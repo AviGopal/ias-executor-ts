@@ -73,8 +73,12 @@ async function fetchProducers(
         mode: "candidates_with_scores",
       }),
     });
-    if (!res.ok) return [];
+    if (!res.ok) {
+      try { await res.body?.cancel(); } catch { /* swallow */ }
+      return [];
+    }
     const data = (await res.json()) as { producers?: DiscoverByShapesProducer[]; candidates?: DiscoverByShapesProducer[] };
+    try { await res.body?.cancel(); } catch { /* swallow */ }
     return data.producers ?? data.candidates ?? [];
   } catch {
     return [];

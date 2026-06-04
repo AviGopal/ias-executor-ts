@@ -69,6 +69,19 @@ export function mapEventTypeToBusForm(eventType: string): string {
     .join(".");
 }
 
+// Bounded concurrency cap for fire-and-forget bus publishes. Each in-flight
+// publish retains its JSON body string in memory until the POST resolves; when
+// activity-api is slow the unawaited Promises queue is the dominant per-dispatch
+// allocator. Cap defaults to 32 in-flight; overflow drops the OLDEST in-flight
+// publish reference (we cannot abort it, but we stop tracking it so a steady-
+// state stream of events doesn't grow the local set monotonically). Override
+// via env `IAS_BUS_MAX_INFLIGHT`.
+const BUS_FORWARD_MAX_INFLIGHT = (() => {
+  const raw = typeof process !== "undefined" ? process.env?.IAS_BUS_MAX_INFLIGHT : undefined;
+  const n = raw ? parseInt(raw, 10) : 32;
+  return Number.isFinite(n) && n > 0 ? n : 32;
+})();
+
 export class BusForwardingEventSink implements EventSink {
   private readonly inner: EventSink;
   private readonly publishUrl: string;
@@ -78,6 +91,13 @@ export class BusForwardingEventSink implements EventSink {
   private readonly fetchFn: typeof globalThis.fetch;
   private readonly logger: { warn(msg: string, meta?: unknown): void };
   private outageLogged = false;
+  // Bounded in-flight set. We track Promises (not the body strings) so once
+  // the POST resolves the entry is removed and the body string becomes GC-
+  // eligible. When the set exceeds BUS_FORWARD_MAX_INFLIGHT, new publishes
+  // are dropped to prevent unbounded retention under back-pressure.
+  private readonly inflight: Set<Promise<void>> = new Set();
+  private dropped = 0;
+  private lastDropLogAt = 0;
 
   constructor(opts: BusForwardingEventSinkOptions) {
     this.inner = opts.inner;
@@ -112,6 +132,24 @@ export class BusForwardingEventSink implements EventSink {
 
   /** Fire-and-forget HTTP publish. Errors logged once per outage window. */
   private forward(event: LifecycleEvent): void {
+    // Bounded-concurrency guard. Drop the publish if the in-flight set is
+    // already at capacity — retaining the body would just grow per-process
+    // memory until OOM. The local in-process subscribers ran synchronously
+    // in emit() above, so dropping the BUS hop is the right trade-off.
+    if (this.inflight.size >= BUS_FORWARD_MAX_INFLIGHT) {
+      this.dropped++;
+      const now = Date.now();
+      if (now - this.lastDropLogAt > 30_000) {
+        this.logger.warn(
+          `[BusForwardingEventSink] dropped ${this.dropped} publishes (in-flight cap ` +
+            `${BUS_FORWARD_MAX_INFLIGHT} reached; activity-api slow or unreachable)`,
+        );
+        this.lastDropLogAt = now;
+        this.dropped = 0;
+      }
+      return;
+    }
+
     const busType = mapEventTypeToBusForm(event.type);
     const body = JSON.stringify({
       type: busType,
@@ -123,7 +161,8 @@ export class BusForwardingEventSink implements EventSink {
       },
     });
 
-    void (async () => {
+    const inflight = this.inflight;
+    const task: Promise<void> = (async () => {
       // ITER-4 fix: manual AbortController + clearTimeout rather than
       // AbortSignal.timeout. Bun 1.3.14 retains the timer + signal natively
       // until the underlying timer fires, even if the fetch completes first.
@@ -179,5 +218,12 @@ export class BusForwardingEventSink implements EventSink {
         }
       }
     })();
+    inflight.add(task);
+    // Settle: always remove from the in-flight set so the closure's `body`
+    // string becomes GC-eligible. Use Promise.prototype.finally; we already
+    // swallow errors inside the IIFE.
+    void task.finally(() => {
+      inflight.delete(task);
+    });
   }
 }

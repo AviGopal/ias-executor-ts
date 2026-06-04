@@ -98,7 +98,10 @@ export function makeLearningSignalWriterResolver(options: {
             body: JSON.stringify(body),
             signal: ctrl.signal,
           });
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          if (!res.ok) {
+            try { await res.body?.cancel(); } catch { /* swallow */ }
+            throw new Error(`HTTP ${res.status}`);
+          }
           // Drain body to release Bun's native HTTP buffers — multiple
           // posts per validator-dispatch would otherwise accumulate.
           try { await res.body?.cancel(); } catch { /* swallow */ }

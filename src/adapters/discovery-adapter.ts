@@ -39,10 +39,12 @@ export class HttpDiscoveryAdapter implements DiscoveryPort {
 
     if (!res.ok) {
       // Non-2xx means discovery is down or the shape is unknown — return empty.
+      try { await res.body?.cancel(); } catch { /* swallow */ }
       return [];
     }
 
     const data = (await res.json()) as { vessels?: Array<{ id: string; resolve_endpoint: string; health_score?: number; org_id?: string }> };
+    try { await res.body?.cancel(); } catch { /* swallow */ }
     const results: VesselSummary[] = (data.vessels ?? []).map((v) => ({
       id: v.id,
       resolveEndpoint: v.resolve_endpoint,

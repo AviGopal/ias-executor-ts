@@ -1,6 +1,6 @@
 {
   "name": "@avigopal/ias-executor-ts",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Reference TypeScript implementation of the impulse-activity execution model",
   "type": "module",
   "main": "./dist/index.js",
