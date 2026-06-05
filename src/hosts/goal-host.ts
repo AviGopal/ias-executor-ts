@@ -566,10 +566,17 @@ export class GoalHost {
       const data = (event.data ?? {}) as {
         executionId?: string;
         compositionChain?: string[];
+        tags?: string[];
       };
       const parentExecutionId = data.executionId;
       const parentChain = data.compositionChain ?? [];
       const chain = parentExecutionId ? [...parentChain, parentExecutionId] : parentChain;
+      // Inherit parent's tags (state_signature:<hash>, dispatcher_used:, intent:*).
+      // Without this, lifecycle-subscriber-dispatched executions (slot-binding,
+      // validator-dispatch, etc.) emit untagged traces — starving boredom's
+      // per-(signature, goal_idx) Thompson cells. See engine.ts emit sites for
+      // the data.tags producer.
+      const parentTags = Array.isArray(data.tags) ? data.tags : undefined;
       // 2026-05-20 task 40 fix: seed the lifecycle event payload as an
       // impulse so subscriber templates with inputShapes:["lifecycle:*"]
       // can satisfy their input-shape requirements at task time. The prior
@@ -595,6 +602,7 @@ export class GoalHost {
         parentExecutionId,
         compositionChain: chain,
         impulses: [lifecycleImpulse],
+        ...(parentTags ? { tags: parentTags } : {}),
       });
     };
 

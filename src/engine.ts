@@ -152,6 +152,10 @@ export class ActivityExecutor {
               variables: options.variables ?? {},
               parentDepth: compositionChain.length,
               parentGoalText: options.goalContext?.goal,
+              // Thread parent tags so lifecycle-subscriber-dispatched child
+              // executions inherit them (state_signature:<hash> in particular,
+              // required for boredom's per-(signature, goal_idx) Thompson cells).
+              tags: options.tags,
             },
           });
           if (missingShapes.length > 0) {
@@ -387,6 +391,7 @@ export class ActivityExecutor {
               resolverId: task.resolver,
               success: true,
               warning: "convergent_validity[empty_output]: task declared outputShapes but produced 0 impulses",
+              tags: options.tags,
             },
           });
         }
@@ -509,6 +514,7 @@ export class ActivityExecutor {
             // never fires → unbounded mutual recursion when seeding.
             parentDepth: compositionChain.length,
             compositionChain,
+            tags: options.tags,
           },
         });
       }
@@ -567,6 +573,7 @@ export class ActivityExecutor {
           taskCount: template.tasks.length,
           parentDepth: compositionChain.length,
           compositionChain,
+          tags: options.tags,
           ...(options.goalContext ? { goalContext: options.goalContext } : {}),
         },
       });
