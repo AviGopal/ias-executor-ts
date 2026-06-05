@@ -214,6 +214,7 @@ export class ActivityExecutor {
             variables: accumulatedVariables,
             budget,
             maxCompositionDepth: options.maxCompositionDepth,
+            tags: options.tags,
           });
           storedOutputs = result.outputs;
           taskCostUsd = result.childTrace.costUsd;
@@ -688,6 +689,7 @@ export class ActivityExecutor {
       variables: Record<string, unknown>;
       budget?: ExecutionBudget;
       maxCompositionDepth?: number;
+      tags?: string[];
     },
   ): Promise<{ outputs: Impulse[]; childTrace: ExecutionTrace }> {
     if (!task.subActivityId) {
@@ -728,6 +730,14 @@ export class ActivityExecutor {
       parentExecutionId: opts.executionId,
       compositionChain: childChain,
       maxCompositionDepth: opts.maxCompositionDepth,
+      // Propagate parent's tags (including state_signature:<hash>) to nested
+      // child traces. Without this, only top-level traces from goal-host's
+      // runGoal carry state_signature tags — child compositions emit untagged
+      // traces, starving per-(signature, goal_idx) Thompson cells to ~2
+      // samples/hour and blocking MIN_CELL_SAMPLES=3 + SIG_CONTINUITY_MIN_SAMPLES=2
+      // activation thresholds. Tag inheritance multiplies tag density by the
+      // composition fan-out factor (~5-10x in practice).
+      tags: opts.tags,
     });
 
     if (childTrace.status === "failed") {
