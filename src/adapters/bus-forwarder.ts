@@ -72,7 +72,7 @@ export function mapEventTypeToBusForm(eventType: string): string {
 // Bounded concurrency cap for fire-and-forget bus publishes. Each in-flight
 // publish retains its JSON body string in memory until the POST resolves; when
 // activity-api is slow the unawaited Promises queue is the dominant per-dispatch
-// allocator. Cap defaults to 32 in-flight; overflow drops the OLDEST in-flight
+// allocator. Cap defaults to 256 in-flight (raised from 32 by substrate-authored commit 5d62069 after observed drop saturation); overflow drops the OLDEST in-flight
 // publish reference (we cannot abort it, but we stop tracking it so a steady-
 // state stream of events doesn't grow the local set monotonically). Override
 // via env `IAS_BUS_MAX_INFLIGHT`.
