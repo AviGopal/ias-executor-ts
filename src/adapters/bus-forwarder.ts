@@ -78,8 +78,8 @@ export function mapEventTypeToBusForm(eventType: string): string {
 // via env `IAS_BUS_MAX_INFLIGHT`.
 const BUS_FORWARD_MAX_INFLIGHT = (() => {
   const raw = typeof process !== "undefined" ? process.env?.IAS_BUS_MAX_INFLIGHT : undefined;
-  const n = raw ? parseInt(raw, 10) : 32;
-  return Number.isFinite(n) && n > 0 ? n : 32;
+  const n = raw ? parseInt(raw, 10) : 256;
+  return Number.isFinite(n) && n > 0 ? n : 256;
 })();
 
 export class BusForwardingEventSink implements EventSink {
