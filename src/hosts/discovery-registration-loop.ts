@@ -128,12 +128,27 @@ export class DiscoveryRegistrationLoop {
       });
       if (res.ok) {
         this.failureCount = 0;
-      } else {
-        this.failureCount += 1;
-        console.warn(`[DiscoveryRegistrationLoop] heartbeat HTTP ${res.status} (failure #${this.failureCount})`);
-        if (this.failureCount >= 3 && this.unhealthyCallback) {
-          this.unhealthyCallback();
-        }
+        return;
+      }
+      // V12 (2026-06-05): heartbeat 404 means discovery has no record of us
+      // (most likely because discovery-vessel restarted and dropped its
+      // in-memory registry). Re-register immediately — this is the
+      // structurally correct response and prevents silent fleet-wide
+      // disappearance after any discovery restart. Without this re-register,
+      // failureCount would just climb until onUnhealthy fires, leaving the
+      // vessel unreachable in the meantime. The register() call resets
+      // failureCount on success.
+      if (res.status === 404) {
+        console.warn(
+          `[DiscoveryRegistrationLoop] heartbeat 404 — discovery has no record; re-registering ${this.config.vesselId}`,
+        );
+        await this.register();
+        return;
+      }
+      this.failureCount += 1;
+      console.warn(`[DiscoveryRegistrationLoop] heartbeat HTTP ${res.status} (failure #${this.failureCount})`);
+      if (this.failureCount >= 3 && this.unhealthyCallback) {
+        this.unhealthyCallback();
       }
     } catch (err) {
       this.failureCount += 1;
