@@ -75,7 +75,7 @@ export function mapEventTypeToBusForm(eventType: string): string {
 // allocator. Cap defaults to 256 in-flight (raised from 32 by substrate-authored commit 5d62069 after observed drop saturation); overflow drops the OLDEST in-flight
 // publish reference (we cannot abort it, but we stop tracking it so a steady-
 // state stream of events doesn't grow the local set monotonically). Override
-// via env `IAS_BUS_MAX_INFLIGHT`.
+// via env `IAS_BUS_MAX_INFLIGHT`. Operationally observed: cap=256 keeps drops at 0 under 75-dispatch/4h load; cap=32 saturated bus producing 30k+ drops/4h. Bump default when needed to match substrate's measured throughput.
 const BUS_FORWARD_MAX_INFLIGHT = (() => {
   const raw = typeof process !== "undefined" ? process.env?.IAS_BUS_MAX_INFLIGHT : undefined;
   const n = raw ? parseInt(raw, 10) : 256;
