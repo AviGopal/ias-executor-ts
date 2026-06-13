@@ -56,6 +56,49 @@ function capForAccumulator(value: string): string {
     `…[truncated ${value.length - ACCUMULATED_VAR_MAX_BYTES} bytes]`;
 }
 
+/**
+ * Fence-tolerant JSON validity test for the `.json` artifact convergent-validity
+ * check (Check 2b). Returns true iff `raw` parses as JSON either directly or
+ * after stripping a leading ```json fence + trailing ``` and slicing the first
+ * balanced top-level object/array. Mirrors the tolerance of the downstream
+ * consumers (apply-proposal-as-patch's parseFirstJsonObject) so the intentionally
+ * fenced `-report.json` writes the pipeline already accepts do not regress, while
+ * structurally-broken content (raw text injected into a JSON string slot) is
+ * rejected. Empty/whitespace-only content is not a valid JSON artifact.
+ */
+export function isParseableJsonArtifact(raw: string): boolean {
+  if (typeof raw !== "string" || raw.trim().length === 0) return false;
+  try { JSON.parse(raw); return true; } catch { /* fall through to fence-tolerant path */ }
+  const s = raw.replace(/^\s*```(?:json)?\n?/i, "").trimStart();
+  const startObj = s.indexOf("{");
+  const startArr = s.indexOf("[");
+  const candidates: Array<[number, string, string]> = [];
+  if (startObj >= 0) candidates.push([startObj, "{", "}"]);
+  if (startArr >= 0) candidates.push([startArr, "[", "]"]);
+  candidates.sort((a, b) => a[0] - b[0]);
+  for (const [start, open, close] of candidates) {
+    let depth = 0, inStr = false, escape = false;
+    for (let i = start; i < s.length; i++) {
+      const ch = s[i]!;
+      if (escape) { escape = false; continue; }
+      if (inStr) {
+        if (ch === "\\") { escape = true; continue; }
+        if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') { inStr = true; continue; }
+      if (ch === open) depth++;
+      else if (ch === close) {
+        depth--;
+        if (depth === 0) {
+          try { JSON.parse(s.slice(start, i + 1)); return true; } catch { break; }
+        }
+      }
+    }
+  }
+  return false;
+}
+
 class BudgetExceededError extends Error {
   constructor(
     readonly budgetType: "cost" | "duration" | "task_count",
@@ -112,6 +155,16 @@ export class ActivityExecutor {
     // gap blocking lift: substrate-authored templates couldn't reach
     // activity-api with their LLM-drafted content.
     const accumulatedVariables: Record<string, unknown> = { ...(options.variables ?? {}) };
+    // Seed the substrate's root identifiers so templates can interpolate them
+    // (e.g. {{executionId}} into http_fetch bodies for concept_create_write).
+    // Caller-provided variables of the same name take precedence — the seed
+    // only fills holes.
+    if (accumulatedVariables.executionId === undefined) {
+      accumulatedVariables.executionId = executionId;
+    }
+    if (accumulatedVariables.execution_id === undefined) {
+      accumulatedVariables.execution_id = executionId;
+    }
 
     try {
       for (const task of template.tasks) {
@@ -370,6 +423,30 @@ export class ActivityExecutor {
                   `convergent_validity[artifact]: fs_write reported success but ` +
                   `no file found at ${resolvedPath}`
                 );
+              }
+              // Check 2b — JSON-artifact content validity. A `.json` file whose
+              // bytes don't parse is a ghost-write: the task self-reports success
+              // while writing an artifact that violates its own extension's
+              // contract. This is exactly how a template that interpolates raw
+              // (fenced, newline-bearing, quote-bearing) LLM text into a JSON
+              // string slot ships 100%-unparseable proposal files past the
+              // existence check. Parse is FENCE-TOLERANT — strip a leading
+              // ```json fence + trailing ``` and slice the first balanced object,
+              // mirroring the downstream consumers (apply-proposal-as-patch's
+              // parseFirstJsonObject) — so intentionally-fenced reports that the
+              // pipeline already tolerates do NOT regress, while structurally
+              // broken content fails loudly with a β-penalty that pressures the
+              // offending template to self-repair via the variant loop.
+              if (resolvedPath.endsWith(".json")) {
+                const written = await Bun.file(resolvedPath).text();
+                if (!isParseableJsonArtifact(written)) {
+                  throw new Error(
+                    `convergent_validity[json_artifact]: fs_write reported success ` +
+                    `but ${resolvedPath} does not contain parseable JSON (even after ` +
+                    `fence-stripping). A .json artifact whose bytes are not JSON is a ` +
+                    `ghost-write — likely raw text interpolated into a JSON string slot.`
+                  );
+                }
               }
             }
           }
