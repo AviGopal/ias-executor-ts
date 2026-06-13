@@ -528,7 +528,19 @@ export class ActivityExecutor {
           // payload. Strings get capped here too; objects fall through.
           accumulatedVariables[`${task.id}_content`] =
             typeof firstContent === "string" ? cappedFirstText : (firstContent ?? "");
+          // _valueJson is kept verbatim (== _text) for back-compat: ~8 existing
+          // seed templates interpolate {{x_valueJson}} INSIDE surrounding quotes
+          // or inline in goal strings and depend on the raw form. Do NOT change it.
           accumulatedVariables[`${task.id}_valueJson`] = cappedFirstText;
+          // _json is the JSON-ESCAPED form: a valid JSON string literal (escaped
+          // quotes/newlines/backslashes, wrapped in double quotes). Use it WITHOUT
+          // surrounding quotes in a template to embed a prior task's raw text inside
+          // a JSON body, e.g. {"content": {{task_json}}}. Without this, authored
+          // real-resolver-chains whose final task POSTs an LLM result interpolated
+          // raw text (with quotes/newlines) into a JSON string slot and produced
+          // "Invalid JSON body" 4xx — the same ghost-write class guarded at
+          // engine.ts:472. JSON.stringify yields the escaped, quoted literal.
+          accumulatedVariables[`${task.id}_json`] = JSON.stringify(cappedFirstText);
           // Shape-keyed access: {{<taskId>_<shape>}} maps to the first impulse
           // matching that shape.
           for (const impulse of storedOutputs) {
