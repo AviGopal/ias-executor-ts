@@ -282,6 +282,31 @@ export class ActivityExecutor {
           for (const impulse of storedOutputs) {
             outputImpulseIds.add(impulse.id);
           }
+        } else if (task.resolver === "compose_parallel") {
+          // Horizontal composition (SUBSTRATE_AS_MDP §7): dispatch N children
+          // concurrently as sibling trajectories under this task's parent
+          // execution id, join their output pools by shape-union. The breadth-
+          // first dual of `compose`. Siblings sharing parent_execution_id are
+          // what activity-api's propagateCreditAlongChain averages over (so a
+          // shared ancestor is not k-fold credit-inflated when k siblings fire).
+          const result = await this.dispatchComposeParallel(task, {
+            executionId,
+            inputImpulses,
+            compositionChain,
+            variables: accumulatedVariables,
+            budget,
+            maxCompositionDepth: options.maxCompositionDepth,
+            tags: options.tags,
+          });
+          storedOutputs = result.outputs;
+          taskCostUsd = result.totalChildCostUsd;
+          // Representative child id for the task record; activity-api recovers
+          // the full sibling set by grouping child traces on parent_execution_id.
+          childExecutionId = result.childTraces[0]?.id;
+          totalCostUsd += result.totalChildCostUsd;
+          for (const impulse of storedOutputs) {
+            outputImpulseIds.add(impulse.id);
+          }
         } else {
           const resolver = this.runtime.resolvers.get(task.resolver);
           if (!resolver) {
@@ -530,7 +555,7 @@ export class ActivityExecutor {
           taskId: task.id,
           description: task.description,
           resolverId: task.resolver,
-          resolverTier: task.resolver === "compose" ? "deterministic" : this.runtime.resolvers.get(task.resolver)?.tier,
+          resolverTier: task.resolver === "compose" || task.resolver === "compose_parallel" ? "deterministic" : this.runtime.resolvers.get(task.resolver)?.tier,
           inputImpulseIds: inputImpulses.map((impulse) => impulse.id),
           outputImpulseIds: storedOutputs.map((impulse) => impulse.id),
           // Record declared input shapes so the trace sink can union them into
@@ -835,6 +860,122 @@ export class ActivityExecutor {
       .filter((impulse): impulse is Impulse => impulse !== undefined);
 
     return { outputs, childTrace };
+  }
+
+  /**
+   * Horizontal composition (SUBSTRATE_AS_MDP §7) — the breadth-first dual of
+   * `dispatchCompose`. Dispatches every id in `task.subActivityIds` concurrently
+   * as a sibling trajectory under the SAME parent execution id and the SAME
+   * composition chain, then joins their output impulse pools by shape-union.
+   *
+   * Tolerant join (§7 "k siblings fired, m succeeded"): a sibling that fails is
+   * dropped from the union rather than failing the whole task; the task fails
+   * only if EVERY sibling failed (zero useful outputs). This is what makes the
+   * primitive useful for OR-edge discovery — run all candidate producers of a
+   * shape in parallel, keep whatever resolved.
+   *
+   * Credit: siblings share `parent_execution_id`, so activity-api's
+   * propagateCreditAlongChain groups them and averages (not sums) the deltas at
+   * the shared ancestor — avoiding k-fold credit inflation.
+   */
+  private async dispatchComposeParallel(
+    task: import("./ontology").ActivityTask,
+    opts: {
+      executionId: string;
+      inputImpulses: Impulse[];
+      compositionChain: string[];
+      variables: Record<string, unknown>;
+      budget?: ExecutionBudget;
+      maxCompositionDepth?: number;
+      tags?: string[];
+    },
+  ): Promise<{ outputs: Impulse[]; childTraces: ExecutionTrace[]; totalChildCostUsd: number }> {
+    const ids = task.subActivityIds;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      throw new Error(
+        `Task '${task.id}' uses resolver "compose_parallel" but has no subActivityIds`,
+      );
+    }
+    if (!this.runtime.templateProvider) {
+      throw new Error(
+        `Task '${task.id}' requires templateProvider to dispatch compose_parallel`,
+      );
+    }
+
+    // Same forward-dispatch depth gate as `compose`: refuse BEFORE spawning any
+    // sibling so the cap is observable as a safety_breach, not a cascade.
+    const cap = opts.maxCompositionDepth ?? 16;
+    if (opts.compositionChain.length >= cap) {
+      throw new Error(
+        `safety_breach: compose_parallel dispatch refused — composition chain depth ` +
+        `(${opts.compositionChain.length}) has reached the cap (${cap}). ` +
+        `Task '${task.id}' would target [${ids.join(", ")}].`,
+      );
+    }
+
+    // All siblings share the parent's chain (sibling trajectories from one origin
+    // state, §7) — NOT a deeper chain per sibling.
+    const childChain = [...opts.compositionChain, opts.executionId];
+    const provider = this.runtime.templateProvider;
+
+    const settled = await Promise.allSettled(
+      ids.map(async (subId) => {
+        const subTemplate = await provider.getTemplate(subId);
+        if (!subTemplate) {
+          throw new Error(`Sub-activity template '${subId}' not found`);
+        }
+        const childExecutor = new ActivityExecutor(this.runtime);
+        return childExecutor.execute(subTemplate, {
+          impulses: opts.inputImpulses,
+          variables: opts.variables,
+          budget: opts.budget,
+          parentExecutionId: opts.executionId,
+          compositionChain: childChain,
+          maxCompositionDepth: opts.maxCompositionDepth,
+          tags: opts.tags,
+        });
+      }),
+    );
+
+    const childTraces: ExecutionTrace[] = [];
+    const succeeded: ExecutionTrace[] = [];
+    const k = ids.length; // sibling-group width = fan-out factor (§7 averaging divisor)
+    for (const s of settled) {
+      if (s.status === "fulfilled") {
+        // Mark the fan-out width so activity-api's propagateCreditAlongChain
+        // averages (÷k) instead of summing each sibling's full credit at the
+        // shared ancestor — the §7 k-fold-inflation guard. Flows verbatim into
+        // the persisted trace's body.metadata; absent ⇒ divisor defaults to 1.
+        s.value.metadata = { ...(s.value.metadata ?? {}), siblingGroupSize: k };
+        childTraces.push(s.value);
+        if (s.value.status !== "failed") succeeded.push(s.value);
+      }
+    }
+
+    if (succeeded.length === 0) {
+      throw new Error(
+        `compose_parallel '${task.id}' — all ${ids.length} sibling dispatch(es) failed; ` +
+        `no output pool to join.`,
+      );
+    }
+
+    // Shape-union join: every successful sibling's output impulses, deduped by id.
+    const outputs: Impulse[] = [];
+    const seen = new Set<string>();
+    let totalChildCostUsd = 0;
+    for (const trace of succeeded) {
+      if (trace.costUsd !== undefined) totalChildCostUsd += trace.costUsd;
+      for (const id of trace.outputImpulseIds) {
+        if (seen.has(id)) continue;
+        const impulse = this.runtime.store.get(id);
+        if (impulse !== undefined) {
+          seen.add(id);
+          outputs.push(impulse);
+        }
+      }
+    }
+
+    return { outputs, childTraces, totalChildCostUsd };
   }
 
   /**

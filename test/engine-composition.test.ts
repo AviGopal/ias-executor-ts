@@ -268,6 +268,141 @@ describe("Nested composition (compose resolver)", () => {
 // Composition chain propagation
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Horizontal composition via "compose_parallel" resolver (SUBSTRATE_AS_MDP §7)
+// ---------------------------------------------------------------------------
+describe("Horizontal composition (compose_parallel resolver)", () => {
+  function makeRuntimeWithProducers(traceSink?: TraceSinkSpy): { runtime: ExecutionRuntime; provider: InMemoryTemplateProvider } {
+    const provider = new InMemoryTemplateProvider();
+    for (const shape of ["shape-a", "shape-b"]) {
+      provider.register({
+        id: `sub-${shape}`,
+        name: `Sub ${shape}`,
+        tasks: [{ id: "t", description: "produce", resolver: `produce-${shape}`, outputShapes: [shape] }],
+        outputShapes: [shape],
+      });
+    }
+    // A sub-activity whose only task fails — used for the tolerant-join test.
+    provider.register({
+      id: "sub-fail",
+      name: "Sub fail",
+      tasks: [{ id: "t", description: "boom", resolver: "boom", outputShapes: ["shape-b"] }],
+      outputShapes: ["shape-b"],
+    });
+
+    const runtime = new ExecutionRuntime({
+      random: new SequentialRandom(),
+      clock: new SteppingClock(),
+      ...(traceSink ? { traceSink } : {}),
+    });
+    runtime.registerTemplateProvider(provider);
+    for (const shape of ["shape-a", "shape-b"]) {
+      runtime.resolvers.register({
+        id: `produce-${shape}`,
+        tier: "deterministic",
+        async resolve(ctx) {
+          return [{ id: ctx.random.id("out"), pointer: { type: "memo" }, metadata: { shape }, loaded: true, content: shape }];
+        },
+      });
+    }
+    runtime.resolvers.register({
+      id: "boom",
+      tier: "deterministic",
+      async resolve() { throw new Error("intentional sibling failure"); },
+    });
+    return { runtime, provider };
+  }
+
+  test("dispatches all siblings concurrently and joins their output pools (shape-union)", async () => {
+    const { runtime } = makeRuntimeWithProducers();
+    const parent: ActivityTemplate = {
+      id: "parent",
+      name: "Parent",
+      tasks: [{
+        id: "fanout",
+        description: "fan out to two producers",
+        resolver: "compose_parallel",
+        subActivityIds: ["sub-shape-a", "sub-shape-b"],
+        outputShapes: ["shape-a", "shape-b"],
+      }],
+      outputShapes: ["shape-a", "shape-b"],
+    };
+    const trace = await new ActivityExecutor(runtime).execute(parent);
+    expect(trace.status).toBe("completed");
+    // Both siblings' outputs are joined onto the fan-out task (shape-union).
+    // Assert on the trace (durable) rather than the store, which is evicted on
+    // top-level completion.
+    expect(trace.tasks[0]?.outputImpulseIds).toHaveLength(2);
+    expect(trace.tasks[0]?.outputShapes?.sort()).toEqual(["shape-a", "shape-b"]);
+  });
+
+  test("stamps siblingGroupSize=k on each child trace for §7 credit averaging", async () => {
+    const sink = new TraceSinkSpy();
+    const { runtime } = makeRuntimeWithProducers(sink);
+    const parent: ActivityTemplate = {
+      id: "parent",
+      name: "Parent",
+      tasks: [{
+        id: "fanout", description: "fan out", resolver: "compose_parallel",
+        subActivityIds: ["sub-shape-a", "sub-shape-b"], outputShapes: ["shape-a", "shape-b"],
+      }],
+      outputShapes: ["shape-a", "shape-b"],
+    };
+    await new ActivityExecutor(runtime).execute(parent);
+    const childTraces = sink.traces.filter((t) => t.parentExecutionId !== undefined);
+    expect(childTraces.length).toBe(2);
+    for (const ct of childTraces) {
+      expect((ct.metadata as { siblingGroupSize?: number } | undefined)?.siblingGroupSize).toBe(2);
+    }
+  });
+
+  test("tolerant join: one sibling fails, task still completes with the surviving output", async () => {
+    const { runtime } = makeRuntimeWithProducers();
+    const parent: ActivityTemplate = {
+      id: "parent",
+      name: "Parent",
+      tasks: [{
+        id: "fanout", description: "fan out, one fails", resolver: "compose_parallel",
+        subActivityIds: ["sub-shape-a", "sub-fail"], outputShapes: ["shape-a"],
+      }],
+      outputShapes: ["shape-a"],
+    };
+    const trace = await new ActivityExecutor(runtime).execute(parent);
+    expect(trace.status).toBe("completed");
+    // Only the surviving sibling's output is joined (the failed one drops out).
+    expect(trace.tasks[0]?.outputImpulseIds).toHaveLength(1);
+    expect(trace.tasks[0]?.outputShapes).toEqual(["shape-a"]);
+  });
+
+  test("fails only when every sibling fails", async () => {
+    const { runtime } = makeRuntimeWithProducers();
+    const parent: ActivityTemplate = {
+      id: "parent",
+      name: "Parent",
+      tasks: [{
+        id: "fanout", description: "all fail", resolver: "compose_parallel",
+        subActivityIds: ["sub-fail", "sub-fail"], outputShapes: ["shape-b"],
+      }],
+      outputShapes: ["shape-b"],
+    };
+    const trace = await new ActivityExecutor(runtime).execute(parent);
+    expect(trace.status).toBe("failed");
+  });
+
+  test("compose_parallel with no subActivityIds fails loudly", async () => {
+    const { runtime } = makeRuntimeWithProducers();
+    const parent: ActivityTemplate = {
+      id: "parent",
+      name: "Parent",
+      tasks: [{ id: "fanout", description: "missing ids", resolver: "compose_parallel", outputShapes: ["shape-a"] }],
+      outputShapes: ["shape-a"],
+    };
+    const trace = await new ActivityExecutor(runtime).execute(parent);
+    expect(trace.status).toBe("failed");
+    expect(trace.failureMode?.reason).toContain("subActivityIds");
+  });
+});
+
 describe("Composition chain", () => {
   test("top-level execution has no composition chain", async () => {
     const runtime = new ExecutionRuntime({ random: new SequentialRandom(), clock: new SteppingClock() });

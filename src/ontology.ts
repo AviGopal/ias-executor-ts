@@ -48,6 +48,11 @@ export interface ActivityTask {
   config?: Record<string, unknown>;
   /** When resolver is "compose", dispatch to this template id via the templateProvider */
   subActivityId?: string;
+  /** When resolver is "compose_parallel", dispatch to ALL of these template ids
+   *  concurrently as sibling trajectories sharing this task's parent execution id,
+   *  then join their output impulse pools by shape-union (SUBSTRATE_AS_MDP §7
+   *  horizontal composition — the breadth-first dual of vertical `compose`). */
+  subActivityIds?: string[];
   /**
    * Shared-catalogue templates carry additional task fields beyond the
    * engine's minimum surface (notes, outputImpulses, inputImpulses,
