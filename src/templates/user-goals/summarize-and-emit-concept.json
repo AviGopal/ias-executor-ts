@@ -1,0 +1,128 @@
+{
+  "id": "summarize-and-emit-concept",
+  "name": "Answer goal and emit concept",
+  "description": "User-dispatch terminal template: takes a free-form goal, has an LLM ANSWER it directly (not paraphrase it), then mints a concept in concept-db whose `content` holds the answer and whose `summary` is a one-line distillation. This shape lets the obsidian-vessel goal note become a usable knowledge artifact — the user reads the produced concept and gets an answer, not a restatement of their question. The minted concept produces a concept:created lifecycle event in concept-db, which the bus forwards to activity-api /v2/events/publish and onward to the WebSocket broadcaster as `concept.created` (unprefixed, per the consumer contract). `execution_id` is threaded through `conceptData.execution_id` (interpolated from the engine's {{executionId}} accumulated variable) into the published event's `data.execution_id` so the GoalDispatchView can attribute the mint to the dispatched root execution. SCHEMA: matches resolver+config schema used by ribosome-extract / draft-gap-closing-activity (llm_completion_dispatch + http_fetch).",
+  "category": "tool",
+  "version": "0.1.0",
+  "tags": [
+    "user.goal",
+    "concept.emit",
+    "summarize",
+    "terminal"
+  ],
+  "input_shapes": ["goal"],
+  "output_shapes": ["concept_create_write_result"],
+  "variables": [
+    {
+      "name": "goal",
+      "type": "string",
+      "required": true,
+      "description": "Free-form goal text from the user. Auto-populated by GoalHost.runGoal from the request body's `goal` field."
+    },
+    {
+      "name": "summaryMaxTokens",
+      "type": "number",
+      "required": false,
+      "default": 300,
+      "description": "Token budget for the summarize task's LLM call (informational; the task config currently hardcodes max_tokens=300 because the engine's variable interpolation does not propagate template-level defaults into config fields)."
+    }
+  ],
+  "tasks": [
+    {
+      "id": "retrieve_context",
+      "description": "Search concept-db for concepts related to the goal. Returns a JSON list of related concepts (id + summary). Used to ground the answer in prior knowledge — each answered goal becomes context for future answers, so the substrate's answers improve as the concept graph fills in. failOnNon2xx is false: an empty result set is normal on cold start and must not fail the chain.",
+      "resolver": "http_fetch",
+      "config": {
+        "type": "http_fetch",
+        "method": "GET",
+        "url": "http://127.0.0.1:8260/concepts/search?q={{goal}}&limit=5",
+        "timeoutMs": 5000
+      },
+      "outputShapes": ["conceptSearchResult"],
+      "outputImpulses": ["context_concepts"],
+      "notes": "concept-db's /concepts/search runs FTS over the concept content/summary. The full goal text is sent verbatim as q= (URL-encoded by the fetch layer). Top 5 results are returned. The bodyText (JSON-stringified search result) becomes {{retrieve_context_text}} for the next task. No auth required for read-side."
+    },
+    {
+      "id": "retrieve_files",
+      "description": "Grep /workspace/memory (operator-imported notes and prior findings) for the goal text. Targets a narrow, high-signal subtree because the broader /workspace contains 50k+ files (proposals, patches, validation runs) and would time out under fs_grep's per-file 512KiB read. Returns up to 15 line-level matches; node_modules / .git / non-text extensions are skipped. Empty result is acceptable on a fresh substrate — the answer step proceeds with concept-db context only.",
+      "dependencies": ["retrieve_context"],
+      "resolver": "fs_grep",
+      "config": {
+        "type": "fs_grep",
+        "path": "/workspace/memory",
+        "pattern": "{{goal}}",
+        "maxMatches": 15,
+        "maxFilesScanned": 800,
+        "caseInsensitive": true
+      },
+      "outputShapes": ["fileSearchResult"],
+      "outputImpulses": ["context_files"],
+      "notes": "Memory dir holds the operator's auto-memory notes (user/feedback/project/reference types) imported by import-operator-memory.ts. These are the highest-signal local artifacts for grounding goal-answers — they describe what the operator knows, what conventions exist, and prior decisions/percolations. Future enhancement: a search-online resolver (web_search) would slot in as a sibling task — give the LLM cross-source context without changing the answer task's prompt structure. Broader-tree search (super-repo source) requires loosening fs_grep's workspace-root guard OR adding a separate code_grep resolver scoped to mounted repo paths."
+    },
+    {
+      "id": "retrieve_web",
+      "description": "Use Anthropic's native server-side web_search tool to look up authoritative external sources for the goal topic. Runs via llm_completion_dispatch in tool-use mode: the model decides whether to search, the search runs INSIDE Anthropic (no external API key needed beyond ANTHROPIC_API_KEY), and the model produces a synthesized prose summary citing the URLs it consulted. failOnNon2xx is implicit through llm-resolver-vessel — a failed Anthropic call returns resolved:false and the chain continues with empty web context.",
+      "dependencies": ["retrieve_files"],
+      "resolver": "llm_completion_dispatch",
+      "config": {
+        "type": "llm_completion_dispatch",
+        "prompt": "You are gathering external grounding for a user goal. Use the web_search tool to look up authoritative recent sources on the topic. Run at most 3 searches. Then write a concise plain-prose summary of what you learned, with inline source attribution like 'per docs.anthropic.com,' or 'per github.com/owner/repo'. If the goal is purely substrate-internal (concerns activity-api, concept-db, ias-executor-ts, goal-host-vessel, obsidian-vessel etc.) and no external sources are useful, search ZERO times and respond exactly: 'no web sources applicable to this internal-substrate question'.\n\nUSER GOAL: {{goal}}\n\nFormat the final summary as 2-5 sentences. CRITICAL: no double quotes, no backslashes, no newlines in your final text — your summary is inlined directly into a JSON string field. Use single quotes if quoting is needed. Maximum 800 characters.",
+        "model": "anthropic/claude-haiku-4-5-20251001",
+        "max_tokens": 800,
+        "tools": [
+          {
+            "type": "web_search_20250305",
+            "name": "web_search",
+            "max_uses": 3
+          }
+        ],
+        "max_tool_iterations": 5
+      },
+      "inputShapes": ["goal"],
+      "outputShapes": ["webSearchSummary"],
+      "outputImpulses": ["context_web"],
+      "notes": "web_search is a built-in Anthropic server-side tool: invoked as `{type: 'web_search_20250305', name: 'web_search'}`. Anthropic runs the search inside its API and returns results inline; llm-resolver-vessel passes the tools array through verbatim and skips client-side dispatch for any tool def carrying a `type` field. ANTHROPIC_API_KEY is the only credential needed. Limits: max_uses caps Anthropic's search budget per call; max_tool_iterations caps llm-resolver-vessel's loop. The model is instructed to skip search entirely for purely substrate-internal goals (where the concept-db + fs_grep grounding is already authoritative) — this avoids spurious web calls on operator-internal questions."
+    },
+    {
+      "id": "answer",
+      "description": "Ask an LLM to ANSWER the user goal directly, grounded in concept-db context, local file matches, AND web search results. Plain text only, no quotes/backslashes/newlines (the answer is inlined into a JSON string downstream). 2-5 sentences. If the goal is a question, give the answer. If it is a request to describe/explain/summarize a topic, do so substantively. If ALL grounding sources are empty or unhelpful, answer from training knowledge but acknowledge the limit (e.g. 'Without prior concepts on this topic:' prefix).",
+      "dependencies": ["retrieve_context", "retrieve_files", "retrieve_web"],
+      "resolver": "llm_completion_dispatch",
+      "config": {
+        "type": "llm_completion_dispatch",
+        "prompt": "You are answering a user goal for storage as a concept node in a knowledge graph. Ground your answer in the retrieved context when it is relevant; otherwise answer from general knowledge but say so.\n\nUSER GOAL: {{goal}}\n\nRETRIEVED CONCEPT CONTEXT (from concept-db /concepts/search): {{retrieve_context_text}}\n\nRETRIEVED FILE MATCHES (from fs_grep over /workspace; each entry has path/line/text): {{retrieve_files_text}}\n\nRETRIEVED WEB SOURCES (summary of Anthropic-native web_search hits): {{retrieve_web_text}}\n\nProduce a substantive ANSWER to this goal — not a paraphrase or restatement. If the goal asks a question, answer it. If it asks for a description / explanation / analysis, produce one. If it asks for a recommendation or plan, give the concrete recommendation with the load-bearing reasoning. Do NOT begin your response with phrases like 'The goal asks…', 'The user wants…', or 'This goal seeks to…' — those are paraphrases, not answers. Start directly with the substantive content.\n\nWhen a file match is load-bearing for your answer, you MAY cite it inline using single quotes around the path, e.g. 'see scripts/substrate/Makefile'. When a web source is load-bearing, you MAY cite it inline like 'per docs.anthropic.com'. Do NOT invent file paths, function names, line numbers, schema fields, versions, or URLs that are not in the retrieved context.\n\nIf the concept context, file matches, AND web sources are all empty or none cover the goal, prefix your answer with 'Without prior concepts on this topic: ' and answer from general knowledge. This honesty signal is load-bearing — silent hallucination is the failure mode we are guarding against.\n\nFormat: 2-5 sentences of plain prose. CRITICAL: no double quotes, no backslashes, no newlines — your text is inlined directly into a JSON string field. Use single quotes if quoting is needed. Maximum 1000 characters.",
+        "model": "anthropic/claude-haiku-4-5-20251001",
+        "max_tokens": 800
+      },
+      "inputShapes": ["goal", "conceptSearchResult", "fileSearchResult", "webSearchSummary"],
+      "outputShapes": ["answer"],
+      "outputImpulses": ["goal_answer"],
+      "notes": "Answer text is propagated to the emit_concept task via {{answer_text}} (the engine's accumulatedVariables convention exposes the resolver's primary text output under <taskId>_text). The same text becomes both the concept's content (full body) and summary (concept-db will truncate summary if needed). The prompt forbids quotes/backslashes/newlines so direct inlining into a JSON string field is safe, AND requires the 'Without prior concepts on this topic:' prefix only when BOTH grounding sources are empty (concept-db + file matches) so the user can see when an answer is ungrounded. fs_grep file matches let the answer cite concrete paths instead of generic claims; concept-db context provides accumulated knowledge across prior goals."
+    },
+    {
+      "id": "emit_concept",
+      "description": "Mint a concept in concept-db via http_fetch POST to /v2/impulses/resolve with pointer.type=concept_create_write. content = answer text (the substantive answer), summary = same answer text (concept-db caps summary at ~280 chars). source_type=goal matches SourceTypeSchema enum.",
+      "dependencies": ["answer"],
+      "inputImpulses": ["goal_answer"],
+      "resolver": "http_fetch",
+      "config": {
+        "type": "http_fetch",
+        "method": "POST",
+        "url": "http://127.0.0.1:8260/v2/impulses/resolve",
+        "headers": { "Content-Type": "application/json" },
+        "body": "{\"impulse\":{\"pointer\":{\"type\":\"concept_create_write\",\"conceptData\":{\"source_type\":\"goal\",\"content\":\"{{answer_text}}\",\"summary\":\"{{answer_text}}\",\"shape\":\"goalAnswer\",\"execution_id\":\"{{executionId}}\",\"metadata\":{\"origin\":\"summarize-and-emit-concept\",\"goal\":\"{{goal}}\",\"execution_id\":\"{{executionId}}\"}}}}}",
+        "timeoutMs": 10000,
+        "failOnNon2xx": true
+      },
+      "outputShapes": ["concept_create_write_result"],
+      "outputImpulses": ["concept_result"],
+      "notes": "The http_fetch resolver auto-attaches METABOB_API_KEY on substrate-local POSTs (see http-fetch.ts V28 gating) and, with failOnNon2xx: true, surfaces concept-db 4xx/5xx as task failures instead of silently registering green. concept-db's resolver emits a concept:created lifecycle event which the bus forwards to activity-api /v2/events/publish → WS broadcaster as type=concept.created (unprefixed). {{answer_text}} and {{goal}} are inlined directly into the JSON body; the upstream answer prompt forbids double-quotes/backslashes/newlines so this is safe in the common case. metadata.goal is captured for provenance (the answer alone may lose what was originally asked)."
+    }
+  ],
+  "metadata": {
+    "author": "operator",
+    "embedded": false,
+    "bootstrapTemplate": true,
+    "userDispatch": true
+  }
+}
