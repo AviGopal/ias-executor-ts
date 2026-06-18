@@ -66,6 +66,15 @@ import evolveActivitySelfContained from "./registry-quality/evolve-activity-self
 // ──────────────────────────────────────────────────────────────────────────
 import forgeVesselForShape from "./forge/forge-vessel-for-shape.json" with { type: "json" };
 
+// ──────────────────────────────────────────────────────────────────────────
+// User-goals — terminal templates for user-dispatched goals (obsidian-vessel
+// GoalDispatchView, minibob --single). Distinct from substrate-self-development
+// templates: these consume free-form user goal text and produce concrete
+// outputs (concepts, files, summaries) the user sees, rather than gap-closing
+// variants that target substrate internals.
+// ──────────────────────────────────────────────────────────────────────────
+import summarizeAndEmitConcept from "./user-goals/summarize-and-emit-concept.json" with { type: "json" };
+
 // JSON imports widen to `ActivityTemplate` via the index signature on the
 // ontology interfaces (`extra: unknown`). The `satisfies` shape check would
 // be tighter, but bun's `with { type: "json" }` resolves to a literal type;
@@ -91,6 +100,8 @@ export const SHARED_TEMPLATES: ActivityTemplate[] = [
   cast(evolveActivitySelfContained),
   // forge
   cast(forgeVesselForShape),
+  // user-goals
+  cast(summarizeAndEmitConcept),
 ];
 
 // Build an id index once at module load. The catalogue is static; recomputing
