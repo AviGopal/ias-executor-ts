@@ -80,25 +80,45 @@ export class ActivityApiTraceSink implements TraceSink {
   ) {}
 
   async record(trace: ExecutionTrace): Promise<void> {
-    try {
-      const payload = mapTraceToApiBody(trace);
-      const res = await globalThis.fetch(`${this.endpoint}/v2/activities/execution-traces`, {
-        method: "POST",
-        headers: {
-          Authorization: `ApiKey ${this.apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) {
+    // Bounded retry with backoff. The sink is best-effort (never throws, so a
+    // failed POST never aborts execution), but a SINGLE silent drop was the
+    // dominant cause of orphaned parent traces: under activity-api load a
+    // parent's trace POST returned 429/5xx and was discarded while its
+    // lifecycle children (already posted) survived, leaving children whose
+    // parent_execution_id resolves to nothing. That starved the composition
+    // graph / lambda1 (only ~21 of 32K nested compositions became edges).
+    // Re-POST after a non-OK is safe: activity-api UPSERTs by execution_id.
+    const payload = mapTraceToApiBody(trace);
+    const url = `${this.endpoint}/v2/activities/execution-traces`;
+    const MAX_ATTEMPTS = 4;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        const res = await globalThis.fetch(url, {
+          method: "POST",
+          headers: {
+            Authorization: `ApiKey ${this.apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        });
+        if (res.ok) {
+          try { await res.body?.cancel(); } catch { /* swallow */ }
+          return;
+        }
         const text = await res.text().catch(() => "");
         try { await res.body?.cancel(); } catch { /* swallow */ }
-        console.warn(`[ActivityApiTraceSink] trace POST failed (${res.status}): ${text}`);
-      } else {
-        try { await res.body?.cancel(); } catch { /* swallow */ }
+        const retryable = res.status === 429 || res.status >= 500;
+        if (!retryable || attempt === MAX_ATTEMPTS) {
+          console.warn(`[ActivityApiTraceSink] trace POST failed (${res.status}) after ${attempt} attempt(s): ${text}`);
+          return;
+        }
+      } catch (err) {
+        if (attempt === MAX_ATTEMPTS) {
+          console.warn(`[ActivityApiTraceSink] trace POST threw after ${attempt} attempt(s):`, err);
+          return;
+        }
       }
-    } catch (err) {
-      console.warn("[ActivityApiTraceSink] trace POST threw:", err);
+      await new Promise((resolve) => setTimeout(resolve, 100 * 2 ** (attempt - 1)));
     }
   }
 }
