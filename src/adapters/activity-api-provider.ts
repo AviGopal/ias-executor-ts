@@ -77,6 +77,11 @@ export class ActivityApiTraceSink implements TraceSink {
   constructor(
     private readonly endpoint: string,
     private readonly apiKey: string,
+    // Vessel attribution for per-vessel learning (#5). Defaults from the unit's
+    // VESSEL_ID env so every existing caller of asTraceSink() picks it up without
+    // a signature change. Traces previously landed with vessel_id=NONE, starving
+    // the per-vessel / resolved_by_vessel posteriors.
+    private readonly vesselId: string = process.env.VESSEL_ID ?? process.env.VESSEL_NAME ?? "",
   ) {}
 
   async record(trace: ExecutionTrace): Promise<void> {
@@ -89,6 +94,10 @@ export class ActivityApiTraceSink implements TraceSink {
     // graph / lambda1 (only ~21 of 32K nested compositions became edges).
     // Re-POST after a non-OK is safe: activity-api UPSERTs by execution_id.
     const payload = mapTraceToApiBody(trace);
+    if (this.vesselId) {
+      payload.vessel_id = this.vesselId;
+      payload.resolved_by_vessel_id = this.vesselId;
+    }
     const url = `${this.endpoint}/v2/activities/execution-traces`;
     const MAX_ATTEMPTS = 4;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
