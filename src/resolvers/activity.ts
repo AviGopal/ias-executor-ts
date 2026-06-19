@@ -36,6 +36,15 @@ interface ActivityConfig {
   reason?: string;
   /** Optional depth cap override; default 10 (matches minibob). */
   maxDepth?: number;
+  /**
+   * Optional parent-attribution overrides. When a caller dispatches a child
+   * whose parent is a DIFFERENT execution than the current one (e.g. backfill
+   * attributing a dispatched producer to the CONSUMING activity so a genuine
+   * composition edge forms), it supplies these. Absent → exactly the prior
+   * behavior: parent = context.executionId, chain = context.compositionChain.
+   */
+  parentExecutionId?: string;
+  compositionChain?: string[];
 }
 
 const DEFAULT_MAX_DEPTH = 10;
@@ -58,7 +67,13 @@ export function makeActivityResolver(options: {
       // for top-level runs, growing by 1 per nested execute(). Defense-in-
       // depth alongside the lifecycle-subscriber's refuseForDepthCap which
       // bounds subscriber-driven recursion separately.
-      const currentDepth = context.compositionChain?.length ?? 0;
+      // The EFFECTIVE chain governs both attribution and the depth guard.
+      // When config.compositionChain is provided (parent-attribution override),
+      // depth is measured from it so recursion stays honestly bounded relative
+      // to the chain the child will actually carry. Absent → current behavior.
+      const effectiveParentChain = config.compositionChain ?? context.compositionChain ?? [];
+      const effectiveParentExecutionId = config.parentExecutionId ?? context.executionId;
+      const currentDepth = effectiveParentChain.length;
       if (currentDepth >= maxDepth) {
         return [errorImpulse(context, `activity resolver: max recursion depth ${maxDepth} reached (chain length ${currentDepth})`)];
       }
@@ -87,13 +102,14 @@ export function makeActivityResolver(options: {
         const executor = options.executor();
         const trace = await executor.execute(template, {
           variables,
-          parentExecutionId: context.executionId,
-          // Extend the parent's chain by appending the current executionId.
-          // When the engine is invoked top-level, context.compositionChain
-          // is empty → child chain = [parentExec]. When the activity resolver
-          // is itself called from a nested execution, the chain grows
-          // monotonically so recursion depth is observable + capped.
-          compositionChain: [...(context.compositionChain ?? []), context.executionId],
+          parentExecutionId: effectiveParentExecutionId,
+          // Extend the EFFECTIVE parent chain by appending the effective
+          // parent executionId. Default (no override): chain =
+          // [...context.compositionChain, context.executionId] — exactly the
+          // prior behavior, growing monotonically so recursion depth is
+          // observable + capped. With overrides, the child is attributed to a
+          // different parent (backfill forming a genuine composition edge).
+          compositionChain: [...effectiveParentChain, effectiveParentExecutionId],
           reason: config.reason,
           goalContext: config.goal ? { goal: config.goal } : undefined,
         });

@@ -141,6 +141,47 @@ describe("activity resolver", () => {
     expect(impulses[0]!.metadata.shape).toBe("activityExecutionSummary");
   });
 
+  test("parent-attribution override absent → child parent = context.executionId", async () => {
+    const { runtime, executor } = makeRuntimeAndExecutor();
+    const seen: Array<{ parentExecutionId?: string; compositionChain?: string[] }> = [];
+    const origExecute = executor.execute.bind(executor);
+    executor.execute = ((tpl: ActivityTemplate, opts: { parentExecutionId?: string; compositionChain?: string[] } = {}) => {
+      seen.push({ parentExecutionId: opts.parentExecutionId, compositionChain: opts.compositionChain });
+      return origExecute(tpl, opts as never);
+    }) as typeof executor.execute;
+    const resolver = runtime.resolvers.get("activity")!;
+    const ctx: ResolverContext = {
+      ...makeContext(runtime, { template: childTemplate }),
+      compositionChain: ["root"],
+    };
+    await resolver.resolve(ctx);
+    expect(seen[0]!.parentExecutionId).toBe("exec_parent");
+    expect(seen[0]!.compositionChain).toEqual(["root", "exec_parent"]);
+  });
+
+  test("parent-attribution override present → child gets overridden parent + chain", async () => {
+    const { runtime, executor } = makeRuntimeAndExecutor();
+    const seen: Array<{ parentExecutionId?: string; compositionChain?: string[] }> = [];
+    const origExecute = executor.execute.bind(executor);
+    executor.execute = ((tpl: ActivityTemplate, opts: { parentExecutionId?: string; compositionChain?: string[] } = {}) => {
+      seen.push({ parentExecutionId: opts.parentExecutionId, compositionChain: opts.compositionChain });
+      return origExecute(tpl, opts as never);
+    }) as typeof executor.execute;
+    const resolver = runtime.resolvers.get("activity")!;
+    const ctx: ResolverContext = {
+      ...makeContext(runtime, {
+        template: childTemplate,
+        parentExecutionId: "consuming_exec",
+        compositionChain: ["grand", "consuming_exec_ancestor"],
+      }),
+      compositionChain: ["root"], // overridden by config.compositionChain
+    };
+    await resolver.resolve(ctx);
+    expect(seen[0]!.parentExecutionId).toBe("consuming_exec");
+    // depth measured from effective (override) chain; child chain appends the override parent
+    expect(seen[0]!.compositionChain).toEqual(["grand", "consuming_exec_ancestor", "consuming_exec"]);
+  });
+
   test("inline template wins over templateId", async () => {
     const provider: TemplateProvider = {
       async getTemplate() {

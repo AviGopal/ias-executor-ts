@@ -3,6 +3,7 @@ import { getImpulseShape } from "./ontology";
 import type { CreateImpulseInput } from "./impulses";
 import type { ResolverContext } from "./resolvers";
 import { ExecutionRuntime } from "./runtime";
+import { classifyShape } from "./shape-lifecycle";
 
 export interface ExecutionBudget {
   maxCostUsd?: number;
@@ -1057,6 +1058,17 @@ export class ActivityExecutor {
       }
 
       if (candidates.length === 0) {
+        // Terminal/sink shapes (reports, audits, findings, gaps, …) are
+        // consumed by observation and are never produced FOR binding, so a
+        // required-input wiring on one can never be satisfied — no amount of
+        // producer dispatch will help. Surface that as a template-authoring
+        // bug with a specific message (does NOT change WHICH cases throw —
+        // a missing required input already throws here).
+        if (classifyShape(ref.shape) === "terminal") {
+          throw new Error(
+            `Task '${taskId}' requires shape '${ref.shape}', but terminal/sink shapes are never produced for binding (template-authoring bug)`,
+          );
+        }
         const predDesc = ref.producedBy ? ` (producedBy=${ref.producedBy})` : "";
         const waitDesc = timeoutMs > 0
           ? ` (waited ${timeoutMs}ms for slot-binding subscribers)`
