@@ -84,7 +84,14 @@ export class VesselResolver implements Resolver {
       clearTimeout(timer);
     }
 
-    const body = await res.json() as { success: boolean; content?: unknown; error?: string; metadata?: Record<string, unknown> };
+    const body = await res.json() as { success: boolean; content?: unknown; body?: unknown; shape?: string; error?: string; metadata?: Record<string, unknown> };
+    // Compat: dev-vessel-style resolvers return { success, shape, body } (the
+    // resolver result), not { success, content }. Without this fallback the
+    // adapter set impulse.content = undefined, so any compose template feeding a
+    // custom-resolver output into a downstream task got an EMPTY/unbound
+    // {{taskid_*}} variable (root cause of the stalled cross-template synthesis
+    // loop, 2026-06-19). Prefer content; fall back to the body payload.
+    const resolvedContent = body.content !== undefined ? body.content : body.body;
     // Drain Bun's native HTTP buffers — without this the response's mmap'd
     // read stream is retained until the runtime's incremental GC catches it,
     // and at high vessel-resolver call rates this dominates per-runGoal RSS.
@@ -94,20 +101,20 @@ export class VesselResolver implements Resolver {
       throw new Error(`VesselResolver(${this.id}): vessel returned error — ${body.error ?? res.status}`);
     }
 
-    const summary = typeof body.content === "string"
-      ? body.content.slice(0, 120)
-      : JSON.stringify(body.content ?? "").slice(0, 120);
+    const summary = typeof resolvedContent === "string"
+      ? resolvedContent.slice(0, 120)
+      : JSON.stringify(resolvedContent ?? "").slice(0, 120);
 
     return [{
       id: ctx.random.id(this.shape),
       pointer: { type: this.shape, ...ctx.task.config } as Impulse["pointer"],
       metadata: {
-        shape: this.shape,
+        shape: (typeof body.shape === "string" ? body.shape : this.shape),
         summary,
         ...(body.metadata ?? {}),
       },
       loaded: true,
-      content: body.content,
+      content: resolvedContent,
     }];
   }
 }

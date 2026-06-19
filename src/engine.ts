@@ -522,6 +522,12 @@ export class ActivityExecutor {
               ? JSON.stringify(firstContent)
               : "";
           const cappedFirstText = capForAccumulator(firstText);
+          // Bare key (no suffix): {{<taskId>}} -> first output content. Matches the
+          // dev-vessel cli executor convention so a seed authored as {{taskId}} binds
+          // identically under BOTH the cli (run-local-seed) and the engine (autonomous
+          // goal-host) paths. Without it, custom-resolver compose templates had to know
+          // which executor would run them (the dual-convention footgun, 2026-06-19).
+          accumulatedVariables[task.id] = cappedFirstText;
           accumulatedVariables[`${task.id}_text`] = cappedFirstText;
           // _content keeps the structural reference so resolvers that read
           // .content as an object (rather than .text) still see the full
