@@ -1,0 +1,45 @@
+{
+  "id": "genuine-edge-probe-producer",
+  "name": "Genuine Edge Probe \u2014 Producer Leaf",
+  "description": "Minimal deterministic producer leaf for the first genuine capability->capability composition (drives the honest lambda_1 / genuine_edges signal above 0). Runs one deterministic bash step and emits its result under the chainable shape 'genuine_chain_signal' so a downstream consumer activity can consume it via shape-flow. Pairs with genuine-edge-probe-consumer (consumes genuine_chain_signal) and genuine-edge-probe-orchestrator (composes both). Idiomatic: reuses the native 'bash' resolver and the engine's outputShapes stamping (ensureImpulse) \u2014 no LLM, no network, no executor change.",
+  "category": "meta",
+  "version": "0.1.0",
+  "tags": [
+    "registry.quality",
+    "meta",
+    "composition",
+    "genuine.edge",
+    "deterministic"
+  ],
+  "input_shapes": [],
+  "output_shapes": [
+    "genuine_chain_signal"
+  ],
+  "tasks": [
+    {
+      "id": "emit_signal",
+      "description": "Deterministically emit a chain signal payload. The engine stamps this task's declared outputShape ('genuine_chain_signal') onto the bash resolver's commandResult impulse via ensureImpulse, so the impulse lands in the pool under the chainable shape.",
+      "resolver": "bash",
+      "config": {
+        "command": [
+          "sh",
+          "-c",
+          "echo genuine-edge-probe-producer-signal"
+        ]
+      },
+      "inputShapes": [],
+      "outputShapes": [
+        "genuine_chain_signal"
+      ],
+      "outputImpulses": [
+        "producer_signal"
+      ]
+    }
+  ],
+  "metadata": {
+    "created": "2026-06-19",
+    "author": "genuine-edge-bootstrap",
+    "embedded": true,
+    "purpose": "First genuine non-hub composition edge. See genuine-edge-probe-orchestrator."
+  }
+}

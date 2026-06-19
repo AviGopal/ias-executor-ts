@@ -1,0 +1,51 @@
+{
+  "id": "genuine-edge-probe-orchestrator",
+  "name": "Genuine Edge Probe — Orchestrator (activity-resolver: producer -> consumer)",
+  "description": "The FIRST genuine capability->capability composition in the substrate. Dispatches two REAL sub-activities via the native 'activity' resolver (config.templateId): (1) genuine-edge-probe-producer (emits shape 'genuine_chain_signal' into the SHARED runtime store), then (2) genuine-edge-probe-consumer (declares inputShapes ['genuine_chain_signal'], so the engine's resolveInputs finds the producer's output in the shared store and the consumer child consumes it via shape-flow). The 'activity' resolver spawns each sub-activity as a child execution with parent_execution_id = this orchestrator's execution id, so the composition-edge reconciler derives two NON-HUB edges: orchestrator->producer and orchestrator->consumer. Neither endpoint is a lifecycle hub (slot-binding / validator-dispatch), so genuine_edges (the honest lambda_1) rises above 0. The producer->consumer link is a TRUE shape-flow dependency: the consumer task only resolves because the producer task already populated genuine_chain_signal into the shared pool. Uses the 'activity' resolver (not 'compose') because activity-api's TemplateTaskSchema strips the top-level subActivityId field but preserves config (z.record), so config.templateId survives the upload round-trip. No executor change.",
+  "category": "meta",
+  "version": "0.1.0",
+  "tags": [
+    "registry.quality",
+    "meta",
+    "composition",
+    "genuine.edge",
+    "orchestrator",
+    "deterministic"
+  ],
+  "input_shapes": [],
+  "output_shapes": [
+    "genuine_chain_signal",
+    "genuine_chain_result"
+  ],
+  "tasks": [
+    {
+      "id": "dispatch_producer",
+      "description": "Dispatch the producer sub-activity as a child execution. Its output (genuine_chain_signal) is emitted into the SHARED runtime store (nested executions keep their outputs live), making it findable by the next task's inputShapes resolution.",
+      "resolver": "activity",
+      "config": {
+        "templateId": "genuine-edge-probe-producer",
+        "reason": "genuine-edge probe — dispatch producer leaf"
+      },
+      "inputShapes": [],
+      "outputShapes": ["activityExecutionSummary"]
+    },
+    {
+      "id": "dispatch_consumer",
+      "description": "Dispatch the consumer sub-activity as a child execution. The consumer's own task declares inputShapes ['genuine_chain_signal'] and resolves it from the shared store (populated by the producer child above) — a real shape-flow dependency, not a coincidental sibling.",
+      "resolver": "activity",
+      "config": {
+        "templateId": "genuine-edge-probe-consumer",
+        "reason": "genuine-edge probe — dispatch consumer leaf (consumes producer's genuine_chain_signal)"
+      },
+      "dependencies": ["dispatch_producer"],
+      "inputShapes": ["genuine_chain_signal"],
+      "outputShapes": ["activityExecutionSummary"]
+    }
+  ],
+  "metadata": {
+    "created": "2026-06-19",
+    "author": "genuine-edge-bootstrap",
+    "embedded": true,
+    "purpose": "Drive genuine_edges (honest lambda_1) above 0 — first non-hub capability->capability composition. Pairs with genuine-edge-probe-producer / genuine-edge-probe-consumer."
+  }
+}

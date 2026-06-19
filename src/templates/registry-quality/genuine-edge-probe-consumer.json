@@ -1,0 +1,49 @@
+{
+  "id": "genuine-edge-probe-consumer",
+  "name": "Genuine Edge Probe \u2014 Consumer Leaf",
+  "description": "Minimal deterministic consumer leaf for the first genuine capability->capability composition. Declares input_shapes ['genuine_chain_signal'] so it only runs once a producer has populated that shape into the pool \u2014 making the orchestrator->consumer edge a TRUE shape-flow edge, not a coincidental sibling. Emits 'genuine_chain_result'. Idiomatic: native 'bash' resolver + engine outputShapes stamping. Pairs with genuine-edge-probe-producer and genuine-edge-probe-orchestrator.",
+  "category": "meta",
+  "version": "0.1.0",
+  "tags": [
+    "registry.quality",
+    "meta",
+    "composition",
+    "genuine.edge",
+    "deterministic"
+  ],
+  "input_shapes": [
+    "genuine_chain_signal"
+  ],
+  "output_shapes": [
+    "genuine_chain_result"
+  ],
+  "tasks": [
+    {
+      "id": "consume_signal",
+      "description": "Consume the producer's genuine_chain_signal impulse (resolved into this child's seed pool by the orchestrator's compose task) and emit a result. inputShapes declares the dependency so the engine's missing-input-shapes gap detector flags a real shape gap if the producer did not run first.",
+      "resolver": "bash",
+      "config": {
+        "command": [
+          "sh",
+          "-c",
+          "echo genuine-edge-probe-consumer-consumed-signal"
+        ]
+      },
+      "inputShapes": [
+        "genuine_chain_signal"
+      ],
+      "outputShapes": [
+        "genuine_chain_result"
+      ],
+      "outputImpulses": [
+        "consumer_result"
+      ]
+    }
+  ],
+  "metadata": {
+    "created": "2026-06-19",
+    "author": "genuine-edge-bootstrap",
+    "embedded": true,
+    "purpose": "First genuine non-hub composition edge. See genuine-edge-probe-orchestrator."
+  }
+}

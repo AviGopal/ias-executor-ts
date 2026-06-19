@@ -59,6 +59,14 @@ import replaceActivity from "./registry-quality/replace-activity.json" with { ty
 import repairFailedActivity from "./registry-quality/repair-failed-activity.json" with { type: "json" };
 import evolveActivitySelfContained from "./registry-quality/evolve-activity-self-contained.json" with { type: "json" };
 
+// Genuine-edge probe — the first genuine capability->capability composition.
+// An orchestrator that composes two real leaf sub-activities (producer ->
+// consumer) via the native `compose` resolver, driving genuine_edges (the
+// honest λ₁) above 0. See genuine-edge-probe-orchestrator.json.
+import genuineEdgeProbeProducer from "./registry-quality/genuine-edge-probe-producer.json" with { type: "json" };
+import genuineEdgeProbeConsumer from "./registry-quality/genuine-edge-probe-consumer.json" with { type: "json" };
+import genuineEdgeProbeOrchestrator from "./registry-quality/genuine-edge-probe-orchestrator.json" with { type: "json" };
+
 // ──────────────────────────────────────────────────────────────────────────
 // Forge — restored from minibob commit f36d013 on 2026-05-19. The
 // submodule pointer at port time (f486361) had drifted off the commit
@@ -98,6 +106,10 @@ export const SHARED_TEMPLATES: ActivityTemplate[] = [
   cast(replaceActivity),
   cast(repairFailedActivity),
   cast(evolveActivitySelfContained),
+  // genuine-edge probe (first genuine capability->capability composition)
+  cast(genuineEdgeProbeProducer),
+  cast(genuineEdgeProbeConsumer),
+  cast(genuineEdgeProbeOrchestrator),
   // forge
   cast(forgeVesselForShape),
   // user-goals
