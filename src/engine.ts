@@ -18,6 +18,10 @@ export interface ExecuteOptions {
   budget?: ExecutionBudget;
   parentExecutionId?: string;
   compositionChain?: string[];
+  /** Ancestor TEMPLATE ids (not execution ids), for cycle detection when an activity
+   *  composes another activity — rejects A -> ... -> A before it recurses, instead of
+   *  only tripping the depth cap at 16. Prerequisite for activities-as-resolvers. */
+  compositionTemplateChain?: string[];
   /** Classification tags written into the execution trace (e.g. "intent:topology_discovery"). */
   tags?: string[];
   /** Optional goal context forwarded into `lifecycle:*` payloads so subscribers
@@ -117,6 +121,7 @@ export class ActivityExecutor {
     const executionId = this.runtime.random.id("exec");
     const startedAt = this.runtime.clock.now();
     const compositionChain = options.compositionChain ?? [];
+    const compositionTemplateChain = options.compositionTemplateChain ?? [];
 
     const seededImpulses = options.impulses ?? [];
     for (const impulse of seededImpulses) {
@@ -135,6 +140,11 @@ export class ActivityExecutor {
     });
 
     const taskRecords: ExecutionTaskRecord[] = [];
+    // M1 general close-on-failure: track the task currently in-flight so the outer
+    // catch can record it as a MEASURED failed task (closure) on ANY throw path
+    // (validity-check failure, resolver error, etc.) instead of leaving tasks=null.
+    let inFlightTask: ActivityTask | undefined;
+    let inFlightInputs: Impulse[] = [];
     const inputImpulseIds = seededImpulses.map((impulse) => impulse.id);
     const outputImpulseIds = new Set<string>();
     let totalCostUsd = 0;
@@ -156,6 +166,11 @@ export class ActivityExecutor {
     // gap blocking lift: substrate-authored templates couldn't reach
     // activity-api with their LLM-drafted content.
     const accumulatedVariables: Record<string, unknown> = { ...(options.variables ?? {}) };
+    // Reverse map of {{<priorTaskId>_<shape>}} placeholder keys -> shape name, so a
+    // consuming task's interpolation references reveal which shapes it ACTUALLY consumes
+    // (the empirical input contract). Populated as each task's shape-keyed outputs are
+    // projected below; read when building the next tasks' inputShapes.
+    const shapeKeyOf: Record<string, string> = {};
     // Seed the substrate's root identifiers so templates can interpolate them
     // (e.g. {{executionId}} into http_fetch bodies for concept_create_write).
     // Caller-provided variables of the same name take precedence — the seed
@@ -169,6 +184,7 @@ export class ActivityExecutor {
 
     try {
       for (const task of template.tasks) {
+        inFlightTask = undefined;
         if (budget?.maxTaskCount !== undefined && taskRecords.length >= budget.maxTaskCount) {
           throw new BudgetExceededError("task_count", taskRecords.length, budget.maxTaskCount);
         }
@@ -237,6 +253,28 @@ export class ActivityExecutor {
 
         const taskStart = this.runtime.clock.now();
         const inputImpulses = await this.resolveInputs(task.inputShapes ?? [], task.id);
+        inFlightTask = task;
+        inFlightInputs = inputImpulses;
+        // Empirical input-shape discovery: scan this task's config + prompt for
+        // {{<priorTaskId>_<shape>}} references and collect the shapes they consume.
+        // Most activities declare no inputShapes and chain purely via these
+        // placeholders, so this is the only signal of what state the task consumes.
+        const placeholderConsumedShapes: string[] = (() => {
+          try {
+            const refText =
+              JSON.stringify(task.config ?? {}) + "\u0000" + ((task.prompt as { template?: string } | undefined)?.template ?? "");
+            const found = new Set<string>();
+            for (const m of refText.matchAll(/\{\{\s*([^}]+?)\s*\}\}/g)) {
+              const tok = (m[1] ?? "").trim();
+              if (tok && Object.prototype.hasOwnProperty.call(shapeKeyOf, tok)) {
+                found.add(shapeKeyOf[tok]!);
+              }
+            }
+            return [...found];
+          } catch {
+            return [];
+          }
+        })();
         // Named-input slot lookup (Idiom-6 ribosome closure): when a task
         // declares `inputImpulses: string[]`, pull matching impulses from the
         // store by their stamped `metadata.outputImpulseKey`. This is what
@@ -269,6 +307,7 @@ export class ActivityExecutor {
             executionId,
             inputImpulses,
             compositionChain,
+            compositionTemplateChain: [...compositionTemplateChain, template.id],
             variables: accumulatedVariables,
             budget,
             maxCompositionDepth: options.maxCompositionDepth,
@@ -294,6 +333,7 @@ export class ActivityExecutor {
             executionId,
             inputImpulses,
             compositionChain,
+            compositionTemplateChain: [...compositionTemplateChain, template.id],
             variables: accumulatedVariables,
             budget,
             maxCompositionDepth: options.maxCompositionDepth,
@@ -311,6 +351,91 @@ export class ActivityExecutor {
         } else {
           const resolver = this.runtime.resolvers.get(task.resolver);
           if (!resolver) {
+            // ACTIVITIES-AS-RESOLVERS (SUBSTRATE_AS_REPRESENTATION §1: "each axis can
+            // itself be a subsystem with its own span"). If this resolver id names a
+            // known ACTIVITY template, dispatch it via compose (cycle-guarded by
+            // compositionTemplateChain) instead of hard-failing. A task then routes to
+            // the activity-subsystem that produces what it needs, so composition /
+            // topology SELF-ASSEMBLES — and this closes M1 for the activity case
+            // (a resolver name that is actually an activity is no longer a tasks=null
+            // black hole). Leaf resolvers fall through to close-on-failure below.
+            const composeActivity = this.runtime.templateProvider
+              ? await this.runtime.templateProvider.getTemplate(task.resolver).catch(() => null)
+              : null;
+            if (composeActivity && Array.isArray((composeActivity as ActivityTemplate).tasks)) {
+              const cr = await this.dispatchCompose(
+                { ...task, subActivityId: task.resolver },
+                {
+                  executionId,
+                  inputImpulses,
+                  compositionChain,
+                  compositionTemplateChain: [...compositionTemplateChain, template.id],
+                  variables: accumulatedVariables,
+                  budget,
+                  maxCompositionDepth: options.maxCompositionDepth,
+                  tags: options.tags,
+                },
+              );
+              const aOut = cr.outputs;
+              for (const imp of aOut) outputImpulseIds.add(imp.id);
+              if (cr.childTrace.costUsd !== undefined) totalCostUsd += cr.childTrace.costUsd;
+              taskRecords.push({
+                taskId: task.id,
+                description: task.description,
+                resolverId: task.resolver,
+                resolverTier: "deterministic",
+                inputImpulseIds: inputImpulses.map((imp) => imp.id),
+                outputImpulseIds: aOut.map((imp) => imp.id),
+                inputShapes: [
+                  ...new Set([
+                    ...declaredInputShapeNames,
+                    ...inputImpulses.map((imp) => getImpulseShape(imp) || imp.pointer.type).filter(Boolean),
+                    ...placeholderConsumedShapes,
+                  ]),
+                ],
+                outputShapes: [...new Set(aOut.map((imp) => getImpulseShape(imp) || imp.pointer.type).filter(Boolean))],
+                success: true,
+                costUsd: cr.childTrace.costUsd,
+                childExecutionId: cr.childTrace.id,
+              });
+              // Project the activity's outputs into accumulatedVariables so downstream
+              // tasks can reference {{<taskId>}} / {{<taskId>_<shape>}} as with any task.
+              if (aOut.length > 0) {
+                const first = aOut[0]!;
+                const firstText = typeof first.content === "string"
+                  ? first.content
+                  : JSON.stringify(first.content ?? "");
+                const cappedFirst = capForAccumulator(firstText);
+                accumulatedVariables[task.id] = cappedFirst;
+                accumulatedVariables[`${task.id}_text`] = cappedFirst;
+                for (const imp of aOut) {
+                  const sh = (imp.metadata as { shape?: string } | undefined)?.shape;
+                  if (sh) {
+                    const k = `${task.id}_${sh}`;
+                    shapeKeyOf[k] = sh;
+                    if (!(k in accumulatedVariables)) {
+                      accumulatedVariables[k] = capForAccumulator(
+                        typeof imp.content === "string" ? imp.content : JSON.stringify(imp.content ?? ""),
+                      );
+                    }
+                  }
+                }
+              }
+              inFlightTask = undefined;
+              await this.emit({
+                type: "task.completed",
+                timestamp: this.runtime.clock.now(),
+                data: {
+                  executionId,
+                  taskId: task.id,
+                  resolverId: task.resolver,
+                  success: true,
+                  outputImpulseIds: aOut.map((imp) => imp.id),
+                  childExecutionId: cr.childTrace.id,
+                },
+              });
+              continue;
+            }
             await this.emit({
               type: "lifecycle:gap:classified",
               timestamp: this.runtime.clock.now(),
@@ -322,6 +447,32 @@ export class ActivityExecutor {
                 resolverId: task.resolver,
                 parentDepth: compositionChain.length,
               },
+            });
+            // CLOSE-ON-FAILURE (M1): record a MEASURED failed task instead of
+            // throwing into a tasks=null black hole. A resolver miss is a learnable
+            // transition — preserve the consumed input shapes (the empirical input
+            // contract + state signature) and the resolver-unavailable outcome so the
+            // trace/activity store self-assembles its topology from failures too
+            // ("topology learns from BOTH successes and failures"; "validity =
+            // measurement against reality, not prediction"). The outer catch finalizes
+            // the trace with status=failed and these task records.
+            taskRecords.push({
+              taskId: task.id,
+              description: task.description,
+              resolverId: task.resolver,
+              resolverTier: undefined,
+              inputImpulseIds: inputImpulses.map((imp) => imp.id),
+              outputImpulseIds: [],
+              inputShapes: [
+                ...new Set([
+                  ...declaredInputShapeNames,
+                  ...inputImpulses.map((imp) => getImpulseShape(imp) || imp.pointer.type).filter(Boolean),
+                  ...placeholderConsumedShapes,
+                ]),
+              ],
+              outputShapes: [],
+              success: false,
+              error: `resolver_not_registered: ${task.resolver}`,
             });
             throw new Error(`Resolver '${task.resolver}' is not registered`);
           }
@@ -380,7 +531,35 @@ export class ActivityExecutor {
               }
             }
           }
-          if (lastError !== undefined) throw lastError;
+          if (lastError !== undefined) {
+            // CLOSE-ON-FAILURE (M1): a resolver that threw on all attempts is a
+            // MEASURED transition, not a black hole. Record a failed task carrying
+            // the consumed input shapes (empirical input contract + state signature)
+            // and the error, THEN propagate so the outer catch finalizes the trace as
+            // failed WITH task records — instead of tasks=null, which lost ALL signal
+            // (input contract, which task/resolver failed, why) and starved the
+            // topology of failure-edges. "Topology learns from BOTH successes and
+            // failures." Transformers now COMPLETE (close) rather than vanishing.
+            taskRecords.push({
+              taskId: task.id,
+              description: task.description,
+              resolverId: task.resolver,
+              resolverTier: this.runtime.resolvers.get(task.resolver)?.tier,
+              inputImpulseIds: inputImpulses.map((imp) => imp.id),
+              outputImpulseIds: [],
+              inputShapes: [
+                ...new Set([
+                  ...declaredInputShapeNames,
+                  ...inputImpulses.map((imp) => getImpulseShape(imp) || imp.pointer.type).filter(Boolean),
+                  ...placeholderConsumedShapes,
+                ]),
+              ],
+              outputShapes: [],
+              success: false,
+              error: lastError instanceof Error ? lastError.message : String(lastError),
+            });
+            throw lastError;
+          }
 
           // Named-output slot stamping (Idiom-6 ribosome closure):
           // when a task declares `outputImpulses: string[]`, stamp the slot
@@ -554,6 +733,7 @@ export class ActivityExecutor {
             const shape = (impulse.metadata as { shape?: string } | undefined)?.shape;
             if (shape) {
               const key = `${task.id}_${shape}`;
+              shapeKeyOf[key] = shape;
               if (!(key in accumulatedVariables)) {
                 const text = typeof impulse.content === "string"
                   ? impulse.content
@@ -593,6 +773,7 @@ export class ActivityExecutor {
             ...new Set([
               ...declaredInputShapeNames,
               ...inputImpulses.map((imp) => getImpulseShape(imp) || imp.pointer.type).filter(Boolean),
+              ...placeholderConsumedShapes,
             ]),
           ],
           // Record actual shapes of output impulses so coverage_tick and
@@ -734,6 +915,34 @@ export class ActivityExecutor {
         failureMode = { type: "execution_error", reason: message };
       }
 
+      // M1 general close-on-failure: if a task was in-flight when the execution threw
+      // and it is not already recorded (inline resolver-not-registered / resolver-throw
+      // paths push their own), record it as a MEASURED failed task so the trace CLOSES
+      // with its input contract + the error instead of tasks=null. Transformers now
+      // COMPLETE (close) on every failure path, feeding the topology failure-edges
+      // ("topology learns from BOTH successes and failures").
+      if (inFlightTask && !taskRecords.some((r) => r.taskId === inFlightTask!.id)) {
+        const declaredIn = (inFlightTask.inputShapes ?? []).map((entry) =>
+          typeof entry === "string" ? entry : (entry as { shape: string }).shape);
+        taskRecords.push({
+          taskId: inFlightTask.id,
+          description: inFlightTask.description,
+          resolverId: inFlightTask.resolver,
+          resolverTier: this.runtime.resolvers.get(inFlightTask.resolver)?.tier,
+          inputImpulseIds: inFlightInputs.map((imp) => imp.id),
+          outputImpulseIds: [],
+          inputShapes: [
+            ...new Set([
+              ...declaredIn,
+              ...inFlightInputs.map((imp) => getImpulseShape(imp) || imp.pointer.type).filter(Boolean),
+            ]),
+          ],
+          outputShapes: [],
+          success: false,
+          error: message,
+        });
+      }
+
       const trace: ExecutionTrace = {
         id: executionId,
         templateId: template.id,
@@ -825,6 +1034,7 @@ export class ActivityExecutor {
       executionId: string;
       inputImpulses: Impulse[];
       compositionChain: string[];
+      compositionTemplateChain?: string[];
       variables: Record<string, unknown>;
       budget?: ExecutionBudget;
       maxCompositionDepth?: number;
@@ -855,6 +1065,17 @@ export class ActivityExecutor {
       );
     }
 
+    // CYCLE DETECTION (activities-as-resolvers prerequisite): the chain tracks EXECUTION
+    // ids, so a direct A->A recursion only trips the depth cap at 16. Track TEMPLATE ids
+    // too and refuse to compose a sub-activity that is already an ANCESTOR (a real cycle).
+    if (opts.compositionTemplateChain?.includes(task.subActivityId)) {
+      throw new Error(
+        `safety_breach: compose dispatch refused — cycle detected. Sub-activity ` +
+        `'${task.subActivityId}' is already an ancestor in the composition template ` +
+        `chain [${opts.compositionTemplateChain.join(" -> ")}].`,
+      );
+    }
+
     const subTemplate = await this.runtime.templateProvider.getTemplate(task.subActivityId);
     if (!subTemplate) {
       throw new Error(`Sub-activity template '${task.subActivityId}' not found`);
@@ -868,6 +1089,7 @@ export class ActivityExecutor {
       budget: opts.budget,
       parentExecutionId: opts.executionId,
       compositionChain: childChain,
+      compositionTemplateChain: opts.compositionTemplateChain,
       maxCompositionDepth: opts.maxCompositionDepth,
       // Propagate parent's tags (including state_signature:<hash>) to nested
       // child traces. Without this, only top-level traces from goal-host's
@@ -914,6 +1136,7 @@ export class ActivityExecutor {
       executionId: string;
       inputImpulses: Impulse[];
       compositionChain: string[];
+      compositionTemplateChain?: string[];
       variables: Record<string, unknown>;
       budget?: ExecutionBudget;
       maxCompositionDepth?: number;
@@ -961,6 +1184,7 @@ export class ActivityExecutor {
           budget: opts.budget,
           parentExecutionId: opts.executionId,
           compositionChain: childChain,
+          compositionTemplateChain: opts.compositionTemplateChain,
           maxCompositionDepth: opts.maxCompositionDepth,
           tags: opts.tags,
         });
