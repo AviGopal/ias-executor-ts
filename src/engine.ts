@@ -577,13 +577,24 @@ export class ActivityExecutor {
           resolverTier: task.resolver === "compose" || task.resolver === "compose_parallel" ? "deterministic" : this.runtime.resolvers.get(task.resolver)?.tier,
           inputImpulseIds: inputImpulses.map((impulse) => impulse.id),
           outputImpulseIds: storedOutputs.map((impulse) => impulse.id),
-          // Record declared input shapes so the trace sink can union them into
+          // Record the ACTUAL shapes of the resolved input impulses (unioned with
+          // any declared input shapes) so the trace sink can union them into
           // trace.input_impulse_shapes. Required by activity-api's server-side
-          // state_signature path (execution-traces.ts:2381-2390) which gates
-          // M1 context_thompson_scores writes. Without this, autonomous traces
-          // ship empty input_impulse_shapes and the trainer reports
-          // n_training_samples=0 every cycle.
-          inputShapes: declaredInputShapeNames,
+          // state_signature path (execution-traces.ts:2419-2441) which gates the
+          // conditional context_thompson_scores writes (M2 state-signature keying).
+          // Previously this recorded only `declaredInputShapeNames`, but input
+          // shapes are OPTIONAL on a template task, so input-consuming activities
+          // that don't redundantly re-declare their inputs shipped EMPTY
+          // input_impulse_shapes → signature never derived → conditional posteriors
+          // were starved and selection stayed state-blind. Mirror the actual-shape
+          // logic used for outputShapes below (getImpulseShape over the resolved
+          // impulses) so a trace records the real state S it consumed.
+          inputShapes: [
+            ...new Set([
+              ...declaredInputShapeNames,
+              ...inputImpulses.map((imp) => getImpulseShape(imp) || imp.pointer.type).filter(Boolean),
+            ]),
+          ],
           // Record actual shapes of output impulses so coverage_tick and
           // activity-api can distinguish "shape actually produced" from
           // "shape the template declares it might produce". Previously all
