@@ -1,7 +1,7 @@
 {
   "id": "ribosome-extract",
   "name": "Ribosome Extract (lifecycle-driven template extraction)",
-  "description": "Activity-driven implementation of the ribosome pattern. Subscribes to lifecycle:activity:postExecution and treats template extraction as a shape-identifying counterpart to goal/activity — input shape lifecycle:activity:postExecution, output shapes extractedTemplate / learningSummary / goalEnd. Replaces the imperative ribosome calls that previously fired inline from activity.ts (recordExecutionTrace path), goal-processor.ts (4 sites: success extraction, cost-limit attempt, LLM-verified attempt, max-turns attempt), and improviser-resolver.ts (success + cost-limit paths). The chain has seven tasks: (1) acquire_trace_signature — http_fetch to activity-api /v2/impulses/resolve with pointer.type=executionTraceWithSignatures keyed by the just-completed executionId; (2) assess_quality — llm_completion_dispatch computes a quality score from the lifecycle payload + trace signature (success rate, task count, resolver tier mix, cost-per-output ratio, depth=0 check, author-skip check); (3) synthesize_template — llm_completion_dispatch renders an extractedTemplate JSON proposal from the trace signature + lifecycle payload; (4) validate_proposal — llm_completion_dispatch validates the proposal against compliance rules; (5) dispatch_write_attempt — http_fetch POST to activity-api /v2/impulses/resolve with pointer.type=activityTemplate_write, GATED on the applyExtraction variable (default false); (6) dispatch_write_succeeded — noop marker emitting an activityTemplate impulse only when the write succeeded; (7) emit_summary — llm_completion_dispatch summary. The applyExtraction default of false makes first-canary-deploy observe-only: the chain emits an extractedTemplate proposal impulse for downstream consumers (workbench, replace-activity, operator) without actually persisting the new template. Once enough proposal traces accumulate and the quality threshold is calibrated, applyExtraction can be flipped to true (per-template variable override) for autonomous registration. RECURSION SAFETY: this template's templateAuthor on the lifecycle payload is `ribosome-pattern`, so when the meta-activity itself emits postExecution at completion, the gate_extraction conditional skips because templateAuthor is matched against a documented skip list. SCHEMA: rewritten 2026-06-02 to use current resolver+config schema (llm_completion_dispatch + http_fetch) routing through goal-host-vessel→development-vessel proxies. Closes Idiom-6 gap 3.",
+  "description": "Activity-driven implementation of the ribosome pattern. Subscribes to lifecycle:activity:postExecution and treats template extraction as a shape-identifying counterpart to goal/activity \u2014 input shape lifecycle:activity:postExecution, output shapes extractedTemplate / learningSummary / goalEnd. Replaces the imperative ribosome calls that previously fired inline from activity.ts (recordExecutionTrace path), goal-processor.ts (4 sites: success extraction, cost-limit attempt, LLM-verified attempt, max-turns attempt), and improviser-resolver.ts (success + cost-limit paths). The chain has seven tasks: (1) acquire_trace_signature \u2014 http_fetch to activity-api /v2/impulses/resolve with pointer.type=executionTraceWithSignatures keyed by the just-completed executionId; (2) assess_quality \u2014 llm_completion_dispatch computes a quality score from the lifecycle payload + trace signature (success rate, task count, resolver tier mix, cost-per-output ratio, depth=0 check, author-skip check); (3) synthesize_template \u2014 llm_completion_dispatch renders an extractedTemplate JSON proposal from the trace signature + lifecycle payload; (4) validate_proposal \u2014 llm_completion_dispatch validates the proposal against compliance rules; (5) dispatch_write_attempt \u2014 http_fetch POST to activity-api /v2/impulses/resolve with pointer.type=activityTemplate_write, GATED on the applyExtraction variable (default false); (6) dispatch_write_succeeded \u2014 noop marker emitting an activityTemplate impulse only when the write succeeded; (7) emit_summary \u2014 llm_completion_dispatch summary. The applyExtraction default of false makes first-canary-deploy observe-only: the chain emits an extractedTemplate proposal impulse for downstream consumers (workbench, replace-activity, operator) without actually persisting the new template. Once enough proposal traces accumulate and the quality threshold is calibrated, applyExtraction can be flipped to true (per-template variable override) for autonomous registration. RECURSION SAFETY: this template's templateAuthor on the lifecycle payload is `ribosome-pattern`, so when the meta-activity itself emits postExecution at completion, the gate_extraction conditional skips because templateAuthor is matched against a documented skip list. SCHEMA: rewritten 2026-06-02 to use current resolver+config schema (llm_completion_dispatch + http_fetch) routing through goal-host-vessel\u2192development-vessel proxies. Closes Idiom-6 gap 3.",
   "category": "meta",
   "version": "0.2.0",
   "tags": [
@@ -57,9 +57,11 @@
         "type": "http_fetch",
         "method": "POST",
         "url": "http://127.0.0.1:8080/v2/impulses/resolve",
-        "headers": { "Content-Type": "application/json" },
+        "headers": {
+          "Content-Type": "application/json"
+        },
         "body": "{\"impulse\":{\"pointer\":{\"type\":\"executionTraceWithSignatures\",\"execution_id\":\"{{lifecycle.executionId}}\",\"limit\":1}}}",
-        "timeoutMs": 8000
+        "timeoutMs": 30000
       },
       "outputShapes": [
         "executionTraceWithSignatures"
@@ -169,9 +171,11 @@
         "type": "http_fetch",
         "method": "POST",
         "url": "http://127.0.0.1:8080/v2/impulses/resolve",
-        "headers": { "Content-Type": "application/json" },
-        "body": "{\"impulse\":{\"pointer\":{\"type\":\"activityTemplate_write\",\"operation\":\"create\",\"template\":{{impulse:extracted_template}}}}}",
-        "timeoutMs": 10000
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"impulse\":{\"pointer\":{\"type\":\"activityTemplate_write\",\"operation\":\"create\",\"templateData\":{{impulse:extracted_template}}}}}",
+        "timeoutMs": 30000
       },
       "outputShapes": [
         "writeAttempt"
