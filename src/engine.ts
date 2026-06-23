@@ -171,6 +171,14 @@ export class ActivityExecutor {
     // (the empirical input contract). Populated as each task's shape-keyed outputs are
     // projected below; read when building the next tasks' inputShapes.
     const shapeKeyOf: Record<string, string> = {};
+    // Parallel reverse map: placeholder key -> the task id that PRODUCED it
+    // (option B placeholder-provenance). For {{<taskId>}} (bare) and
+    // {{<taskId>_<shape>}} keys, records <taskId> so a consuming task's
+    // interpolation references reveal which producer task it consumed from.
+    // Read when building consumedFromTaskIds; mapped to producing activities
+    // (childActivityId) by the composition-edge reconcile to derive genuine
+    // producer->consumer capability edges.
+    const producerTaskOf: Record<string, string> = {};
     // Seed the substrate's root identifiers so templates can interpolate them
     // (e.g. {{executionId}} into http_fetch bodies for concept_create_write).
     // Caller-provided variables of the same name take precedence — the seed
@@ -259,20 +267,27 @@ export class ActivityExecutor {
         // {{<priorTaskId>_<shape>}} references and collect the shapes they consume.
         // Most activities declare no inputShapes and chain purely via these
         // placeholders, so this is the only signal of what state the task consumes.
-        const placeholderConsumedShapes: string[] = (() => {
+        // Scan once for BOTH the consumed shapes (shapeKeyOf) and the producer
+        // task ids (producerTaskOf) referenced by this task's {{placeholders}}.
+        // placeholderConsumedFrom is the option-B provenance edge signal.
+        const { placeholderConsumedShapes, placeholderConsumedFrom } = ((): {
+          placeholderConsumedShapes: string[];
+          placeholderConsumedFrom: string[];
+        } => {
           try {
             const refText =
               JSON.stringify(task.config ?? {}) + "\u0000" + ((task.prompt as { template?: string } | undefined)?.template ?? "");
-            const found = new Set<string>();
+            const shapes = new Set<string>();
+            const producers = new Set<string>();
             for (const m of refText.matchAll(/\{\{\s*([^}]+?)\s*\}\}/g)) {
               const tok = (m[1] ?? "").trim();
-              if (tok && Object.prototype.hasOwnProperty.call(shapeKeyOf, tok)) {
-                found.add(shapeKeyOf[tok]!);
-              }
+              if (!tok) continue;
+              if (Object.prototype.hasOwnProperty.call(shapeKeyOf, tok)) shapes.add(shapeKeyOf[tok]!);
+              if (Object.prototype.hasOwnProperty.call(producerTaskOf, tok)) producers.add(producerTaskOf[tok]!);
             }
-            return [...found];
+            return { placeholderConsumedShapes: [...shapes], placeholderConsumedFrom: [...producers] };
           } catch {
-            return [];
+            return { placeholderConsumedShapes: [], placeholderConsumedFrom: [] };
           }
         })();
         // Named-input slot lookup (Idiom-6 ribosome closure): when a task
@@ -300,6 +315,10 @@ export class ActivityExecutor {
         let storedOutputs: Impulse[];
         let taskCostUsd: number | undefined;
         let childExecutionId: string | undefined;
+        // The activity this task dispatched (compose / compose_parallel), so the
+        // composition-edge reconcile can map a consumed producer task -> its
+        // producing activity for option-B placeholder-provenance edges.
+        let dispatchedActivityId: string | undefined;
 
         if (task.resolver === "compose") {
           // Nested composition: dispatch to a sub-activity template
@@ -316,6 +335,7 @@ export class ActivityExecutor {
           storedOutputs = result.outputs;
           taskCostUsd = result.childTrace.costUsd;
           childExecutionId = result.childTrace.id;
+          dispatchedActivityId = result.childTrace.templateId;
           if (result.childTrace.costUsd !== undefined) {
             totalCostUsd += result.childTrace.costUsd;
           }
@@ -344,6 +364,7 @@ export class ActivityExecutor {
           // Representative child id for the task record; activity-api recovers
           // the full sibling set by grouping child traces on parent_execution_id.
           childExecutionId = result.childTraces[0]?.id;
+          dispatchedActivityId = result.childTraces[0]?.templateId;
           totalCostUsd += result.totalChildCostUsd;
           for (const impulse of storedOutputs) {
             outputImpulseIds.add(impulse.id);
@@ -397,6 +418,8 @@ export class ActivityExecutor {
                 success: true,
                 costUsd: cr.childTrace.costUsd,
                 childExecutionId: cr.childTrace.id,
+                consumedFromTaskIds: placeholderConsumedFrom,
+                childActivityId: cr.childTrace.templateId,
               });
               // Project the activity's outputs into accumulatedVariables so downstream
               // tasks can reference {{<taskId>}} / {{<taskId>_<shape>}} as with any task.
@@ -408,11 +431,13 @@ export class ActivityExecutor {
                 const cappedFirst = capForAccumulator(firstText);
                 accumulatedVariables[task.id] = cappedFirst;
                 accumulatedVariables[`${task.id}_text`] = cappedFirst;
+                producerTaskOf[task.id] = task.id;
                 for (const imp of aOut) {
                   const sh = (imp.metadata as { shape?: string } | undefined)?.shape;
                   if (sh) {
                     const k = `${task.id}_${sh}`;
                     shapeKeyOf[k] = sh;
+                    producerTaskOf[k] = task.id;
                     if (!(k in accumulatedVariables)) {
                       accumulatedVariables[k] = capForAccumulator(
                         typeof imp.content === "string" ? imp.content : JSON.stringify(imp.content ?? ""),
@@ -473,6 +498,7 @@ export class ActivityExecutor {
               outputShapes: [],
               success: false,
               error: `resolver_not_registered: ${task.resolver}`,
+              consumedFromTaskIds: placeholderConsumedFrom,
             });
             throw new Error(`Resolver '${task.resolver}' is not registered`);
           }
@@ -557,6 +583,7 @@ export class ActivityExecutor {
               outputShapes: [],
               success: false,
               error: lastError instanceof Error ? lastError.message : String(lastError),
+              consumedFromTaskIds: placeholderConsumedFrom,
             });
             throw lastError;
           }
@@ -709,6 +736,7 @@ export class ActivityExecutor {
           // which executor would run them (the dual-convention footgun, 2026-06-19).
           accumulatedVariables[task.id] = cappedFirstText;
           accumulatedVariables[`${task.id}_text`] = cappedFirstText;
+          producerTaskOf[task.id] = task.id;
           // _content keeps the structural reference so resolvers that read
           // .content as an object (rather than .text) still see the full
           // payload. Strings get capped here too; objects fall through.
@@ -734,6 +762,7 @@ export class ActivityExecutor {
             if (shape) {
               const key = `${task.id}_${shape}`;
               shapeKeyOf[key] = shape;
+              producerTaskOf[key] = task.id;
               if (!(key in accumulatedVariables)) {
                 const text = typeof impulse.content === "string"
                   ? impulse.content
@@ -786,6 +815,8 @@ export class ActivityExecutor {
           costUsd: taskCostUsd,
           durationMs: taskDurationMs,
           childExecutionId,
+          consumedFromTaskIds: placeholderConsumedFrom,
+          childActivityId: dispatchedActivityId,
         });
 
         await this.emit({

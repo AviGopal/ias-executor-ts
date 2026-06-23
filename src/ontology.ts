@@ -166,6 +166,19 @@ export interface ExecutionTaskRecord {
   costUsd?: number;
   durationMs?: number;
   childExecutionId?: string;
+  /** Producer task ids whose outputs this task consumed via {{<taskId>}} /
+   *  {{<taskId>_<shape>}} placeholder references. The provenance signal for
+   *  placeholder-based composition (option B): combined with childActivityId it
+   *  yields a genuine producer->consumer capability edge when the referenced
+   *  producer task dispatched an activity. Captured at runtime because
+   *  actualPrompt has placeholders already substituted by persist time, so this
+   *  cannot be recovered reconcile-side. */
+  consumedFromTaskIds?: string[];
+  /** When this task dispatched a sub-activity (resolver "compose" /
+   *  "compose_parallel" or an activities-as-resolvers id), the dispatched
+   *  activity's template id. Lets the composition-edge reconcile map a consumed
+   *  producer task -> its producing activity to derive activity->activity edges. */
+  childActivityId?: string;
 }
 
 export interface ExecutionTrace {

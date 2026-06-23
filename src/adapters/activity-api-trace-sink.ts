@@ -106,6 +106,13 @@ export class TranslatingTraceSink implements TraceSink {
           response: (t as { response?: string }).response ?? "",
           input_impulse_ids: t.inputImpulseIds ?? [],
           output_impulse_ids: t.outputImpulseIds ?? [],
+          // Option-B placeholder-provenance: which producer tasks this task
+          // consumed via {{placeholders}}, and (for dispatch tasks) the activity
+          // it ran. The composition-edge reconcile maps consumer.consumed_from
+          // -> producer task -> producer.child_activity_id to derive genuine
+          // producer->consumer capability edges.
+          consumed_from_task_ids: (t as { consumedFromTaskIds?: string[] }).consumedFromTaskIds ?? [],
+          child_activity_id: (t as { childActivityId?: string }).childActivityId,
           error: t.error,
           // Keep nested result block too for any reader expecting the legacy shape.
           result: {
