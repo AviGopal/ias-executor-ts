@@ -753,7 +753,12 @@ export class GoalHost {
       tags?: string[];
     } = {},
   ): Promise<GoalRunResult> {
-    const variables = opts.variables ?? {};
+    // Make the goal text resolvable as `{{goal}}` in every task by default
+    // (2026-06-24). Tasks — notably author_producer's goal_file_extract entry
+    // step — bind from {{goal}}, but the goal previously lived only in the goal
+    // impulse + goalContext, never in `variables`, so `{{goal}}` stayed literal.
+    // Explicit opts.variables still win (spread last).
+    const variables = { goal: goalText, ...(opts.variables ?? {}) };
     const goalImpulse: Impulse = {
       id: this.runtime.random.id("goal"),
       pointer: { type: "memo" },
