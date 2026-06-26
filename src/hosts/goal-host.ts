@@ -751,6 +751,16 @@ export class GoalHost {
       compositionChain?: string[];
       /** Classification tags written into the execution trace (e.g. "intent:topology_discovery"). */
       tags?: string[];
+      /**
+       * Extra impulses to seed into the execution pool alongside the goal impulse.
+       * Their shapes also join the impulse_state_space signature, so selection is
+       * conditioned on them and they are routable via discover-by-shapes. Used by
+       * in-flight recovery to seed the reach-gate verdict as a first-class
+       * `reachFeedback` impulse (a hollow completion is data with a shape — not a
+       * dead end), so the next attempt both SEES it (execution context) and is
+       * SELECTED under a signature that includes it.
+       */
+      seedImpulses?: Impulse[];
     } = {},
   ): Promise<GoalRunResult> {
     // Make the goal text resolvable as `{{goal}}` in every task by default
@@ -786,6 +796,9 @@ export class GoalHost {
       });
       // Include the goal impulse that will seed this execution.
       poolEntries.push({ shape: "goal" });
+      // Seed impulses (e.g. the reach-gate verdict) join the signature too, so
+      // selection is conditioned on the failure-state shape being present.
+      for (const si of opts.seedImpulses ?? []) poolEntries.push({ shape: getImpulseShape(si) });
 
       const response = await this.activityApi.recommend({
         goal: goalText,
@@ -813,7 +826,7 @@ export class GoalHost {
 
     const trace = await this.executor.execute(template, {
       variables,
-      impulses: [goalImpulse],
+      impulses: [goalImpulse, ...(opts.seedImpulses ?? [])],
       goalContext: { goal: goalText },
       ...(opts.tags?.length ? { tags: opts.tags } : {}),
       ...(opts.parentExecutionId ? { parentExecutionId: opts.parentExecutionId } : {}),
