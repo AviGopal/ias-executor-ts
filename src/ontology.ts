@@ -190,6 +190,12 @@ export interface ExecutionTrace {
   parentExecutionId?: string;
   compositionChain?: string[];
   inputImpulseIds: string[];
+  /** Shapes of the seeded input impulses = the DECISION-TIME pool state the selection
+   *  conditioned on. The activity-api trace-sink folds this into input_impulse_shapes,
+   *  from which execution-traces derives the v1 state-space signature — the SAME shapes
+   *  the recommend read-side conditioned on. Populating this warms context_thompson_scores
+   *  (previously empty on ~96% of traces → state-blind selection). */
+  inputShapes?: string[];
   outputImpulseIds: string[];
   tasks: ExecutionTaskRecord[];
   failureMode?: FailureMode;

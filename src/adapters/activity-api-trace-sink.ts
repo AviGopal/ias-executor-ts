@@ -158,8 +158,17 @@ export class TranslatingTraceSink implements TraceSink {
       // and harnesses can see `execution_error` and other non-canonical types.
       // activity-api stores this in the loose metadata bag; it never influences selection.
       failure_mode_raw: trace.failureMode,
-      // Collect declared input shapes from all tasks for state_space_signature derivation.
-      input_impulse_shapes: [...new Set(trace.tasks.flatMap(t => (t as { inputShapes?: string[] }).inputShapes ?? []))],
+      // Collect input shapes for state_space_signature derivation. Prefer a top-level
+      // `trace.inputShapes` (the decision-time pool snapshot the walk conditioned on) and
+      // union with per-task inputShapes. Populating this is what un-starves the
+      // state-conditioned Thompson posterior: execution-traces derives the v1 signature
+      // from these shapes via the SAME computeStateSpaceSignature the recommend read-side
+      // uses on effectiveShapes, so the write key matches the read key (previously empty
+      // on ~96% of traces → cts cells cold → selection state-blind).
+      input_impulse_shapes: [...new Set([
+        ...((trace as { inputShapes?: string[] }).inputShapes ?? []),
+        ...trace.tasks.flatMap(t => (t as { inputShapes?: string[] }).inputShapes ?? []),
+      ])],
       // Aggregate actual output shapes from all tasks into the top-level trace.
       // activity-api accepts this as "output_impulse_shapes" (its field name for this concept).
       // coverage_tick reads "output_impulse_shapes" from trace rows.

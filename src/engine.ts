@@ -146,6 +146,10 @@ export class ActivityExecutor {
     let inFlightTask: ActivityTask | undefined;
     let inFlightInputs: Impulse[] = [];
     const inputImpulseIds = seededImpulses.map((impulse) => impulse.id);
+    // Decision-time pool shapes = the state the selection conditioned on. Threaded onto
+    // every returned trace (below) so the trace-sink records input_impulse_shapes and the
+    // state-conditioned Thompson posterior is keyed by the same shapes recommend read.
+    const inputShapes = [...new Set(seededImpulses.map(getImpulseShape).filter((s): s is string => !!s))];
     const outputImpulseIds = new Set<string>();
     let totalCostUsd = 0;
     const budget = options.budget;
@@ -874,6 +878,7 @@ export class ActivityExecutor {
         parentExecutionId: options.parentExecutionId,
         compositionChain: compositionChain.length > 0 ? compositionChain : undefined,
         inputImpulseIds,
+        inputShapes,
         outputImpulseIds: [...outputImpulseIds],
         tasks: taskRecords,
         costUsd: totalCostUsd > 0 ? totalCostUsd : undefined,
@@ -984,6 +989,7 @@ export class ActivityExecutor {
         parentExecutionId: options.parentExecutionId,
         compositionChain: compositionChain.length > 0 ? compositionChain : undefined,
         inputImpulseIds,
+        inputShapes,
         outputImpulseIds: [...outputImpulseIds],
         tasks: taskRecords,
         failureMode,
