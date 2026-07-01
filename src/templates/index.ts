@@ -83,6 +83,14 @@ import forgeVesselForShape from "./forge/forge-vessel-for-shape.json" with { typ
 // ──────────────────────────────────────────────────────────────────────────
 import summarizeAndEmitConcept from "./user-goals/summarize-and-emit-concept.json" with { type: "json" };
 
+// ──────────────────────────────────────────────────────────────────────────
+// Self-development — substrate authoring NEW Obsidian UI (command/view) into
+// obsidian-vessel to facilitate a modeled human interaction. Unlike the JSON
+// catalogue entries this is a typed `.ts` module (a native ActivityTemplate,
+// no `cast` needed) that dispatches feature_compose.
+// ──────────────────────────────────────────────────────────────────────────
+import authorObsidianUiFlow from "./author-obsidian-ui-flow";
+
 // JSON imports widen to `ActivityTemplate` via the index signature on the
 // ontology interfaces (`extra: unknown`). The `satisfies` shape check would
 // be tighter, but bun's `with { type: "json" }` resolves to a literal type;
@@ -114,6 +122,8 @@ export const SHARED_TEMPLATES: ActivityTemplate[] = [
   cast(forgeVesselForShape),
   // user-goals
   cast(summarizeAndEmitConcept),
+  // self-development (typed .ts module — already an ActivityTemplate)
+  authorObsidianUiFlow,
 ];
 
 // Build an id index once at module load. The catalogue is static; recomputing
