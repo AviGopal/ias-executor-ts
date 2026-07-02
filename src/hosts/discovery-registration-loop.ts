@@ -92,10 +92,17 @@ export class DiscoveryRegistrationLoop {
       : advertiseHost && advertiseHost.length > 0
         ? `http://${advertiseHost}:${this.config.port + portOffset}`
         : `http://127.0.0.1:${this.config.port}`;
+    // SC-P4 discovery-vessel contract: `endpoint` is the substrate-internal
+    // URL; `public_endpoint` is an optional host/LAN-reachable URL for callers
+    // OUTSIDE the container network. Advertised only when explicitly set.
+    const publicEndpoint = process.env.VESSEL_PUBLIC_ENDPOINT;
     return {
       vesselId: this.config.vesselId,
       name: this.config.vesselName,
       endpoint: baseUrl,
+      ...(publicEndpoint && publicEndpoint.length > 0
+        ? { public_endpoint: publicEndpoint.replace(/\/+$/, "") }
+        : {}),
       shapes: this.config.shapes,
       resolve_endpoint: this.config.resolveEndpoint,
       resolve_request_format: "pointer",
