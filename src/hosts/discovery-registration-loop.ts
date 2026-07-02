@@ -77,7 +77,21 @@ export class DiscoveryRegistrationLoop {
   // ────────────────────────────────────────────────────────────────────────
 
   private registrationPayload() {
-    const baseUrl = `http://127.0.0.1:${this.config.port}`;
+    // Advertised-endpoint contract (2026-07-02): the registry stores what the
+    // vessel advertises; the vessel advertises what its callers can reach.
+    // Precedence: explicit VESSEL_ADVERTISE_ENDPOINT (per-vessel) >
+    // SUBSTRATE_ADVERTISE_HOST (container-level, spoke joining a hub — the
+    // host-published port follows the fleet's internal+offset convention,
+    // default +10000, override via SUBSTRATE_ADVERTISE_PORT_OFFSET) >
+    // loopback (same-container fleet, unchanged default).
+    const advertised = process.env.VESSEL_ADVERTISE_ENDPOINT;
+    const advertiseHost = process.env.SUBSTRATE_ADVERTISE_HOST;
+    const portOffset = Number(process.env.SUBSTRATE_ADVERTISE_PORT_OFFSET ?? 10_000);
+    const baseUrl = advertised && advertised.length > 0
+      ? advertised.replace(/\/+$/, "")
+      : advertiseHost && advertiseHost.length > 0
+        ? `http://${advertiseHost}:${this.config.port + portOffset}`
+        : `http://127.0.0.1:${this.config.port}`;
     return {
       vesselId: this.config.vesselId,
       name: this.config.vesselName,

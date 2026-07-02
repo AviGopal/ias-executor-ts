@@ -35,9 +35,13 @@ const authorObsidianUiFlow: ActivityTemplate = {
     "commands.ts (and, for a view, a registerView call in main.ts), keeping the change " +
     "typecheck-clean. land is false: this authors + verifies; landing + plugin reload " +
     "(scripts/substrate/obsidian-plugin-reload.sh) are the cutover step.",
-  category: "self-development",
+  // activity-api template validation: category must be one of the schema enum
+  // (self-development is not), tags must be lowercase alphanumeric with dots
+  // (no hyphens). Invalid values made bootstrap-seeder exit 1 on every fresh
+  // boot (2026-07-02 from-zero test).
+  category: "meta",
   version: "0.1.0",
-  tags: ["substrate.self-development", "obsidian.ui", "feature-compose", "author"],
+  tags: ["substrate.self.development", "obsidian.ui", "feature.compose", "author"],
   input_shapes: ["implicitVesselReport"],
   output_shapes: ["featureComposeReport"],
   variables: [
