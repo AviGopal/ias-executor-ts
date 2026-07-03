@@ -152,6 +152,8 @@ export class ActivityExecutor {
     const inputShapes = [...new Set(seededImpulses.map(getImpulseShape).filter((s): s is string => !!s))];
     const outputImpulseIds = new Set<string>();
     let totalCostUsd = 0;
+    let totalTokensInput = 0;
+    let totalTokensOutput = 0;
     const budget = options.budget;
 
     // Accumulated variables across tasks. Starts as request-level variables and
@@ -783,6 +785,9 @@ export class ActivityExecutor {
           throw new BudgetExceededError("cost", totalCostUsd, budget.maxCostUsd);
         }
 
+        const llmUsage = storedOutputs.map((i) => (i.metadata as { usage?: { input_tokens?: number; output_tokens?: number } } | undefined)?.usage).find((u) => u && typeof u.input_tokens === "number");
+        if (llmUsage) { totalTokensInput += llmUsage.input_tokens ?? 0; totalTokensOutput += llmUsage.output_tokens ?? 0; }
+
         taskRecords.push({
           taskId: task.id,
           description: task.description,
@@ -817,6 +822,8 @@ export class ActivityExecutor {
           outputShapes: this.shapesOfImpulses(task, storedOutputs),
           success: true,
           costUsd: taskCostUsd,
+          tokensInput: llmUsage?.input_tokens,
+          tokensOutput: llmUsage?.output_tokens,
           durationMs: taskDurationMs,
           childExecutionId,
           consumedFromTaskIds: placeholderConsumedFrom,
@@ -882,6 +889,8 @@ export class ActivityExecutor {
         outputImpulseIds: [...outputImpulseIds],
         tasks: taskRecords,
         costUsd: totalCostUsd > 0 ? totalCostUsd : undefined,
+        tokensInput: totalTokensInput > 0 ? totalTokensInput : undefined,
+        tokensOutput: totalTokensOutput > 0 ? totalTokensOutput : undefined,
         durationMs: totalDurationMs,
         dispatchTargetTemplateId: options.dispatchTargetTemplateId,
       };

@@ -164,6 +164,8 @@ export interface ExecutionTaskRecord {
   success: boolean;
   error?: string;
   costUsd?: number;
+  tokensInput?: number;
+  tokensOutput?: number;
   durationMs?: number;
   childExecutionId?: string;
   /** Producer task ids whose outputs this task consumed via {{<taskId>}} /
@@ -200,6 +202,8 @@ export interface ExecutionTrace {
   tasks: ExecutionTaskRecord[];
   failureMode?: FailureMode;
   costUsd?: number;
+  tokensInput?: number;
+  tokensOutput?: number;
   durationMs?: number;
   /** Classification tags propagated from `ExecuteOptions.tags`; consumed by
    *  trace-sinks and depth-cap predicates (e.g. `tags ∋ "audit"`). */
