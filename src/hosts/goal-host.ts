@@ -166,7 +166,7 @@ function makeLLMResolver(llm: LLMPort): Resolver {
         {
           id: context.random.id("llm"),
           pointer: { type: "memo" },
-          metadata: { shape: "llmText", summary: text.slice(0, 120) },
+          metadata: { shape: "llmText", summary: text.slice(0, 120), usage: llm.lastUsage ?? undefined },
           loaded: true,
           content: text,
         },
