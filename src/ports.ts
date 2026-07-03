@@ -65,6 +65,7 @@ export interface FetchPort {
  * Hosts that do not supply this port cause "llm" tasks to fail with "not registered".
  */
 export interface LLMPort {
+  lastUsage?: { input_tokens: number; output_tokens: number } | null;
   generate(input: {
     prompt: string;
     systemPrompt?: string;

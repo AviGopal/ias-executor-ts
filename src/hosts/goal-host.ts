@@ -333,6 +333,7 @@ export class InProcessLLMPort implements LLMPort {
  *   D2 — localhost HTTP overhead is negligible vs ≥500ms LLM call latency.
  */
 export class HttpLLMPort implements LLMPort {
+  lastUsage: { input_tokens: number; output_tokens: number } | null = null;
   private readonly resolveUrl: string;
 
   constructor(
@@ -385,6 +386,7 @@ export class HttpLLMPort implements LLMPort {
     const json = (await response.json()) as {
       resolved: boolean;
       content?: string;
+      usage?: { input_tokens: number; output_tokens: number };
       error?: string;
     };
     // ITER-4 fix: drain response body even though .json() consumed it.
@@ -398,6 +400,7 @@ export class HttpLLMPort implements LLMPort {
       );
     }
 
+    this.lastUsage = json.usage ?? null;
     return json.content;
   }
 }
