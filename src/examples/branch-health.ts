@@ -259,7 +259,7 @@ export async function runBranchHealth(
     random: { id: (prefix: string) => `${prefix}_${++counter}` },
     eventSink: { emit: () => {} },
   });
-  runtime.resolvers = new ResolverRegistry();
+  
   runtime.resolvers.register(makeBashResolver(proc));
   runtime.resolvers.register(makeBranchHealthSynthesizer(workdir));
 

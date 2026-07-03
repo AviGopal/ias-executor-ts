@@ -251,7 +251,7 @@ export async function runShipChange(args: ShipChangeArgs): Promise<ShipChangeRes
     random: { id: (prefix: string) => `${prefix}_${++counter}` },
     eventSink: { emit: () => {} },
   });
-  runtime.resolvers = new ResolverRegistry();
+  
   runtime.resolvers.register(makeBashResolver(proc));
   runtime.resolvers.register(
     makeShipChangeSynthesizer({ paths: args.paths, message: args.message, branch }),
