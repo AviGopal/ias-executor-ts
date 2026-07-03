@@ -99,6 +99,7 @@ export class TranslatingTraceSink implements TraceSink {
           status: t.success ? "success" : "failure",
           success: t.success,
           resolver_id: t.resolverId,
+          resolver_tier: t.resolverTier,
           duration_ms: (t as { durationMs?: number }).durationMs,
           cost_usd: (t as { costUsd?: number }).costUsd,
           actualPrompt: (t as { actualPrompt?: string }).actualPrompt ?? "",
