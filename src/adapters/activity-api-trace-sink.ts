@@ -86,6 +86,7 @@ export class TranslatingTraceSink implements TraceSink {
       success: isSuccess,
       duration_ms: trace.durationMs ?? 0,
       cost_usd: trace.costUsd ?? 0,
+      tokens: { input: trace.tokensInput ?? 0, output: trace.tokensOutput ?? 0, cache: 0 },
       execution_trace: {
         tasks: trace.tasks.map((t) => ({
           // Field names match activity-api's normalizePersistedTask reader
