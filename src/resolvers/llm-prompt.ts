@@ -119,6 +119,7 @@ export function makeLLMPromptResolver(llm: LLMPort): Resolver {
       });
 
       const text = await llm.generate({ prompt, systemPrompt });
+      const usage = (llm as { lastUsage?: { input_tokens: number; output_tokens: number } | null }).lastUsage ?? null;
       return [
         {
           id: context.random.id("llm"),
@@ -126,6 +127,7 @@ export function makeLLMPromptResolver(llm: LLMPort): Resolver {
           metadata: {
             shape: "llmText",
             summary: text.slice(0, 120),
+            ...(usage ? { usage } : {}),
           },
           loaded: true,
           content: text,
