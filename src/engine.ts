@@ -857,6 +857,31 @@ export class ActivityExecutor {
           // 600 traces had output_shapes=None, making coverage_tick fall
           // back to template declarations — a proxy, not a measurement.
           outputShapes: this.shapesOfImpulses(task, storedOutputs),
+          ...(() => {
+              const filesModified: string[] = [];
+              const filesCreated: string[] = [];
+              const materialsConsulted: string[] = [];
+              for (const imp of storedOutputs) {
+                const p = (imp.pointer as { path?: unknown }).path;
+                if (typeof p !== "string" || !p) continue;
+                const shape = getImpulseShape(imp) || imp.pointer.type;
+                if (shape === "fileWriteResult" || shape === "fileEditResult" || shape === "codeReplaceResult" || shape === "codeAddImportResult") {
+                  filesModified.push(p);
+                } else if (shape === "codeInsertResult") {
+                  filesCreated.push(p);
+                } else if (shape === "fileContent" || shape === "codeReadResult" || shape === "codeSearchResult" || shape === "codeFindFunctionResult" || shape === "codeFindImportResult") {
+                  materialsConsulted.push(`file:${p}`);
+                }
+              }
+              const fm = [...new Set(filesModified)];
+              const fc = [...new Set(filesCreated)];
+              const mc = [...new Set(materialsConsulted)];
+              return {
+                ...(fm.length > 0 ? { filesModified: fm } : {}),
+                ...(fc.length > 0 ? { filesCreated: fc } : {}),
+                ...(mc.length > 0 ? { materialsConsulted: mc } : {}),
+              };
+            })(),
           success: true,
           costUsd: taskCostUsd,
           tokensInput: llmUsage?.input_tokens,
