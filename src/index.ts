@@ -29,3 +29,7 @@ export type { TranslatingTraceSinkOptions } from "./adapters/activity-api-trace-
 export { BunFileSystemAdapter } from "./adapters/bun-filesystem";
 export { BunProcessAdapter } from "./adapters/bun-process";
 export { FetchAdapter } from "./adapters/fetch-adapter";
+
+// Read and report package name and version from package.json at startup.
+import pkg from "../package.json";
+console.log(`Starting ${pkg.name} v${pkg.version}`);
