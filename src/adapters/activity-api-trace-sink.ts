@@ -195,35 +195,85 @@ export class TranslatingTraceSink implements TraceSink {
         return Object.keys(meta).length > 0 ? { metadata: meta } : {};
       })(),
     };
+    const json = JSON.stringify(body);
+    const persisted = await this.postWithRetry(this.endpoint, json, trace.id);
+    if (!persisted) {
+      // LOUD loss marker (2026-07-05, gap trace-persistence-loss-2026-07-05):
+      // a trace that fails all attempts is permanent learning-loop data loss.
+      // Stable grep-able marker so harnesses/operators can alert on it.
+      console.error(
+        `[TranslatingTraceSink] TRACE_PERSIST_LOSS execution_id=${trace.id} template_id=${trace.templateId} bytes=${json.length} endpoint=${this.endpoint}`,
+      );
+    }
+    // Best-effort mirror endpoints (e.g. a federation hub): single attempt,
+    // fire-and-forget, never blocks or fails the primary path. Configure via
+    // IAS_TRACE_SINK_MIRROR_ENDPOINTS (comma-separated base URLs).
+    const mirrorRaw = typeof process !== "undefined" ? process.env?.IAS_TRACE_SINK_MIRROR_ENDPOINTS : undefined;
+    if (mirrorRaw) {
+      for (const mirror of mirrorRaw.split(",").map((s) => s.trim()).filter((s) => s.length > 0 && s !== this.endpoint)) {
+        void this.postOnce(mirror, json, trace.id).then((outcome) => {
+          if (outcome !== "ok") console.warn(`[TranslatingTraceSink] mirror miss for ${trace.id} at ${mirror}`);
+        }).catch(() => { /* mirror is best-effort */ });
+      }
+    }
+  }
+
+  /**
+   * POST the translated body once. Returns "ok" on 2xx, "fatal" on 4xx
+   * (deterministic schema/auth rejection — retrying cannot help), and
+   * "retryable" on 5xx or transport error (socket closed, timeout).
+   */
+  private async postOnce(endpoint: string, json: string, traceId: string): Promise<"ok" | "retryable" | "fatal"> {
     try {
       const res = await this.fetch.request(
-        `${this.endpoint}/v2/activities/execution-traces`,
+        `${endpoint}/v2/activities/execution-traces`,
         {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             Authorization: `ApiKey ${this.apiKey}`,
           },
-          body: JSON.stringify(body),
+          body: json,
         },
       );
       if (!res.ok) {
         const text = await res.text().catch(() => "");
         console.warn(
-          `[TranslatingTraceSink] ${res.status} recording trace ${trace.id}: ${text.slice(0, 200)}`,
+          `[TranslatingTraceSink] ${res.status} recording trace ${traceId} at ${endpoint}: ${text.slice(0, 200)}`,
         );
-      } else {
-        // Drain response body to release Bun's native HTTP stream buffers.
-        // Without this, anonymous mmap'd response buffers accumulate per
-        // recordTrace call (once per execution). See bus-forwarder.ts.
-        try { await res.body?.cancel(); } catch { /* swallow */ }
+        return res.status >= 500 ? "retryable" : "fatal";
       }
+      // Drain response body to release Bun's native HTTP stream buffers.
+      // Without this, anonymous mmap'd response buffers accumulate per
+      // recordTrace call (once per execution). See bus-forwarder.ts.
+      try { await res.body?.cancel(); } catch { /* swallow */ }
+      return "ok";
     } catch (err) {
       console.warn(
-        `[TranslatingTraceSink] network error recording trace ${trace.id}: ${
+        `[TranslatingTraceSink] network error recording trace ${traceId} at ${endpoint}: ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
+      return "retryable";
     }
+  }
+
+  /**
+   * POST with bounded retry: up to 3 attempts, 250ms then 1000ms backoff,
+   * retrying only transport errors and 5xx. Added 2026-07-05 after burst
+   * concurrency to a slow endpoint closed sockets mid-request and every
+   * such trace was silently lost (log-and-swallow, no second attempt).
+   */
+  private async postWithRetry(endpoint: string, json: string, traceId: string): Promise<boolean> {
+    const backoffsMs = [250, 1000];
+    for (let attempt = 0; attempt <= backoffsMs.length; attempt++) {
+      const outcome = await this.postOnce(endpoint, json, traceId);
+      if (outcome === "ok") return true;
+      if (outcome === "fatal") return false;
+      if (attempt < backoffsMs.length) {
+        await new Promise((resolve) => setTimeout(resolve, backoffsMs[attempt]));
+      }
+    }
+    return false;
   }
 }
