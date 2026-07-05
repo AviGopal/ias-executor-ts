@@ -420,7 +420,44 @@ export class ActivityExecutor {
                     ...placeholderConsumedShapes,
                   ]),
                 ],
-                outputShapes: [...new Set(aOut.map((imp) => getImpulseShape(imp) || imp.pointer.type).filter(Boolean))],
+                outputShapes: [...new Set(aOut.map((imp) => getImpulseShape(imp) || imp.pointer.type))],
+                ...(() => {
+                  const filesModified: string[] = [];
+                  const filesCreated: string[] = [];
+                  const materialsConsulted: string[] = [];
+                  for (const imp of aOut) {
+                    const p = (imp.pointer as { path?: unknown }).path;
+                    if (typeof p !== "string" || !p) continue;
+                    const shape = getImpulseShape(imp) || imp.pointer.type;
+                    if (shape === "fileWriteResult") {
+                      filesModified.push(p);
+                    } else if (shape === "codeInsertResult") {
+                      filesCreated.push(p);
+                    } else if (
+                      shape === "fileEditResult" ||
+                      shape === "codeReplaceResult" ||
+                      shape === "codeAddImportResult"
+                    ) {
+                      filesModified.push(p);
+                    } else if (
+                      shape === "fileContent" ||
+                      shape === "codeReadResult" ||
+                      shape === "codeSearchResult" ||
+                      shape === "codeFindFunctionResult" ||
+                      shape === "codeFindImportResult"
+                    ) {
+                      materialsConsulted.push(`file:${p}`);
+                    }
+                  }
+                  const fm = [...new Set(filesModified)];
+                  const fc = [...new Set(filesCreated)];
+                  const mc = [...new Set(materialsConsulted)];
+                  return {
+                    ...(fm.length > 0 ? { filesModified: fm } : {}),
+                    ...(fc.length > 0 ? { filesCreated: fc } : {}),
+                    ...(mc.length > 0 ? { materialsConsulted: mc } : {}),
+                  };
+                })(),
                 success: true,
                 costUsd: cr.childTrace.costUsd,
                 childExecutionId: cr.childTrace.id,

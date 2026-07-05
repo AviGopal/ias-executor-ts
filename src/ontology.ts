@@ -45,6 +45,15 @@ export interface ActivityTask {
    *  Plain strings behave as { shape: s, cardinality: "any" }. */
   inputShapes?: (string | InputShapeRef)[];
   outputShapes?: string[];
+  /**
+   * File-attribution derived from resolved impulse pointers at execution time:
+   * paths written/edited by this task (filesModified/filesCreated) and material
+   * locators read by this task as `file:<path>` strings (materialsConsulted).
+   * The attributed experience log for locality learning.
+   */
+  filesModified?: string[];
+  filesCreated?: string[];
+  materialsConsulted?: string[];
   config?: Record<string, unknown>;
   /** When resolver is "compose", dispatch to this template id via the templateProvider */
   subActivityId?: string;
