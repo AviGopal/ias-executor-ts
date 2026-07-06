@@ -51,9 +51,7 @@ export interface ActivityTask {
    * locators read by this task as `file:<path>` strings (materialsConsulted).
    * The attributed experience log for locality learning.
    */
-  filesModified?: string[];
-  filesCreated?: string[];
-  materialsConsulted?: string[];
+
   config?: Record<string, unknown>;
   /** When resolver is "compose", dispatch to this template id via the templateProvider */
   subActivityId?: string;
