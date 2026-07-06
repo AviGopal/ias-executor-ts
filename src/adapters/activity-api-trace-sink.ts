@@ -29,6 +29,9 @@
  * and return; execution never aborts due to trace-sink failure.
  */
 
+import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+
 import type { ExecutionTrace } from "../ontology";
 import type { FetchPort, TraceSink } from "../ports";
 
@@ -62,6 +65,7 @@ export class TranslatingTraceSink implements TraceSink {
     this.fetch = options.fetch ?? {
       request: (input, init) => globalThis.fetch(input, init),
     };
+    this.maybeStartSpoolReplay();
   }
 
   async record(trace: ExecutionTrace): Promise<void> {
@@ -198,12 +202,17 @@ export class TranslatingTraceSink implements TraceSink {
     const json = JSON.stringify(body);
     const persisted = await this.postWithRetry(this.endpoint, json, trace.id);
     if (!persisted) {
-      // LOUD loss marker (2026-07-05, gap trace-persistence-loss-2026-07-05):
-      // a trace that fails all attempts is permanent learning-loop data loss.
-      // Stable grep-able marker so harnesses/operators can alert on it.
-      console.error(
-        `[TranslatingTraceSink] TRACE_PERSIST_LOSS execution_id=${trace.id} template_id=${trace.templateId} bytes=${json.length} endpoint=${this.endpoint}`,
-      );
+      // Durable spool (2026-07-05, gap trace-persistence-loss-2026-07-05):
+      // live delivery failed all attempts, so park the trace on disk for the
+      // replay loop — WAN blips must never lose traces regardless of where the
+      // store lives. TRACE_PERSIST_LOSS is reserved for the truly-lost case:
+      // when even the spool write fails.
+      const spooled = await this.spoolTrace(json, trace.id);
+      if (!spooled) {
+        console.error(
+          `[TranslatingTraceSink] TRACE_PERSIST_LOSS execution_id=${trace.id} template_id=${trace.templateId} bytes=${json.length} endpoint=${this.endpoint} (spool write also failed)`,
+        );
+      }
     }
     // Best-effort mirror endpoints (e.g. a federation hub): single attempt,
     // fire-and-forget, never blocks or fails the primary path. Configure via
@@ -275,5 +284,74 @@ export class TranslatingTraceSink implements TraceSink {
       }
     }
     return false;
+  }
+
+  private static spoolReplayStarted = false;
+  private static spoolDraining = false;
+
+  /** Spool directory for traces that failed all live delivery attempts. */
+  private spoolDir(): string {
+    return (typeof process !== "undefined" ? process.env?.IAS_TRACE_SPOOL_DIR : undefined) ?? "/workspace/trace-spool";
+  }
+
+  /**
+   * Write a failed trace to the durable spool. Returns true when the spool
+   * file was written; the 60s replay loop re-POSTs it when the store returns.
+   */
+  private async spoolTrace(json: string, traceId: string): Promise<boolean> {
+    try {
+      const dir = this.spoolDir();
+      await mkdir(dir, { recursive: true });
+      const safeId = traceId.replace(/[^a-zA-Z0-9_.-]/g, "_");
+      const file = join(dir, `${Date.now()}-${safeId}.json`);
+      await writeFile(file, JSON.stringify({ endpoint: this.endpoint, trace_id: traceId, spooled_at: new Date().toISOString(), body: json }));
+      console.warn(`[TranslatingTraceSink] TRACE_SPOOLED execution_id=${traceId} bytes=${json.length} file=${file}`);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Start the spool replay loop once per process. Every 60s it re-POSTs
+   * spooled traces: delete on 2xx, delete + TRACE_PERSIST_LOSS on a
+   * deterministic 4xx, keep for the next cycle on transport errors / 5xx.
+   * Disable with IAS_TRACE_SPOOL_REPLAY=0 (tests, oneshot tools).
+   */
+  private maybeStartSpoolReplay(): void {
+    if (TranslatingTraceSink.spoolReplayStarted) return;
+    if (typeof process !== "undefined" && process.env?.IAS_TRACE_SPOOL_REPLAY === "0") return;
+    if (typeof setInterval !== "function") return;
+    TranslatingTraceSink.spoolReplayStarted = true;
+    const timer = setInterval(() => { void this.drainSpool(); }, 60_000);
+    (timer as unknown as { unref?: () => void }).unref?.();
+  }
+
+  private async drainSpool(): Promise<void> {
+    if (TranslatingTraceSink.spoolDraining) return;
+    TranslatingTraceSink.spoolDraining = true;
+    try {
+      const dir = this.spoolDir();
+      let files: string[];
+      try { files = await readdir(dir); } catch { return; }
+      for (const name of files.filter((f) => f.endsWith(".json")).sort().slice(0, 25)) {
+        const file = join(dir, name);
+        try {
+          const rec = JSON.parse(await readFile(file, "utf8")) as { endpoint?: string; trace_id?: string; body?: string };
+          if (!rec.body) { await unlink(file); continue; }
+          const outcome = await this.postOnce(rec.endpoint ?? this.endpoint, rec.body, rec.trace_id ?? name);
+          if (outcome === "ok") {
+            console.warn(`[TranslatingTraceSink] spool replay delivered ${rec.trace_id ?? name}`);
+            await unlink(file);
+          } else if (outcome === "fatal") {
+            console.error(`[TranslatingTraceSink] TRACE_PERSIST_LOSS execution_id=${rec.trace_id ?? name} endpoint=${rec.endpoint ?? this.endpoint} (spool replay got deterministic 4xx — dropping spool file ${file})`);
+            await unlink(file);
+          }
+          // retryable → keep the file for the next cycle
+        } catch { /* unreadable spool file — leave it for operator inspection */ }
+      }
+    } finally {
+      TranslatingTraceSink.spoolDraining = false;
+    }
   }
 }
