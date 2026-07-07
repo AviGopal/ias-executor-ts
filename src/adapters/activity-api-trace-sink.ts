@@ -250,7 +250,7 @@ export class TranslatingTraceSink implements TraceSink {
         console.warn(
           `[TranslatingTraceSink] ${res.status} recording trace ${traceId} at ${endpoint}: ${text.slice(0, 200)}`,
         );
-        if (res.status >= 500 && text.includes("already contains") && text.includes("execution_id")) {
+        if ((res.status >= 500 || res.status === 409) && text.includes("already contains") && text.includes("execution_id")) {
           console.warn(`[TranslatingTraceSink] duplicate delivery ${traceId} at ${endpoint} — already stored upstream, treating as delivered`);
           return "ok";
         }
