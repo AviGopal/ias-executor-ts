@@ -243,6 +243,7 @@ export class TranslatingTraceSink implements TraceSink {
             Authorization: `ApiKey ${this.apiKey}`,
           },
           body: json,
+        signal: AbortSignal.timeout(15000),
         },
       );
       if (!res.ok) {
