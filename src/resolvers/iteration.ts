@@ -48,35 +48,45 @@ interface IterationConfig {
   outputShape?: string;
 }
 
-/** Coerce config.over into an array. Returns [] on shape mismatch. */
+/** Coerce config.over into an array. Returns [] on shape mismatch.
+ *  Supports dotted descent: over:"<shape>.<path>" reaches an array nested
+ *  inside object-shaped impulse content (e.g. "driftGapList.gaps"). */
 function coerceOver(value: unknown, context: ResolverContext): unknown[] {
   if (Array.isArray(value)) return value;
-  if (typeof value === "string") {
-    // Try JSON.parse (common case — template interpolation JSON-stringifies arrays).
-    if (value.length === 0) return [];
-    try {
-      const parsed = JSON.parse(value);
-      if (Array.isArray(parsed)) return parsed;
-    } catch {
-      // Not JSON — try impulse-shape lookup.
+  if (typeof value !== "string" || value.length === 0) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) return parsed;
+  } catch {
+    // Not JSON — try impulse-shape lookup.
+  }
+  const find = (key: string) =>
+    context.inputImpulses.find((i) => i.metadata.shape === key || i.id === key);
+  const toNode = (content: unknown): unknown => {
+    if (typeof content === "string") {
+      try { return JSON.parse(content); } catch { return content; }
     }
-    // Try resolving as an input-impulse shape name.
-    const impulse = context.inputImpulses.find(
-      (i) => i.metadata.shape === value || i.id === value,
-    );
-    if (impulse?.content) {
-      const content = impulse.content;
-      if (Array.isArray(content)) return content;
-      if (typeof content === "string") {
-        try {
-          const parsed = JSON.parse(content);
-          if (Array.isArray(parsed)) return parsed;
-        } catch {
-          // give up
+    return content;
+  };
+  const exact = find(value);
+  if (exact?.content !== undefined && exact?.content !== null) {
+    const node = toNode(exact.content);
+    if (Array.isArray(node)) return node;
+  }
+  const segments = value.split(".");
+  if (segments.length > 1) {
+    const impulse = find(segments[0] ?? "");
+    if (impulse?.content !== undefined && impulse?.content !== null) {
+      let node: unknown = toNode(impulse.content);
+      for (const part of segments.slice(1)) {
+        if (node && typeof node === "object" && !Array.isArray(node)) {
+          node = toNode((node as Record<string, unknown>)[part]);
+        } else {
+          return [];
         }
       }
+      if (Array.isArray(node)) return node;
     }
-    return [];
   }
   return [];
 }
