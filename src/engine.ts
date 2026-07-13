@@ -104,6 +104,262 @@ export function isParseableJsonArtifact(raw: string): boolean {
   return false;
 }
 
+// ---------------------------------------------------------------------------
+// Lifecycle-subscriber template contract (gap ias-executor-template-contract-mismatch):
+// {{lifecycle.*}} config interpolation + conditional / skipIfFalse task gates.
+//
+// The embedded meta-templates (slot-binding on lifecycle:task:preBinding,
+// validator-dispatch on lifecycle:task:completed, and the
+// create-shape-provider-goal escalation) were authored for minibob's executor,
+// which resolved {{lifecycle.<dotted.path>}} placeholders in task config from
+// the triggering lifecycle impulse's data payload and honored per-task
+// conditional gates. This engine passed task.config verbatim to resolvers —
+// resolvers received the literal placeholder strings (HTTP 400 storms from
+// validator-dispatch, hollow gap-cache queries from slot-binding) and gated
+// tasks (escalate_unbindable) fired unconditionally. These helpers implement
+// the contract; ActivityExecutor.execute wires them into the dispatch loop.
+// ---------------------------------------------------------------------------
+
+function structuredError(code: string, message: string, context: Record<string, unknown>): Error {
+  return Object.assign(new Error(message), { code, ...context });
+}
+
+/**
+ * Resolve a dotted path against a payload object. Each segment tries the
+ * literal key first, then a snake_case → camelCase fallback (template authors
+ * write `{{lifecycle.skip_validation}}` / `{{lifecycle.composition_chain}}`;
+ * emit payloads use camelCase — same tolerance as `resolvePayloadField` in
+ * lifecycle-subscriber.ts). A missing segment or a terminal `undefined` is
+ * "not found" — callers fail loudly rather than passing a literal through.
+ */
+function resolveDottedPath(
+  data: Record<string, unknown>,
+  dottedPath: string,
+): { found: boolean; value?: unknown } {
+  let cur: unknown = data;
+  for (const seg of dottedPath.split(".")) {
+    if (cur === null || typeof cur !== "object") return { found: false };
+    const obj = cur as Record<string, unknown>;
+    if (Object.prototype.hasOwnProperty.call(obj, seg)) {
+      cur = obj[seg];
+      continue;
+    }
+    const camel = seg.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
+    if (camel !== seg && Object.prototype.hasOwnProperty.call(obj, camel)) {
+      cur = obj[camel];
+      continue;
+    }
+    return { found: false };
+  }
+  return cur === undefined ? { found: false } : { found: true, value: cur };
+}
+
+/** Inline (partial-string) substitution form: strings verbatim, scalars via
+ *  String(), arrays/objects JSON-stringified — the documented minibob
+ *  dotted-path interpolator semantics the meta-templates were written against. */
+function stringifyForInline(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === null) return "null";
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+const WHOLE_LIFECYCLE_RE = /^\{\{\s*lifecycle\.([^{}\s]+)\s*\}\}$/;
+const INLINE_LIFECYCLE_RE = /\{\{\s*lifecycle\.([^{}\s]+)\s*\}\}/g;
+
+/**
+ * Resolve every {{lifecycle.<dotted.path>}} placeholder in a task config
+ * against the triggering lifecycle impulse's data payload.
+ *
+ * - A string that IS exactly one placeholder substitutes the resolved value
+ *   with its type preserved (arrays stay arrays, booleans stay booleans).
+ * - Inline occurrences inside a larger string substitute the stringified form.
+ * - An unresolvable placeholder throws a structured UNRESOLVABLE_PLACEHOLDER
+ *   error naming the task and placeholder — the literal is NEVER passed
+ *   through to a resolver (that literal-passthrough was the 400-storm bug).
+ * - Underscore-prefixed keys (_variables_note, _lifecycle_note, ...) are
+ *   template-author documentation that mentions placeholders in prose; they
+ *   are copied verbatim, not interpolated.
+ *
+ * Non-lifecycle placeholder families ({{<taskId>_text}}, {{shape}},
+ * {{impulse:<slot>}}, ...) are left untouched — those are resolved downstream
+ * by the individual resolvers, as before.
+ */
+export function resolveLifecyclePlaceholders(
+  config: Record<string, unknown>,
+  lifecycleData: Record<string, unknown>,
+  taskId: string,
+): Record<string, unknown> {
+  const resolveOrThrow = (path: string): unknown => {
+    const res = resolveDottedPath(lifecycleData, path);
+    if (!res.found) {
+      throw structuredError(
+        "UNRESOLVABLE_PLACEHOLDER",
+        `UNRESOLVABLE_PLACEHOLDER: task '${taskId}': unresolvable placeholder {{lifecycle.${path}}} — ` +
+          `path not present in the triggering lifecycle impulse data`,
+        { code: "UNRESOLVABLE_PLACEHOLDER", taskId, placeholder: `{{lifecycle.${path}}}` },
+      );
+    }
+    return res.value;
+  };
+  const walk = (value: unknown): unknown => {
+    if (typeof value === "string") {
+      const whole = WHOLE_LIFECYCLE_RE.exec(value);
+      if (whole) return resolveOrThrow(whole[1]!);
+      return value.replace(INLINE_LIFECYCLE_RE, (_m, path: string) =>
+        stringifyForInline(resolveOrThrow(path)),
+      );
+    }
+    if (Array.isArray(value)) return value.map(walk);
+    if (value !== null && typeof value === "object") {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        out[k] = k.startsWith("_") ? v : walk(v);
+      }
+      return out;
+    }
+    return value;
+  };
+  return walk(config) as Record<string, unknown>;
+}
+
+export interface GateEvaluationContext {
+  taskId: string;
+  /** Triggering lifecycle impulse data ({} when the execution has none). */
+  lifecycleData: Record<string, unknown>;
+  /** Accumulated variables (request-level + prior-task projections). */
+  variables: Record<string, unknown>;
+  /** Resolve an {{impulse:<slot>}} reference to the impulse's content string. */
+  resolveImpulseSlot: (slot: string) => string | undefined;
+}
+
+/**
+ * Evaluate a task's `conditional` gate BEFORE dispatch. Returns true when the
+ * task should run, false when it should be skipped.
+ *
+ * Accepted forms (matching the embedded meta-templates):
+ *   - boolean, or { expression: boolean }
+ *   - { expression: "<clauses>" [, skipIfFalse: true] } or a bare string
+ *
+ * Expression mini-language (validator-dispatch / slot-binding / ribosome
+ * gates): clauses joined by ` AND ` (no OR in the catalogue); each clause is
+ * `<operand> <op> <operand>` with op ∈ { ===, !==, ==, !=, contains,
+ * not-contains }, or a bare operand tested for truthiness. Operands are
+ * quoted literals or {{lifecycle.*}} / {{impulse:<slot>}} / {{variables.*}}
+ * references; comparison is on the stringified forms.
+ *
+ * A false expression skips the task whether or not `skipIfFalse` is set —
+ * running a task whose declared gate is false would reintroduce the
+ * unconditional-fire bug (60 bogus escalations/hr) this exists to close.
+ * An unresolvable gate throws a structured UNRESOLVABLE_GATE error, never
+ * silently runs the task.
+ */
+export function evaluateConditionalGate(
+  conditional: unknown,
+  ctx: GateEvaluationContext,
+): boolean {
+  if (typeof conditional === "boolean") return conditional;
+  let expression: string;
+  if (typeof conditional === "string") {
+    expression = conditional;
+  } else if (conditional !== null && typeof conditional === "object") {
+    const expr = (conditional as { expression?: unknown }).expression;
+    if (typeof expr === "boolean") return expr;
+    if (typeof expr !== "string") {
+      throw structuredError(
+        "UNRESOLVABLE_GATE",
+        `UNRESOLVABLE_GATE: task '${ctx.taskId}': conditional gate has no boolean/string expression ` +
+          `(got ${JSON.stringify(conditional)})`,
+        { code: "UNRESOLVABLE_GATE", taskId: ctx.taskId },
+      );
+    }
+    expression = expr;
+  } else {
+    throw structuredError(
+      "UNRESOLVABLE_GATE",
+      `UNRESOLVABLE_GATE: task '${ctx.taskId}': conditional gate must be a boolean, string expression, ` +
+        `or { expression } object (got ${JSON.stringify(conditional)})`,
+      { code: "UNRESOLVABLE_GATE", taskId: ctx.taskId },
+    );
+  }
+
+  const unresolvable = (ref: string): Error =>
+    structuredError(
+      "UNRESOLVABLE_GATE",
+      `UNRESOLVABLE_GATE: task '${ctx.taskId}': conditional gate references ${ref} which cannot be resolved`,
+      { code: "UNRESOLVABLE_GATE", taskId: ctx.taskId, placeholder: ref },
+    );
+
+  const resolveOperand = (raw: string): string => {
+    let s = raw.trim();
+    // Strip one layer of matching quotes (template gates quote literals AND
+    // sometimes quote placeholders: '{{lifecycle.outputShapes}}').
+    if (
+      s.length >= 2 &&
+      ((s.startsWith("'") && s.endsWith("'")) || (s.startsWith('"') && s.endsWith('"')))
+    ) {
+      s = s.slice(1, -1);
+    }
+    return s.replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (_m, token: string) => {
+      if (token.startsWith("lifecycle.")) {
+        const res = resolveDottedPath(ctx.lifecycleData, token.slice("lifecycle.".length));
+        if (!res.found) throw unresolvable(`{{${token}}}`);
+        return stringifyForInline(res.value);
+      }
+      if (token.startsWith("impulse:")) {
+        const v = ctx.resolveImpulseSlot(token.slice("impulse:".length));
+        if (v === undefined) throw unresolvable(`{{${token}}}`);
+        return v;
+      }
+      const path = token.startsWith("variables.") ? token.slice("variables.".length) : token;
+      const res = resolveDottedPath(ctx.variables, path);
+      if (!res.found) throw unresolvable(`{{${token}}}`);
+      return stringifyForInline(res.value);
+    });
+  };
+
+  const truthy = (v: string): boolean => {
+    const t = v.trim();
+    return t !== "" && t !== "false" && t !== "0" && t !== "null" && t !== "undefined" && t !== "[]";
+  };
+
+  const CLAUSE_RE = /^(.+?)\s+(===|!==|==|!=|not-contains|contains)\s+(.+)$/;
+  for (const clause of expression.split(/\s+AND\s+/)) {
+    const m = CLAUSE_RE.exec(clause.trim());
+    let clauseResult: boolean;
+    if (!m) {
+      clauseResult = truthy(resolveOperand(clause));
+    } else {
+      const lhs = resolveOperand(m[1]!);
+      const rhs = resolveOperand(m[3]!);
+      switch (m[2]) {
+        case "===":
+        case "==":
+          clauseResult = lhs === rhs;
+          break;
+        case "!==":
+        case "!=":
+          clauseResult = lhs !== rhs;
+          break;
+        case "contains":
+          clauseResult = lhs.includes(rhs);
+          break;
+        case "not-contains":
+          clauseResult = !lhs.includes(rhs);
+          break;
+        default:
+          clauseResult = false;
+      }
+    }
+    if (!clauseResult) return false; // AND semantics — first false short-circuits
+  }
+  return true;
+}
+
 class BudgetExceededError extends Error {
   constructor(
     readonly budgetType: "cost" | "duration" | "task_count",
@@ -196,9 +452,150 @@ export class ActivityExecutor {
       accumulatedVariables.execution_id = executionId;
     }
 
+    // ── Lifecycle-subscriber contract wiring (gap ias-executor-template-contract-mismatch) ──
+    // Subscriber dispatchers (hosts/goal-host.ts) seed the triggering
+    // lifecycle event's payload as an impulse (metadata.source ===
+    // "lifecycle-event", metadata.shape = the event type). That payload is
+    // what {{lifecycle.*}} config placeholders and conditional gates resolve
+    // against in the dispatch loop below.
+    const lifecycleTriggerData: Record<string, unknown> | undefined = (() => {
+      for (const imp of seededImpulses) {
+        const meta = imp.metadata as Record<string, unknown> | undefined;
+        const shape = typeof meta?.["shape"] === "string" ? (meta["shape"] as string) : "";
+        if (meta?.["source"] === "lifecycle-event" || shape.startsWith("lifecycle:")) {
+          if (imp.content !== null && typeof imp.content === "object" && !Array.isArray(imp.content)) {
+            return imp.content as Record<string, unknown>;
+          }
+        }
+      }
+      return undefined;
+    })();
+    // Expose the payload as the `lifecycle` variable so task PROMPTS reach it
+    // through the existing dotted-path interpolation in llm-prompt.ts
+    // ({{lifecycle.taskId}} → variables.lifecycle.taskId). Caller-provided
+    // variables of the same name take precedence.
+    if (lifecycleTriggerData !== undefined && accumulatedVariables.lifecycle === undefined) {
+      accumulatedVariables.lifecycle = lifecycleTriggerData;
+    }
+    // Tasks skipped by a false conditional gate (or by depending on one).
+    const skippedTaskIds = new Set<string>();
+    // {{impulse:<slot>}} gate operands: prefer impulses stamped with
+    // metadata.outputImpulseKey === slot (named-output slots, stamped in the
+    // loop below), then metadata.shape === slot; last match wins (latest
+    // output). Falls back to an accumulated variable of the same name.
+    const resolveImpulseSlot = (slot: string): string | undefined => {
+      let found: Impulse | undefined;
+      for (const imp of this.runtime.store.all()) {
+        const meta = imp.metadata as Record<string, unknown> | undefined;
+        if (meta?.["outputImpulseKey"] === slot) found = imp;
+      }
+      if (!found) {
+        for (const imp of this.runtime.store.all()) {
+          const meta = imp.metadata as Record<string, unknown> | undefined;
+          if (meta?.["shape"] === slot) found = imp;
+        }
+      }
+      if (found) {
+        return typeof found.content === "string" ? found.content : JSON.stringify(found.content ?? "");
+      }
+      const v = accumulatedVariables[slot];
+      if (v === undefined) return undefined;
+      return typeof v === "string" ? v : JSON.stringify(v);
+    };
+
     try {
-      for (const task of template.tasks) {
+      for (const rawTask of template.tasks) {
         inFlightTask = undefined;
+
+        // ── Lifecycle-subscriber contract: gates + {{lifecycle.*}} interpolation ──
+        // (gap ias-executor-template-contract-mismatch; helpers above class)
+        const recordSkip = async (reason: string): Promise<void> => {
+          skippedTaskIds.add(rawTask.id);
+          // Skipped ≠ success and ≠ failure: no resolver ran. The record
+          // carries skipped=true; success=true only keeps the trace's
+          // clean-chain finalization — consumers distinguish via the flag.
+          taskRecords.push({
+            taskId: rawTask.id,
+            description: rawTask.description,
+            resolverId: rawTask.resolver,
+            inputImpulseIds: [],
+            outputImpulseIds: [],
+            inputShapes: [],
+            outputShapes: [],
+            success: true,
+            skipped: true,
+            durationMs: 0,
+          });
+          await this.emit({
+            type: "task.skipped",
+            timestamp: this.runtime.clock.now(),
+            data: { executionId, taskId: rawTask.id, templateId: template.id, reason },
+          });
+        };
+        // Dependency-skip propagation: a task whose dependency was skipped is
+        // skipped too (validator-dispatch's documented chain contract — its
+        // gate references {{impulse:...}} slots the skipped task never filled).
+        const deps = Array.isArray(rawTask["dependencies"]) ? (rawTask["dependencies"] as unknown[]) : [];
+        if (deps.some((d) => typeof d === "string" && skippedTaskIds.has(d))) {
+          await recordSkip("dependency_skipped");
+          continue;
+        }
+        if (rawTask["conditional"] !== undefined && rawTask["conditional"] !== null) {
+          let gateOpen: boolean;
+          try {
+            gateOpen = evaluateConditionalGate(rawTask["conditional"], {
+              taskId: rawTask.id,
+              lifecycleData: lifecycleTriggerData ?? {},
+              variables: accumulatedVariables,
+              resolveImpulseSlot,
+            });
+          } catch (gateErr) {
+            // Loud, MEASURED failure: record the task, then fail the
+            // execution — an unresolvable gate must never silently run.
+            taskRecords.push({
+              taskId: rawTask.id,
+              description: rawTask.description,
+              resolverId: rawTask.resolver,
+              inputImpulseIds: [],
+              outputImpulseIds: [],
+              inputShapes: [],
+              outputShapes: [],
+              success: false,
+              error: gateErr instanceof Error ? gateErr.message : String(gateErr),
+            });
+            throw gateErr;
+          }
+          if (!gateOpen) {
+            await recordSkip("conditional_false");
+            continue;
+          }
+        }
+        // Interpolate {{lifecycle.*}} placeholders in the task config with the
+        // triggering lifecycle impulse's data BEFORE any resolver / compose
+        // dispatch sees it. Unresolvable ⇒ structured UNRESOLVABLE_PLACEHOLDER
+        // throw — the literal placeholder string never reaches a resolver.
+        let task: ActivityTask = rawTask;
+        if (rawTask.config) {
+          try {
+            task = {
+              ...rawTask,
+              config: resolveLifecyclePlaceholders(rawTask.config, lifecycleTriggerData ?? {}, rawTask.id),
+            };
+          } catch (interpErr) {
+            taskRecords.push({
+              taskId: rawTask.id,
+              description: rawTask.description,
+              resolverId: rawTask.resolver,
+              inputImpulseIds: [],
+              outputImpulseIds: [],
+              inputShapes: [],
+              outputShapes: [],
+              success: false,
+              error: interpErr instanceof Error ? interpErr.message : String(interpErr),
+            });
+            throw interpErr;
+          }
+        }
         if (budget?.maxTaskCount !== undefined && taskRecords.length >= budget.maxTaskCount) {
           throw new BudgetExceededError("task_count", taskRecords.length, budget.maxTaskCount);
         }
@@ -216,9 +613,8 @@ export class ActivityExecutor {
           typeof entry === "string" ? entry : entry.shape,
         );
         if (declaredInputShapeNames.length > 0) {
-          const poolShapes = this.runtime.store
-            .all()
-            .map((imp) => getImpulseShape(imp));
+          const poolImpulses = this.runtime.store.all();
+          const poolShapes = poolImpulses.map((imp) => getImpulseShape(imp));
           const presentShapes = new Set(poolShapes);
           const missingShapes = declaredInputShapeNames.filter(
             (s) => !presentShapes.has(s),
@@ -232,6 +628,11 @@ export class ActivityExecutor {
               executionId,
               inputShapes: declaredInputShapeNames,
               currentImpulseShapes: poolShapes,
+              // Impulse ids currently in the pool — slot-binding's
+              // agent_fill_fallback / escalate_unbindable interpolate
+              // {{lifecycle.currentImpulseIds}} (contract documented in
+              // templates/lifecycle/slot-binding.json).
+              currentImpulseIds: poolImpulses.map((imp) => imp.id),
               missingShapes,
               variables: options.variables ?? {},
               parentDepth: compositionChain.length,
@@ -743,6 +1144,16 @@ export class ActivityExecutor {
               resolverId: task.resolver,
               success: true,
               warning: "convergent_validity[empty_output]: task declared outputShapes but produced 0 impulses",
+              // Keep this variant contract-complete for subscribers:
+              // validator-dispatch's gate reads outputShapes/skip_validation,
+              // the lifecycle-subscriber depth-cap reads parentDepth.
+              outputShapes: [],
+              skip_validation: task.config?.["skip_validation"] === true,
+              allImpulseIds: this.runtime.store.all().map((imp) => imp.id),
+              loadedImpulseIds: inputImpulses.filter((imp) => imp.loaded === true).map((imp) => imp.id),
+              toolCallRecords: [],
+              parentDepth: compositionChain.length,
+              compositionChain,
               tags: options.tags,
             },
           });
@@ -924,6 +1335,15 @@ export class ActivityExecutor {
             outputImpulseIds: storedOutputs.map((impulse) => impulse.id),
             inputShapes: declaredInputShapeNames,
             outputShapes: this.shapesOfImpulses(task, storedOutputs),
+            // Contract fields consumed by validator-dispatch's conditional
+            // gate ({{lifecycle.skip_validation}}) and its
+            // learning_signal_write config (allImpulseIds / loadedImpulseIds /
+            // toolCallRecords). The engine keeps no tool-call transcript, so
+            // an empty array is the honest value.
+            skip_validation: task.config?.["skip_validation"] === true,
+            allImpulseIds: this.runtime.store.all().map((imp) => imp.id),
+            loadedImpulseIds: inputImpulses.filter((imp) => imp.loaded === true).map((imp) => imp.id),
+            toolCallRecords: [],
             // 2026-05-20 fix (task 40): include depth info so the
             // lifecycle-subscriber's universal depth-cap can refuse runaway
             // recursion. Without this, subscribers on lifecycle:task:completed

@@ -169,6 +169,12 @@ export interface ExecutionTaskRecord {
    *  not just what the template declares it might produce. */
   outputShapes?: string[];
   success: boolean;
+  /** True when the task was skipped: its conditional gate evaluated false, or
+   *  a dependency was itself skipped (dependency-skip propagation). A skipped
+   *  task ran no resolver — it is neither a success nor a failure signal;
+   *  success=true is kept only so clean-chain trace finalization holds, and
+   *  consumers distinguish via this flag. */
+  skipped?: boolean;
   error?: string;
   costUsd?: number;
   tokensInput?: number;
