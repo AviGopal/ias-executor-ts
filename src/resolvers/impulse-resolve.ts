@@ -72,11 +72,19 @@ export function makeImpulseResolveResolver(options: {
       }
 
       try {
-        // 1-second connection timeout via AbortController. Without this,
-        // fake/unreachable endpoints (test fixtures, dev clusters) hang
-        // executors indefinitely. Real canary roundtrip is ~tens of ms.
+        // Connection timeout via AbortController. Without this, fake or
+        // unreachable endpoints (test fixtures, dev clusters) hang executors
+        // indefinitely. Default is 8s: a congested store legitimately answers
+        // in 1-6s, and the previous 1s abort turned that congestion into
+        // degraded-impulse failures that got retried (load amplification —
+        // gap: store-pressure-invisible-to-sensing-2026-07-13). Ops can tune
+        // via IMPULSE_RESOLVE_TIMEOUT_MS without a rebuild.
+        const timeoutMs =
+          Number.parseInt(process.env.IMPULSE_RESOLVE_TIMEOUT_MS ?? "", 10) > 0
+            ? Number.parseInt(process.env.IMPULSE_RESOLVE_TIMEOUT_MS ?? "", 10)
+            : 8000;
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 1000);
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
         const res = await fetch(`${endpoint}/v2/impulses/resolve`, {
           method: "POST",
           headers: {
