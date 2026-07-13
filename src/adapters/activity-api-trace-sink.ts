@@ -101,8 +101,12 @@ export class TranslatingTraceSink implements TraceSink {
           taskId: t.taskId,
           task_id: t.taskId,
           description: (t as { description?: string }).description ?? t.taskId,
-          status: t.success ? "success" : "failure",
+          status: (t as { skipped?: boolean }).skipped ? "skipped" : t.success ? "success" : "failure",
           success: t.success,
+          // Conditional-gate skips must be distinguishable from real work in the
+          // learning store (a skip is neutral, not alpha) — see gap
+          // skipped-tasks-invisible-to-trace-sink.
+          skipped: (t as { skipped?: boolean }).skipped ?? false,
           resolver_id: t.resolverId,
           resolver_tier: t.resolverTier,
           duration_ms: (t as { durationMs?: number }).durationMs,
