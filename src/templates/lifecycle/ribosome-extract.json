@@ -52,16 +52,13 @@
         "expression": "{{lifecycle.qualityEligible}} === 'true'",
         "skipIfFalse": true
       },
-      "resolver": "http_fetch",
+      "resolver": "impulse-resolve",
       "config": {
-        "type": "http_fetch",
-        "method": "POST",
-        "url": "http://127.0.0.1:8080/v2/impulses/resolve",
-        "headers": {
-          "Content-Type": "application/json"
-        },
-        "body": "{\"pointer\":{\"type\":\"executionTraceWithSignatures\",\"execution_id\":\"{{lifecycle.executionId}}\",\"limit\":1}}",
-        "timeoutMs": 30000
+        "pointer": {
+          "type": "executionTraceWithSignatures",
+          "execution_id": "{{lifecycle.executionId}}",
+          "limit": 1
+        }
       },
       "outputShapes": [
         "executionTraceWithSignatures"
