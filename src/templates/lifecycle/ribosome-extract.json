@@ -163,16 +163,15 @@
       "conditional": {
         "expression": "{{variables.applyExtraction}} == 'true'"
       },
-      "resolver": "http_fetch",
+      "resolver": "impulse-resolve",
       "config": {
-        "type": "http_fetch",
-        "method": "POST",
-        "url": "http://127.0.0.1:8080/v2/impulses/resolve",
-        "headers": {
-          "Content-Type": "application/json"
+        "pointer": {
+          "type": "activityTemplate_write",
+          "operation": "create"
         },
-        "body": "{\"pointer\":{\"type\":\"activityTemplate_write\",\"operation\":\"create\",\"templateData\":{{impulse:extracted_template}}}}",
-        "timeoutMs": 30000
+        "pointerFromImpulseSlots": {
+          "templateData": "extracted_template"
+        }
       },
       "outputShapes": [
         "writeAttempt"

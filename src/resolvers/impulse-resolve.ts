@@ -32,8 +32,30 @@ import type { Impulse } from "../ontology";
 
 interface ImpulseResolveConfig {
   pointer?: { type?: string; [k: string]: unknown };
+  /** Dynamic pointer fields resolved from input-impulse slots at run time:
+   *  { "<pointerField>": "<slotName>" }. The slot's content is parsed
+   *  (markdown fences stripped, JSON.parse attempted) and merged into the
+   *  pointer as a VALUE — never string-spliced into a JSON body, which is
+   *  how raw multi-line LLM output breaks http_fetch-style writes. */
+  pointerFromImpulseSlots?: Record<string, string>;
   activityApiEndpoint?: string;
   activityApiKey?: string;
+}
+
+/** Parse an impulse slot's content into a pointer-safe value: objects pass
+ *  through; strings get markdown fences stripped and a JSON.parse attempt;
+ *  unparseable strings pass through as strings. */
+function parseSlotContent(raw: unknown): unknown {
+  if (raw === null || raw === undefined) return raw;
+  if (typeof raw !== "string") return raw;
+  let s = raw.trim();
+  const fence = /^```(?:json)?\s*\n?([\s\S]*?)\n?```$/m.exec(s);
+  if (fence?.[1]) s = fence[1].trim();
+  try {
+    return JSON.parse(s);
+  } catch {
+    return raw;
+  }
 }
 
 export function makeImpulseResolveResolver(options: {
@@ -45,9 +67,27 @@ export function makeImpulseResolveResolver(options: {
     tier: "pattern",
     async resolve(context: ResolverContext): Promise<Impulse[]> {
       const config = (context.task.config ?? {}) as ImpulseResolveConfig;
-      const pointer = config.pointer;
+      const pointer = config.pointer ? { ...config.pointer } : undefined;
       if (!pointer || typeof pointer.type !== "string" || pointer.type.length === 0) {
         throw new Error("impulse-resolve: config.pointer.type is required (non-empty string)");
+      }
+      // Dynamic slot merge: resolve declared input-impulse slots into pointer
+      // fields as parsed VALUES. A missing slot throws loudly — silently
+      // omitting a field like templateData would turn a write into a 400 the
+      // chain can't see (the ribosome mint-leg failure class).
+      if (config.pointerFromImpulseSlots) {
+        for (const [field, slot] of Object.entries(config.pointerFromImpulseSlots)) {
+          const imp = [...context.inputImpulses].reverse().find((i) => {
+            const meta = i.metadata as Record<string, unknown> | undefined;
+            return meta?.["outputImpulseKey"] === slot || meta?.["shape"] === slot;
+          });
+          if (!imp) {
+            throw new Error(
+              `impulse-resolve: pointerFromImpulseSlots['${field}'] references slot '${slot}' but no input impulse carries it`,
+            );
+          }
+          pointer[field] = parseSlotContent(imp.content);
+        }
       }
       const endpoint = config.activityApiEndpoint ?? options.activityApiEndpoint ?? "";
       const apiKey = config.activityApiKey ?? options.activityApiKey ?? "";
