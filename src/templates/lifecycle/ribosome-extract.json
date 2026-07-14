@@ -60,7 +60,7 @@
         "headers": {
           "Content-Type": "application/json"
         },
-        "body": "{\"impulse\":{\"pointer\":{\"type\":\"executionTraceWithSignatures\",\"execution_id\":\"{{lifecycle.executionId}}\",\"limit\":1}}}",
+        "body": "{\"pointer\":{\"type\":\"executionTraceWithSignatures\",\"execution_id\":\"{{lifecycle.executionId}}\",\"limit\":1}}",
         "timeoutMs": 30000
       },
       "outputShapes": [
@@ -174,7 +174,7 @@
         "headers": {
           "Content-Type": "application/json"
         },
-        "body": "{\"impulse\":{\"pointer\":{\"type\":\"activityTemplate_write\",\"operation\":\"create\",\"templateData\":{{impulse:extracted_template}}}}}",
+        "body": "{\"pointer\":{\"type\":\"activityTemplate_write\",\"operation\":\"create\",\"templateData\":{{impulse:extracted_template}}}}",
         "timeoutMs": 30000
       },
       "outputShapes": [
