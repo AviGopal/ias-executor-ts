@@ -1438,6 +1438,11 @@ export class ActivityExecutor {
     } catch (error) {
       const totalDurationMs = this.runtime.clock.now() - startedAt;
       const message = error instanceof Error ? error.message : String(error);
+      // Legibility: an execution that throws BETWEEN tasks (e.g. input-shape
+      // binding rejects a terminal/sink shape) recorded no task and, on the
+      // goal-host direct-write path, a null failure_mode — leaving the failure
+      // invisible in both the trace and the journal. Always log it.
+      console.error(`[engine] execution ${executionId} template ${template.id} failed after ${taskRecords.length} task(s): ${message}`);
 
       let failureMode: FailureMode;
       if (error instanceof BudgetExceededError) {
