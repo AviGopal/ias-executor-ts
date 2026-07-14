@@ -132,9 +132,7 @@
       "inputImpulses": [
         "extracted_template"
       ],
-      "conditional": {
-        "expression": "{{impulse:extracted_template}} contains '\"id\"'"
-      },
+      "conditional": true,
       "resolver": "llm_completion_dispatch",
       "config": {
         "type": "llm_completion_dispatch",
