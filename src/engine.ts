@@ -477,6 +477,18 @@ export class ActivityExecutor {
     if (lifecycleTriggerData !== undefined && accumulatedVariables.lifecycle === undefined) {
       accumulatedVariables.lifecycle = lifecycleTriggerData;
     }
+    // Gates and config interpolation must see the same `lifecycle` context the
+    // prompts do: a caller that passes `variables.lifecycle` without seeding a
+    // lifecycle-event impulse (the reach→mint path in goal-host) would otherwise
+    // hit UNRESOLVABLE_GATE on every {{lifecycle.*}} gate — a structurally
+    // unmintable ribosome-extract. Trigger-event payload keeps precedence.
+    const lifecycleContext: Record<string, unknown> =
+      lifecycleTriggerData ??
+      (accumulatedVariables.lifecycle !== null &&
+      typeof accumulatedVariables.lifecycle === "object" &&
+      !Array.isArray(accumulatedVariables.lifecycle)
+        ? (accumulatedVariables.lifecycle as Record<string, unknown>)
+        : {});
     // Tasks skipped by a false conditional gate (or by depending on one).
     const skippedTaskIds = new Set<string>();
     // {{impulse:<slot>}} gate operands: prefer impulses stamped with
@@ -545,7 +557,7 @@ export class ActivityExecutor {
           try {
             gateOpen = evaluateConditionalGate(rawTask["conditional"], {
               taskId: rawTask.id,
-              lifecycleData: lifecycleTriggerData ?? {},
+              lifecycleData: lifecycleContext,
               variables: accumulatedVariables,
               resolveImpulseSlot,
             });
@@ -579,7 +591,7 @@ export class ActivityExecutor {
           try {
             task = {
               ...rawTask,
-              config: resolveLifecyclePlaceholders(rawTask.config, lifecycleTriggerData ?? {}, rawTask.id),
+              config: resolveLifecyclePlaceholders(rawTask.config, lifecycleContext, rawTask.id),
             };
           } catch (interpErr) {
             taskRecords.push({

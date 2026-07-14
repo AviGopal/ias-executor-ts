@@ -311,6 +311,35 @@ describe("ActivityExecutor — lifecycle-subscriber contract wiring", () => {
     expect(JSON.stringify(cfg)).not.toContain("{{lifecycle.");
   });
 
+  test("gate + config resolve {{lifecycle.*}} from variables.lifecycle when no lifecycle-event impulse is seeded (reach→mint path)", async () => {
+    const { resolver, seen } = makeConfigSpy();
+    const runtime = makeRuntime([resolver]);
+    const executor = new ActivityExecutor(runtime);
+
+    const template: ActivityTemplate = {
+      id: "mint-path-tmpl",
+      name: "Mint Path",
+      tasks: [
+        {
+          id: "gated",
+          description: "gates on lifecycle payload passed only as a variable",
+          resolver: "config-spy",
+          conditional: { expression: "{{lifecycle.qualityEligible}} === 'true'", skipIfFalse: true },
+          config: { executionId: "{{lifecycle.executionId}}" },
+        },
+      ],
+    };
+
+    const trace = await executor.execute(template, {
+      variables: { lifecycle: { qualityEligible: true, executionId: "exec_parent" } },
+    });
+    expect(trace.status).toBe("completed");
+    const rec = trace.tasks.find((t) => t.taskId === "gated");
+    expect(rec?.success).toBe(true);
+    expect((rec as { skipped?: boolean } | undefined)?.skipped).not.toBe(true);
+    expect((seen[0] as { executionId: string }).executionId).toBe("exec_parent");
+  });
+
   test("unresolvable config placeholder fails the task loudly with UNRESOLVABLE_PLACEHOLDER", async () => {
     const { resolver, seen } = makeConfigSpy();
     const runtime = makeRuntime([resolver]);
