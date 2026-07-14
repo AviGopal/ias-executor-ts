@@ -47,6 +47,18 @@ interface ImpulseResolveConfig {
  *  unparseable strings pass through as strings. */
 function parseSlotContent(raw: unknown): unknown {
   if (raw === null || raw === undefined) return raw;
+  // LLM proxy resolvers often wrap the completion in an envelope object —
+  // unwrap the single text-bearing field before parsing, otherwise the
+  // envelope itself lands in the pointer (e.g. templateData = {text: "..."}).
+  if (typeof raw === "object" && !Array.isArray(raw)) {
+    const obj = raw as Record<string, unknown>;
+    for (const k of ["text", "content", "completion", "body"]) {
+      if (typeof obj[k] === "string" && Object.keys(obj).length <= 3) {
+        return parseSlotContent(obj[k]);
+      }
+    }
+    return raw;
+  }
   if (typeof raw !== "string") return raw;
   let s = raw.trim();
   const fence = /^```(?:json)?\s*\n?([\s\S]*?)\n?```$/m.exec(s);
@@ -54,6 +66,29 @@ function parseSlotContent(raw: unknown): unknown {
   try {
     return JSON.parse(s);
   } catch {
+    // Noisy completion (prose around the JSON): slice the first balanced
+    // top-level object and parse that — mirrors apply-proposal-as-patch's
+    // parseFirstJsonObject tolerance.
+    const start = s.indexOf("{");
+    if (start !== -1) {
+      let depth = 0;
+      let inStr = false;
+      let esc = false;
+      for (let i = start; i < s.length; i++) {
+        const ch = s[i];
+        if (esc) { esc = false; continue; }
+        if (ch === "\\") { esc = true; continue; }
+        if (ch === '"') { inStr = !inStr; continue; }
+        if (inStr) continue;
+        if (ch === "{") depth++;
+        else if (ch === "}") {
+          depth--;
+          if (depth === 0) {
+            try { return JSON.parse(s.slice(start, i + 1)); } catch { break; }
+          }
+        }
+      }
+    }
     return raw;
   }
 }
