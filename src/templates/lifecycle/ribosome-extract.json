@@ -106,7 +106,7 @@
         "trace_signature"
       ],
       "conditional": {
-        "expression": "{{impulse:quality_assessment}} contains 'ELIGIBLE_TRUE'"
+        "expression": "{{impulse:quality_assessment}} not-contains 'ELIGIBLE_FALSE'"
       },
       "resolver": "llm_completion_dispatch",
       "config": {
