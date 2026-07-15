@@ -181,7 +181,8 @@ export class ActivityExecutor {
     // (outputImpulseKey preferred). Falls back to an accumulated variable of the
     // same name.
     const resolveImpulseSlot = (slot: string): string | undefined => {
-      const dot = slot.indexOf(".");
+      console.error("[rIS-debug]", JSON.stringify({ slot, storeKeys: this.runtime.store.all().map((i) => (i.metadata as Record<string, unknown>)?.["outputImpulseKey"]).filter(Boolean), shapes: this.runtime.store.all().map((i) => (i.metadata as Record<string, unknown>)?.["shape"]).filter(Boolean) }));
+    const dot = slot.indexOf(".");
       const head = dot >= 0 ? slot.slice(0, dot) : slot;
       const tail = dot >= 0 ? slot.slice(dot + 1) : "";
 
