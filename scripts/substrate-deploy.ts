@@ -85,19 +85,55 @@ for (const v of CONSUMERS) {
 }
 
 // 3. Restart the consumers so they reload the new compiled module.
-for (const v of CONSUMERS) {
-  if (NO_RESTART.has(v)) {
-    log(`defer restart ${v} (running this hook / self-restarts)`);
-    continue;
-  }
+//    ORDER MATTERS: goal-host-vessel snapshots the discovery registry at startup
+//    and registers connected-vessel resolvers (e.g. source_code from
+//    analysis-vessel) as executor proxies ONCE. If it restarts before/with its
+//    resolver providers, its startup discovery misses them and direct template
+//    execution fails with "Resolver 'X' is not registered". So restart the
+//    resolver PROVIDERS first, wait for them to advertise, and restart
+//    goal-host LAST. (Observed: a simultaneous fleet restart left goal-host
+//    unable to resolve source_code until a later restart.)
+const RESTART_LAST = new Set(["goal-host-vessel"]);
+// Ports whose /health goal-host's executor proxies depend on (best-effort
+// readiness gate; missing/unknown ports are simply not polled).
+const PROVIDER_HEALTH: Array<{ name: string; url: string }> = [
+  { name: "analysis-vessel", url: "http://127.0.0.1:8250/health" },
+  { name: "local-tools-vessel", url: "http://127.0.0.1:8230/health" },
+  { name: "llm-resolver-vessel", url: "http://127.0.0.1:8240/health" },
+];
+
+function restartUnit(v: string): boolean {
   const unit = `${v}.service`;
   const check = run("systemctl", ["list-unit-files", unit]);
-  if (check.status !== 0) {
-    log(`skip restart ${v} (no unit)`);
-    continue;
-  }
+  if (check.status !== 0) { log(`skip restart ${v} (no unit)`); return false; }
   const r = run("systemctl", ["restart", unit]);
   log(r.status === 0 ? `restarted ${unit}` : `WARN: restart ${unit} failed: ${r.stderr.slice(-200)}`);
+  return r.status === 0;
+}
+
+// 3a. Restart providers / non-deferred, non-last consumers first.
+for (const v of CONSUMERS) {
+  if (NO_RESTART.has(v)) { log(`defer restart ${v} (running this hook / self-restarts)`); continue; }
+  if (RESTART_LAST.has(v)) continue;
+  restartUnit(v);
+}
+
+// 3b. Best-effort readiness gate: poll provider /health so goal-host's startup
+//     discovery sees them advertising before it snapshots. Bounded, fail-soft.
+for (const p of PROVIDER_HEALTH) {
+  let ready = false;
+  for (let i = 0; i < 20; i++) {
+    const r = run("curl", ["-s", "-m", "2", "-o", "/dev/null", "-w", "%{http_code}", p.url]);
+    if (r.stdout.trim() === "200") { ready = true; break; }
+    const w = run("sleep", ["0.5"]);
+    void w;
+  }
+  log(ready ? `provider ready: ${p.name}` : `WARN: ${p.name} not ready after gate — restarting goal-host anyway`);
+}
+
+// 3c. Restart goal-host LAST, now that providers are advertising.
+for (const v of CONSUMERS) {
+  if (RESTART_LAST.has(v) && !NO_RESTART.has(v)) restartUnit(v);
 }
 
 log("deploy complete");
