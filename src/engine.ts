@@ -223,7 +223,7 @@ export class ActivityExecutor {
       }
 
       try {
-        let parsed = JSON.parse(rawResolved);
+        let parsed: unknown; try { parsed = JSON.parse(rawResolved); } catch (pe) { const a = rawResolved.indexOf("{"); const b = rawResolved.lastIndexOf("}"); if (a >= 0 && b > a) { parsed = JSON.parse(rawResolved.slice(a, b + 1)); } else { throw pe; } }
         const segments = tail.split(".");
         for (const segment of segments) {
           if (typeof parsed !== "object" || parsed === null || !Object.prototype.hasOwnProperty.call(parsed, segment)) {
