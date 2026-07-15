@@ -91,7 +91,10 @@ export class VesselResolver implements Resolver {
     // custom-resolver output into a downstream task got an EMPTY/unbound
     // {{taskid_*}} variable (root cause of the stalled cross-template synthesis
     // loop, 2026-06-19). Prefer content; fall back to the body payload.
-    const resolvedContent = body.content !== undefined ? body.content : body.body;
+    let resolvedContent: unknown = body.content !== undefined ? body.content : body.body;
+        if (body.shape === "llm_completion_result" && resolvedContent && typeof resolvedContent === "object" && typeof (resolvedContent as Record<string, unknown>)["text"] === "string") {
+          resolvedContent = ((resolvedContent as Record<string, unknown>)["text"] as string).replace(/^```(?:json|JSON)?\s*\n?/i, "").replace(/\n?```\s*$/i, "").trim();
+        }
     // Drain Bun's native HTTP buffers — without this the response's mmap'd
     // read stream is retained until the runtime's incremental GC catches it,
     // and at high vessel-resolver call rates this dominates per-runGoal RSS.
