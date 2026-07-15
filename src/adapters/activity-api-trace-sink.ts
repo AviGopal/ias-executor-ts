@@ -98,7 +98,6 @@ export class TranslatingTraceSink implements TraceSink {
           // duration_ms / cost_usd are read at the top level, not nested.
           // Earlier nested shape stored empty rows (task_id=undefined,
           // resolver_id=undefined) which broke learning-loop attribution.
-          taskId: t.taskId,
           task_id: t.taskId,
           description: (t as { description?: string }).description ?? t.taskId,
           status: (t as { skipped?: boolean }).skipped ? "skipped" : t.success ? "success" : "failure",
