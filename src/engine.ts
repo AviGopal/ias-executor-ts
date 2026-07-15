@@ -563,6 +563,8 @@ export class ActivityExecutor {
                 },
               );
               const aOut = cr.outputs;
+    const namedSlotsForActivity = Array.isArray((task as Record<string, unknown>)["outputImpulses"]) ? ((task as Record<string, unknown>)["outputImpulses"] as unknown[]).filter((v): v is string => typeof v === "string") : [];
+    aOut.forEach((imp, idx) => { const slot = namedSlotsForActivity[idx]; if (slot) { const stamped = { ...imp, metadata: { ...((imp.metadata as Record<string, unknown>) ?? {}), outputImpulseKey: slot } }; this.runtime.store.put(stamped); } else { this.runtime.store.put(imp); }});
               for (const imp of aOut) outputImpulseIds.add(imp.id);
               if (cr.childTrace.costUsd !== undefined) totalCostUsd += cr.childTrace.costUsd;
               taskRecords.push({
