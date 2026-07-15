@@ -144,6 +144,10 @@ export class VesselDaemon {
   }
 
   /** Stop the HTTP server and deregister from discovery-vessel. */
+  public async setShapes(shapes: string[]): Promise<void> {
+    await this.discoveryLoop?.setShapes(shapes);
+  }
+
   async stop(): Promise<void> {
     if (this.discoveryLoop) {
       await this.discoveryLoop.stop();
