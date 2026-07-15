@@ -315,7 +315,8 @@ export class ActivityExecutor {
         let task: ActivityTask = rawTask;
         if (rawTask.config) {
           try {
-            const interpolateImpulseRefs = (value: unknown): unknown => {
+            // This pass resolves {{impulse:<slot>}} and {{impulse:<slot>.<field>}} placeholders in the task config into their concrete values.
+    const interpolateImpulseRefs = (value: unknown): unknown => {
               if (typeof value === "string") {
                 return value.replace(/\{\{\s*impulse:([^}]+?)\s*\}\}/g, (m, slot) => {
                   const r = resolveImpulseSlot(String(slot).trim());
