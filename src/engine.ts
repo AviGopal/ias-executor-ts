@@ -314,9 +314,28 @@ export class ActivityExecutor {
         let task: ActivityTask = rawTask;
         if (rawTask.config) {
           try {
+            const interpolateImpulseRefs = (value: unknown): unknown => {
+              if (typeof value === "string") {
+                return value.replace(/\{\{\s*impulse:([^}]+?)\s*\}\}/g, (m, slot) => {
+                  const r = resolveImpulseSlot(String(slot).trim());
+                  return r === undefined ? m : r;
+                });
+              }
+              if (Array.isArray(value)) {
+                return value.map(interpolateImpulseRefs);
+              }
+              if (value && typeof value === "object") {
+                const out: Record<string, unknown> = {};
+                for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+                  out[k] = interpolateImpulseRefs(v);
+                }
+                return out;
+              }
+              return value;
+            };
             task = {
               ...rawTask,
-              config: resolveLifecyclePlaceholders(rawTask.config, lifecycleContext, rawTask.id),
+              config: interpolateImpulseRefs(resolveLifecyclePlaceholders(rawTask.config, lifecycleContext, rawTask.id)) as Record<string, unknown>,
             };
           } catch (interpErr) {
             taskRecords.push({
