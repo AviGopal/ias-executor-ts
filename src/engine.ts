@@ -177,8 +177,9 @@ export class ActivityExecutor {
     const skippedTaskIds = new Set<string>();
     // {{impulse:<slot>}} gate operands: prefer impulses stamped with
     // metadata.outputImpulseKey === slot (named-output slots, stamped in the
-    // loop below), then metadata.shape === slot; last match wins (latest
-    // output). Falls back to an accumulated variable of the same name.
+    // loop below), then metadata.shape === slot. First match wins
+    // (outputImpulseKey preferred). Falls back to an accumulated variable of the
+    // same name.
     const resolveImpulseSlot = (slot: string): string | undefined => {
       const dot = slot.indexOf(".");
       const head = dot >= 0 ? slot.slice(0, dot) : slot;
