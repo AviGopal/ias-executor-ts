@@ -56,6 +56,11 @@ export class DiscoveryRegistrationLoop {
    * Send a DELETE to discovery-vessel and clear the heartbeat timer.
    * Called on SIGTERM / graceful shutdown.
    */
+  async setShapes(shapes: string[]): Promise<void> {
+    this.config.shapes = shapes;
+    await this.register();
+  }
+
   async stop(): Promise<void> {
     if (this.heartbeatTimer !== undefined) {
       clearInterval(this.heartbeatTimer);
