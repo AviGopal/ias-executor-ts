@@ -180,23 +180,64 @@ export class ActivityExecutor {
     // loop below), then metadata.shape === slot; last match wins (latest
     // output). Falls back to an accumulated variable of the same name.
     const resolveImpulseSlot = (slot: string): string | undefined => {
-      let found: Impulse | undefined;
+      const dot = slot.indexOf(".");
+      const head = dot >= 0 ? slot.slice(0, dot) : slot;
+      const tail = dot >= 0 ? slot.slice(dot + 1) : "";
+
+      let impulse: Impulse | undefined;
+      // Try by outputImpulseKey
       for (const imp of this.runtime.store.all()) {
         const meta = imp.metadata as Record<string, unknown> | undefined;
-        if (meta?.["outputImpulseKey"] === slot) found = imp;
-      }
-      if (!found) {
-        for (const imp of this.runtime.store.all()) {
-          const meta = imp.metadata as Record<string, unknown> | undefined;
-          if (meta?.["shape"] === slot) found = imp;
+        if (meta?.["outputImpulseKey"] === head) {
+          impulse = imp;
+          break;
         }
       }
-      if (found) {
-        return typeof found.content === "string" ? found.content : JSON.stringify(found.content ?? "");
+      // Fallback to by shape
+      if (!impulse) {
+        for (const imp of this.runtime.store.all()) {
+          const meta = imp.metadata as Record<string, unknown> | undefined;
+          if (meta?.["shape"] === head) {
+            impulse = imp;
+            break;
+          }
+        }
       }
-      const v = accumulatedVariables[slot];
-      if (v === undefined) return undefined;
-      return typeof v === "string" ? v : JSON.stringify(v);
+
+      let rawResolved: string | undefined;
+      if (impulse) {
+        rawResolved = typeof impulse.content === "string" ? impulse.content : JSON.stringify(impulse.content ?? "");
+      } else {
+        // Fallback to accumulated variables (e.g., from priorTaskId_text)
+        const v = accumulatedVariables[head];
+        if (v !== undefined) {
+          rawResolved = typeof v === "string" ? v : JSON.stringify(v);
+        }
+      }
+
+      if (!rawResolved || tail === "") {
+        return rawResolved;
+      }
+
+      try {
+        let parsed = JSON.parse(rawResolved);
+        const segments = tail.split(".");
+        for (const segment of segments) {
+          if (typeof parsed !== "object" || parsed === null || !Object.prototype.hasOwnProperty.call(parsed, segment)) {
+            return undefined;
+          }
+          parsed = (parsed as Record<string, unknown>)[segment];
+        }
+        if (typeof parsed === "string") {
+          return parsed;
+        } else if (parsed !== undefined) {
+          return JSON.stringify(parsed);
+        } else {
+          return undefined; // Resolved to undefined value
+        }
+      } catch {
+        return undefined; // Content is not JSON or path is invalid
+      }
     };
 
     try {
