@@ -3,6 +3,7 @@ import { getImpulseShape } from "./ontology";
 import type { CreateImpulseInput } from "./impulses";
 import type { ResolverContext } from "./resolvers";
 import { ExecutionRuntime } from "./runtime";
+import { VesselResolver } from "./adapters/vessel-resolver";
 import { classifyShape } from "./shape-lifecycle";
 
 export interface ExecutionBudget {
@@ -243,6 +244,24 @@ export class ActivityExecutor {
       }
     };
 
+    // Pre-register discovery-routed VesselResolvers for any task resolver that
+    // is neither locally registered nor "compose"/"compose_parallel" — cross-
+    // vessel shapes like fleetActivityFeed served only by another vessel.
+    // Best-effort: lookup failures fall through to the existing
+    // resolver_not_registered close-on-failure path.
+    if (this.runtime.discovery) {
+      for (const rawTask of template.tasks ?? []) {
+        const rid = typeof (rawTask as { resolver?: unknown }).resolver === "string" ? (rawTask as { resolver: string }).resolver : "";
+        if (!rid || rid === "compose" || rid === "compose_parallel" || this.runtime.resolvers.has(rid)) continue;
+        try {
+          const producers = await this.runtime.discovery.lookupShapeProducers(rid);
+          const producer = producers.find((p) => typeof p.resolveEndpoint === "string" && p.resolveEndpoint.length > 0);
+          if (producer) {
+            this.runtime.resolvers.register(new VesselResolver({ id: rid, tier: "external", shape: rid, resolveEndpoint: producer.resolveEndpoint, apiKey: this.runtime.vesselApiKey ?? "" }));
+          }
+        } catch { /* discovery unreachable — leave to close-on-failure */ }
+      }
+    }
     try {
       for (const rawTask of template.tasks) {
         inFlightTask = undefined;
