@@ -1,5 +1,5 @@
 import type { AttachedVessel, ActivityTemplate, ExecutionTrace, LifecycleEvent } from "./ontology";
-import type { AttachedVesselRegistry, ClockPort, EventSink, RandomPort, TemplateProvider, TraceSink } from "./ports";
+import type { AttachedVesselRegistry, ClockPort, DiscoveryPort, EventSink, RandomPort, TemplateProvider, TraceSink } from "./ports";
 import { ImpulseStore } from "./impulses";
 import { ResolverRegistry } from "./resolvers";
 
@@ -42,6 +42,8 @@ export interface ExecutionRuntimeOptions {
   traceSink?: TraceSink;
   templateProvider?: TemplateProvider;
   attachedVessels?: AttachedVessel[];
+  discovery?: DiscoveryPort;
+  vesselApiKey?: string;
 }
 
 export class ExecutionRuntime {
@@ -53,6 +55,8 @@ export class ExecutionRuntime {
   readonly traceSink: TraceSink;
   templateProvider?: TemplateProvider;
   readonly attachedVessels: AttachedVesselRegistry;
+  readonly discovery?: DiscoveryPort;
+  readonly vesselApiKey?: string;
   private readonly attachedVesselRegistry: StaticAttachedVesselRegistry;
 
   constructor(options: ExecutionRuntimeOptions = {}) {
@@ -65,6 +69,8 @@ export class ExecutionRuntime {
     this.templateProvider = options.templateProvider;
     this.attachedVesselRegistry = new StaticAttachedVesselRegistry(options.attachedVessels ?? []);
     this.attachedVessels = this.attachedVesselRegistry;
+    this.discovery = options.discovery;
+    this.vesselApiKey = options.vesselApiKey;
   }
 
   attachVessel(vessel: AttachedVessel): ExecutionRuntime {
