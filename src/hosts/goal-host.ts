@@ -632,6 +632,8 @@ export class GoalHost {
       eventSink: this.subscriber, // subscriber fans out to options.eventSink
       traceSink: options.traceSink ?? this.activityApi.asTraceSink(),
       templateProvider,
+      discovery: this.discovery,
+      vesselApiKey: options.apiKey,
       attachedVessels: [
         { id: "bun-fs", kind: "filesystem", resolverIds: ["file-read"] },
         { id: "bun-proc", kind: "process", resolverIds: ["bash"] },
