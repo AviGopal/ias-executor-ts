@@ -84,7 +84,7 @@ export class VesselResolver implements Resolver {
       clearTimeout(timer);
     }
 
-    const body = await res.json() as { success: boolean; content?: unknown; body?: unknown; shape?: string; error?: string; metadata?: Record<string, unknown> };
+    const body = await res.json() as { success?: boolean; resolved?: boolean; content?: unknown; body?: unknown; shape?: string; error?: string; metadata?: Record<string, unknown> };
     // Compat: dev-vessel-style resolvers return { success, shape, body } (the
     // resolver result), not { success, content }. Without this fallback the
     // adapter set impulse.content = undefined, so any compose template feeding a
@@ -100,7 +100,7 @@ export class VesselResolver implements Resolver {
     // and at high vessel-resolver call rates this dominates per-runGoal RSS.
     try { await res.body?.cancel(); } catch { /* swallow */ }
 
-    if (!body.success) {
+    if (body.success !== true && body.resolved !== true) {
       throw new Error(`VesselResolver(${this.id}): vessel returned error — ${body.error ?? res.status}`);
     }
 
