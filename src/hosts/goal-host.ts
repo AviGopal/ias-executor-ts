@@ -550,6 +550,7 @@ export class GoalHost {
     this.discovery = new HttpDiscoveryAdapter(
       this.fetchAdapter,
       options.discoveryEndpoint ?? "https://discovery.metabob.com",
+      { apiKey: options.apiKey },
     );
 
     // Catalogue: SHARED_TEMPLATES in-memory, with activity-api fallback for
