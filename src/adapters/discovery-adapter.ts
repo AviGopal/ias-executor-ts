@@ -14,13 +14,15 @@ interface CacheEntry {
 export class HttpDiscoveryAdapter implements DiscoveryPort {
   private readonly cache = new Map<string, CacheEntry>();
   private readonly cacheTtlMs: number;
+  private readonly apiKey?: string;
 
   constructor(
     private readonly fetch: FetchPort,
     private readonly discoveryEndpoint: string,
-    opts: { cacheTtlMs?: number } = {},
+    opts: { cacheTtlMs?: number; apiKey?: string } = {},
   ) {
     this.cacheTtlMs = opts.cacheTtlMs ?? 30_000;
+    this.apiKey = opts.apiKey;
   }
 
   async lookupShapeProducers(shape: string, orgIds?: string[]): Promise<VesselSummary[]> {
@@ -33,7 +35,7 @@ export class HttpDiscoveryAdapter implements DiscoveryPort {
 
     const res = await this.fetch.request(`${this.discoveryEndpoint}/resolve`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(this.apiKey ? { Authorization: "ApiKey " + this.apiKey } : {}) },
       body: JSON.stringify({ pointer: { type: "vesselCapability", ...body } }),
     });
 
@@ -43,13 +45,14 @@ export class HttpDiscoveryAdapter implements DiscoveryPort {
       return [];
     }
 
-    const data = (await res.json()) as { vessels?: Array<{ id: string; resolve_endpoint: string; health_score?: number; org_id?: string }> };
+    const data = (await res.json()) as { vessels?: Array<Record<string, unknown>>; content?: { vessels?: Array<Record<string, unknown>> } };
     try { await res.body?.cancel(); } catch { /* swallow */ }
-    const results: VesselSummary[] = (data.vessels ?? []).map((v) => ({
-      id: v.id,
-      resolveEndpoint: v.resolve_endpoint,
-      healthScore: v.health_score,
-      orgId: v.org_id,
+    const rows = data.content?.vessels ?? data.vessels ?? [];
+    const results: VesselSummary[] = rows.map((v) => ({
+      id: String(v["id"] ?? v["vesselId"] ?? ""),
+      resolveEndpoint: String(v["resolve_endpoint"] ?? ""),
+      healthScore: typeof v["health_score"] === "number" ? v["health_score"] : undefined,
+      orgId: typeof v["org_id"] === "string" ? v["org_id"] : undefined,
     }));
 
     this.cache.set(cacheKey, { results, expiresAt: Date.now() + this.cacheTtlMs });
