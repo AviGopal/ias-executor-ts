@@ -162,12 +162,7 @@ export class TranslatingTraceSink implements TraceSink {
       // field instead.
       failure_mode: CANONICAL_FAILURE_TYPES.has(trace.failureMode?.type as string)
         ? trace.failureMode
-        : undefined,
-      // extras-bag Phase 1 (inv-071): pass raw failure_mode regardless of canonical type.
-      // Diagnostic data lost by the filter above is preserved here so audit agents
-      // and harnesses can see `execution_error` and other non-canonical types.
-      // activity-api stores this in the loose metadata bag; it never influences selection.
-      failure_mode_raw: trace.failureMode,
+        : { type: "execution_error" },
       // Collect input shapes for state_space_signature derivation. Prefer a top-level
       // `trace.inputShapes` (the decision-time pool snapshot the walk conditioned on) and
       // union with per-task inputShapes. Populating this is what un-starves the
