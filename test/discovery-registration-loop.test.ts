@@ -25,7 +25,7 @@ describe("DiscoveryRegistrationLoop V12 re-register on heartbeat 404", () => {
     //   2. discovery restarts; vessel sends /heartbeat → 404 (not known)
     //   3. loop should fire /register again, NOT just increment counter
     const calls: string[] = [];
-    globalThis.fetch = (async (input: RequestInfo | URL) => {
+    globalThis.fetch = (async (input: string | URL) => {
       const url = typeof input === "string" ? input : input.toString();
       if (url.endsWith("/register")) {
         calls.push("register");
@@ -57,7 +57,7 @@ describe("DiscoveryRegistrationLoop V12 re-register on heartbeat 404", () => {
 
   it("does NOT re-register on non-404 heartbeat failure (e.g. 500)", async () => {
     const calls: string[] = [];
-    globalThis.fetch = (async (input: RequestInfo | URL) => {
+    globalThis.fetch = (async (input: string | URL) => {
       const url = typeof input === "string" ? input : input.toString();
       if (url.endsWith("/register")) {
         calls.push("register");

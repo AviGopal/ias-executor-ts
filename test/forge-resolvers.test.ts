@@ -161,17 +161,17 @@ describe("docker_build_push resolver", () => {
     const output = await resolver.resolve(ctx);
 
     expect(docker.built).toHaveLength(1);
-    expect(docker.built[0].contextPath).toBe("/tmp/forge_abc123");
+    expect(docker.built[0]!.contextPath).toBe("/tmp/forge_abc123");
     // Tag must be metabobapp/forge-{shape}-{uuid}:{timestamp}
-    const tag = docker.built[0].tag;
+    const tag = docker.built[0]!.tag;
     expect(tag).toMatch(/^metabobapp\/forge-json_schema_validator-/);
 
     expect(docker.pushed).toHaveLength(1);
     expect(docker.pushed[0]).toBe(tag);
 
     expect(output).toHaveLength(1);
-    expect(output[0].metadata.shape).toBe("vesselImagePushed");
-    expect((output[0].content as any).imageUri).toBe(tag);
+    expect(output[0]!.metadata.shape).toBe("vesselImagePushed");
+    expect((output[0]!.content as any).imageUri).toBe(tag);
   });
 
   test("returns failure_mode impulse on push failure (does not throw)", async () => {
@@ -187,8 +187,8 @@ describe("docker_build_push resolver", () => {
     const output = await resolver.resolve(ctx);
 
     expect(output).toHaveLength(1);
-    expect(output[0].metadata.shape).toBe("failure_mode");
-    const fm = (output[0].content as any).failure_mode;
+    expect(output[0]!.metadata.shape).toBe("failure_mode");
+    const fm = (output[0]!.content as any).failure_mode;
     expect(fm.type).toBe("verifier_negative");
     expect(fm.reason).toBe("docker_push_failed");
   });
@@ -230,7 +230,7 @@ describe("helmfile_sync resolver", () => {
 
     // Overlay written
     expect(fs.files.size).toBe(1);
-    const [overlayPath, overlayContent] = [...fs.files.entries()][0];
+    const [overlayPath, overlayContent] = [...fs.files.entries()][0]!;
     expect(overlayPath).toContain("forged-vessels/forge-xshape-");
     expect(overlayContent).toContain("forge-xshape");
     expect(overlayContent).toContain("metabobapp/forge-xshape-uid");
@@ -245,8 +245,8 @@ describe("helmfile_sync resolver", () => {
 
     // Output
     expect(output).toHaveLength(1);
-    expect(output[0].metadata.shape).toBe("vesselDeployedToCanary");
-    const { endpoint } = output[0].content as { endpoint: string };
+    expect(output[0]!.metadata.shape).toBe("vesselDeployedToCanary");
+    const { endpoint } = output[0]!.content as { endpoint: string };
     expect(endpoint).toContain("forge-xshape");
   });
 
@@ -311,8 +311,8 @@ describe("verify_three_invariants resolver", () => {
 
     const output = await resolver.resolve(ctx);
     expect(output).toHaveLength(1);
-    expect(output[0].metadata.shape).toBe("vesselVerified");
-    const content = output[0].content as any;
+    expect(output[0]!.metadata.shape).toBe("vesselVerified");
+    const content = output[0]!.content as any;
     expect(content.shape).toBe("json_schema_validator");
     expect(content.probeResults).toHaveLength(3);
     expect(content.probeResults.every((p: any) => p.passed)).toBe(true);
@@ -339,8 +339,8 @@ describe("verify_three_invariants resolver", () => {
 
     const output = await resolver.resolve(ctx);
     expect(output).toHaveLength(1);
-    expect(output[0].metadata.shape).toBe("failure_mode");
-    const fm = (output[0].content as any).failure_mode;
+    expect(output[0]!.metadata.shape).toBe("failure_mode");
+    const fm = (output[0]!.content as any).failure_mode;
     expect(fm.type).toBe("verifier_negative");
     const failedProbes: string[] = fm.context.failedProbes.map((p: any) => p.probe);
     expect(failedProbes).toContain("discovery");
@@ -364,8 +364,8 @@ describe("verify_three_invariants resolver", () => {
     ]);
 
     const output = await resolver.resolve(ctx);
-    expect(output[0].metadata.shape).toBe("failure_mode");
-    const fm = (output[0].content as any).failure_mode;
+    expect(output[0]!.metadata.shape).toBe("failure_mode");
+    const fm = (output[0]!.content as any).failure_mode;
     expect(fm.context.failedProbes.some((p: any) => p.probe === "auth")).toBe(true);
   });
 
@@ -391,6 +391,7 @@ describe("VesselForgeHost resolver registration", () => {
     const { VesselForgeHost } = await import("../src/examples/vessel-forge-host");
     const host = new VesselForgeHost({
       discoveryEndpoint: "http://discovery:8080",
+      llm: { generate: async () => "" },
     });
     // Access via host.runtime.resolvers.list()
     const runtime = (host as any).runtime;

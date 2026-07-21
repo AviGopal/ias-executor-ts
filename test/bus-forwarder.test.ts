@@ -39,7 +39,7 @@ describe("BusForwardingEventSink", () => {
     const fetchFn = (async (url: string | URL | Request, init?: RequestInit) => {
       fetchCalls.push({ url: String(url), init: init ?? {} });
       return new Response("{}", { status: 200 });
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     const sink = new BusForwardingEventSink({
       inner,
@@ -60,7 +60,7 @@ describe("BusForwardingEventSink", () => {
     const fetchFn = (async (url: string | URL | Request, init?: RequestInit) => {
       captured = { url: String(url), body: init?.body ? JSON.parse(init.body as string) : null };
       return new Response("{}", { status: 200 });
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     const sink = new BusForwardingEventSink({
       inner,
@@ -89,7 +89,7 @@ describe("BusForwardingEventSink", () => {
     const inner: EventSink = { emit: () => {} };
     const fetchFn = (async () => {
       throw new Error("network down");
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
     const warnings: string[] = [];
 
     const sink = new BusForwardingEventSink({
@@ -112,7 +112,7 @@ describe("BusForwardingEventSink", () => {
     const inner: EventSink = {
       emit: () => { throw new Error("inner sink down"); },
     };
-    const fetchFn = (async () => new Response("{}", { status: 200 })) as typeof fetch;
+    const fetchFn = (async () => new Response("{}", { status: 200 })) as unknown as typeof fetch;
 
     const sink = new BusForwardingEventSink({
       inner,
@@ -126,7 +126,7 @@ describe("BusForwardingEventSink", () => {
 
   test("non-2xx from publish logged once per outage", async () => {
     const inner: EventSink = { emit: () => {} };
-    const fetchFn = (async () => new Response("nope", { status: 500 })) as typeof fetch;
+    const fetchFn = (async () => new Response("nope", { status: 500 })) as unknown as typeof fetch;
     const warnings: string[] = [];
 
     const sink = new BusForwardingEventSink({
@@ -156,7 +156,7 @@ describe("BusForwardingEventSink", () => {
       const headers = (init?.headers ?? {}) as Record<string, string>;
       authHeader = headers["Authorization"];
       return new Response("{}", { status: 200 });
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     const sink = new BusForwardingEventSink({
       inner,

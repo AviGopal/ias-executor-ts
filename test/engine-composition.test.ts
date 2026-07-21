@@ -570,7 +570,7 @@ describe("Retry semantics", () => {
     await executor.execute(template);
     const retryEvents = sink.events.filter((e) => e.type === "task.retry");
     expect(retryEvents).toHaveLength(2);
-    expect(retryEvents[0].data.attempt).toBe(1);
-    expect(retryEvents[1].data.attempt).toBe(2);
+    expect(retryEvents[0]!.data.attempt).toBe(1);
+    expect(retryEvents[1]!.data.attempt).toBe(2);
   });
 });

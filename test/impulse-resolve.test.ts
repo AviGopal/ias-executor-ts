@@ -43,7 +43,7 @@ describe("impulse-resolve resolver", () => {
         JSON.stringify({ content: { found: 42 }, metadata: { summary: "ok" } }),
         { status: 200 },
       );
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     const resolver = makeImpulseResolveResolver({
       activityApiEndpoint: "http://act",
@@ -66,7 +66,7 @@ describe("impulse-resolve resolver", () => {
   });
 
   test("HTTP non-2xx degrades to null content with error in metadata", async () => {
-    globalThis.fetch = (async () => new Response("err", { status: 500 })) as typeof fetch;
+    globalThis.fetch = (async () => new Response("err", { status: 500 })) as unknown as typeof fetch;
     const resolver = makeImpulseResolveResolver({
       activityApiEndpoint: "http://act",
       activityApiKey: "k",
@@ -80,7 +80,7 @@ describe("impulse-resolve resolver", () => {
   test("network error degrades to null content", async () => {
     globalThis.fetch = (async () => {
       throw new Error("net down");
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
     const resolver = makeImpulseResolveResolver({
       activityApiEndpoint: "http://act",
       activityApiKey: "k",
@@ -102,7 +102,7 @@ describe("impulse-resolve resolver", () => {
     globalThis.fetch = (async (url: string) => {
       urlSeen = url;
       return new Response(JSON.stringify({ content: null }), { status: 200 });
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
     const resolver = makeImpulseResolveResolver({ activityApiEndpoint: "http://host-default", activityApiKey: "h" });
     const ctx = makeContext({
       pointer: { type: "x" },
@@ -121,7 +121,7 @@ describe("impulse-resolve resolver", () => {
           metadata: { custom_field: "abc", summary: "ok" },
         }),
         { status: 200 },
-      )) as typeof fetch;
+      )) as unknown as typeof fetch;
     const resolver = makeImpulseResolveResolver({
       activityApiEndpoint: "http://act",
       activityApiKey: "k",

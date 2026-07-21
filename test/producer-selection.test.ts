@@ -50,7 +50,7 @@ describe("producer_selection (minimal port)", () => {
 
   test("returns unbindable:true when discover-by-shapes returns empty producers", async () => {
     globalThis.fetch = (async () =>
-      new Response(JSON.stringify({ producers: [] }), { status: 200 })) as typeof fetch;
+      new Response(JSON.stringify({ producers: [] }), { status: 200 })) as unknown as typeof fetch;
     const resolver = makeProducerSelectionResolver({
       activityApiEndpoint: "http://act",
       activityApiKey: "k",
@@ -71,7 +71,7 @@ describe("producer_selection (minimal port)", () => {
           ],
         }),
         { status: 200 },
-      )) as typeof fetch;
+      )) as unknown as typeof fetch;
     const resolver = makeProducerSelectionResolver({
       activityApiEndpoint: "http://act",
       activityApiKey: "k",
@@ -88,7 +88,7 @@ describe("producer_selection (minimal port)", () => {
   });
 
   test("treats HTTP failure as unbindable (graceful degradation)", async () => {
-    globalThis.fetch = (async () => new Response("err", { status: 500 })) as typeof fetch;
+    globalThis.fetch = (async () => new Response("err", { status: 500 })) as unknown as typeof fetch;
     const resolver = makeProducerSelectionResolver({
       activityApiEndpoint: "http://act",
       activityApiKey: "k",
@@ -102,7 +102,7 @@ describe("producer_selection (minimal port)", () => {
   test("treats network error as unbindable", async () => {
     globalThis.fetch = (async () => {
       throw new Error("net down");
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
     const resolver = makeProducerSelectionResolver({
       activityApiEndpoint: "http://act",
       activityApiKey: "k",
@@ -118,7 +118,7 @@ describe("producer_selection (minimal port)", () => {
     globalThis.fetch = (async (url: string) => {
       urlSeen = url;
       return new Response(JSON.stringify({ producers: [] }), { status: 200 });
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
     const resolver = makeProducerSelectionResolver({ activityApiEndpoint: "http://host", activityApiKey: "k" });
     const ctx = makeContext({
       shape: "x",
