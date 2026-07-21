@@ -255,7 +255,19 @@ export class ActivityExecutor {
         if (!rid || rid === "compose" || rid === "compose_parallel" || this.runtime.resolvers.has(rid)) continue;
         try {
           const producers = await this.runtime.discovery.lookupShapeProducers(rid);
-          const producer = producers.reduce((max: any, current: any) => { const healthScore = current.healthScore ?? -Infinity; if (typeof current.resolveEndpoint === "string" && current.resolveEndpoint.length > 0 && healthScore > max.healthScore) { return { ...current, healthScore }; } return max; }, { healthScore: -Infinity });
+          // healthScore-aware pick (first increment onto the learned-selection
+          // primitive): prefer the healthiest producer with a usable endpoint.
+          // healthScore is optional (undefined when discovery omits health_score);
+          // `!producer` seeds first-match and strict `>` keeps ties/all-missing on
+          // the FIRST eligible producer — behaviour-identical to the old .find when
+          // no scores are present — and returns undefined when none are eligible.
+          let producer: (typeof producers)[number] | undefined;
+          for (const candidate of producers) {
+            if (typeof candidate.resolveEndpoint !== "string" || candidate.resolveEndpoint.length === 0) continue;
+            if (!producer || (candidate.healthScore ?? -Infinity) > (producer.healthScore ?? -Infinity)) {
+              producer = candidate;
+            }
+          }
           if (producer) {
             this.runtime.resolvers.register(new VesselResolver({ id: rid, tier: "external", shape: rid, resolveEndpoint: producer.resolveEndpoint, apiKey: this.runtime.vesselApiKey ?? "" }));
           }
