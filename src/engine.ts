@@ -255,7 +255,7 @@ export class ActivityExecutor {
         if (!rid || rid === "compose" || rid === "compose_parallel" || this.runtime.resolvers.has(rid)) continue;
         try {
           const producers = await this.runtime.discovery.lookupShapeProducers(rid);
-          const producer = producers.find((p) => typeof p.resolveEndpoint === "string" && p.resolveEndpoint.length > 0);
+          const producer = producers.reduce((max: any, current: any) => { const healthScore = current.healthScore ?? -Infinity; if (typeof current.resolveEndpoint === "string" && current.resolveEndpoint.length > 0 && healthScore > max.healthScore) { return { ...current, healthScore }; } return max; }, { healthScore: -Infinity });
           if (producer) {
             this.runtime.resolvers.register(new VesselResolver({ id: rid, tier: "external", shape: rid, resolveEndpoint: producer.resolveEndpoint, apiKey: this.runtime.vesselApiKey ?? "" }));
           }
