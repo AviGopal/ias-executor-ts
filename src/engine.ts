@@ -853,7 +853,14 @@ export class ActivityExecutor {
         // pattern. Reject any task where ALL outputs are degraded: unanimously
         // degraded outputs means the resolver produced no usable signal.
         if (storedOutputs.length > 0 &&
-            storedOutputs.every(i => (i.metadata as Record<string, unknown>)?.["degraded"] === true)) {
+            storedOutputs.every(i => (i.metadata as Record<string, unknown>)?.["degraded"] === true) &&
+            // A degraded READ from the impulse-resolve lookup resolver is
+            // information-absence ("no pathway/rows yet", HTTP 4xx on a not-yet-served
+            // shape, endpoint down) — a pathway-unknown outcome, NOT swallowed work.
+            // It must NOT β-penalise or sink the walk; downstream composers read empty
+            // signal tasks defensively. Only genuine swallowed-work degradation
+            // (proxy / third-party resolvers, the F13 case) hard-fails here.
+            !storedOutputs.every(i => (i.metadata as Record<string, unknown>)?.["source"] === "impulse-resolve")) {
           throw new Error(
             `convergent_validity[degraded]: all ${storedOutputs.length} output(s) carry ` +
             `metadata.degraded=true — resolver self-reports failure via degraded impulse pattern`
