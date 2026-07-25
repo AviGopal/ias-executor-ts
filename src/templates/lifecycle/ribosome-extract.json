@@ -169,7 +169,9 @@
         "pointer": {
           "type": "activityTemplate_write",
           "operation": "create",
-          "goalSignature": "{{lifecycle.goalSignature}}"
+          "goalSignature": "{{lifecycle.goalSignature}}",
+          "anchor": "{{anchor}}",
+          "live_execution": true
         },
         "pointerFromImpulseSlots": {
           "templateData": "extracted_template"
@@ -181,7 +183,7 @@
       "outputImpulses": [
         "write_result"
       ],
-      "notes": "Persists the synthesized template via the `activityTemplate_write` write resolver advertised by activity-api. CONDITIONAL: gated on `applyExtraction` variable (default false). When the resolver fails (network, validation, etc.), the chain still completes - extract is best-effort. KNOWN-LIMITATION: activityTemplate_write requires admin scope per CLAUDE.md; canary keys are read,write only, so 401/403 is expected until operator action is taken (next gap if reached). The http_fetch resolver auto-attaches METABOB_API_KEY for substrate-local hosts but the key's scope may not include admin."
+      "notes": "Persists the synthesized template via the `activityTemplate_write` write resolver advertised by activity-api. CONDITIONAL: gated on `applyExtraction` variable (default false). When the resolver fails (network, validation, etc.), the chain still completes - extract is best-effort. KNOWN-LIMITATION: activityTemplate_write requires admin scope per CLAUDE.md; canary keys are read,write only, so 401/403 is expected until operator action is taken (next gap if reached). The http_fetch resolver auto-attaches METABOB_API_KEY for substrate-local hosts but the key's scope may not include admin. The anchor field is required by the write resolver contract to prevent anchor_not_found errors; live_execution=true ensures the write occurs on a live execution path."
     },
     {
       "id": "dispatch_write_succeeded",
