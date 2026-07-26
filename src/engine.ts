@@ -6,6 +6,55 @@ import { ExecutionRuntime } from "./runtime";
 import { VesselResolver } from "./adapters/vessel-resolver";
 import { classifyShape } from "./shape-lifecycle";
 
+/**
+ * Leaf-LLM cost pricing — MEASUREMENT SEAM.
+ *
+ * Per-task cost for a LEAF LLM resolver call is priced here from the token
+ * usage the resolver stamps into its output-impulse metadata
+ * (`metadata.usage = { input_tokens, output_tokens }`; see
+ * resolvers/llm-prompt.ts). Without this, taskCostUsd stayed 0 for every leaf
+ * LLM call, so totalCostUsd aggregated to 0 and per-arm cost could not be
+ * compared. (compose / compose_parallel tasks already price from their child
+ * trace — only the leaf path was missing.)
+ *
+ * This constant is the SEAM that should later read a SHAPED pricing impulse
+ * (law 1 — behaviour steered by shapes read at use time) instead of an
+ * in-process constant. Until that impulse exists, these are bootstrap-only
+ * defaults. Rates are USD per token (per-million list price / 1e6). Keys match
+ * as case-insensitive substrings of the model id (provider prefix + date
+ * suffix tolerated), longest key first, so e.g.
+ * "anthropic/claude-haiku-4-5-20251001" resolves to the "haiku" tier.
+ */
+export const MODEL_PRICES: Record<string, { inRate: number; outRate: number }> = {
+  opus: { inRate: 15 / 1e6, outRate: 75 / 1e6 },
+  sonnet: { inRate: 3 / 1e6, outRate: 15 / 1e6 },
+  haiku: { inRate: 1 / 1e6, outRate: 5 / 1e6 },
+};
+
+/** Fallback rate when a model id matches no MODEL_PRICES key (sonnet-tier). */
+const DEFAULT_MODEL_PRICE = { inRate: 3 / 1e6, outRate: 15 / 1e6 };
+
+/**
+ * Price a leaf LLM call from its token usage. Returns 0 when no tokens are
+ * present, preserving byte-identical behaviour for calls that carry no usage
+ * (backward-compatible: absent tokens => cost stays 0 as before this seam).
+ */
+export function priceLlmUsage(
+  model: string | undefined,
+  inTokens: number | undefined,
+  outTokens: number | undefined,
+): number {
+  const inTok = inTokens ?? 0;
+  const outTok = outTokens ?? 0;
+  if (inTok === 0 && outTok === 0) return 0;
+  const id = (model ?? "").toLowerCase();
+  const key = Object.keys(MODEL_PRICES)
+    .sort((a, b) => b.length - a.length)
+    .find((k) => id.includes(k));
+  const rate = key ? MODEL_PRICES[key]! : DEFAULT_MODEL_PRICE;
+  return inTok * rate.inRate + outTok * rate.outRate;
+}
+
 export interface ExecutionBudget {
   maxCostUsd?: number;
   maxDurationMs?: number;
@@ -1034,7 +1083,27 @@ export class ActivityExecutor {
         }
 
         const llmUsage = storedOutputs.map((i) => (i.metadata as { usage?: { input_tokens?: number; output_tokens?: number } } | undefined)?.usage).find((u) => u && typeof u.input_tokens === "number");
-        if (llmUsage) { totalTokensInput += llmUsage.input_tokens ?? 0; totalTokensOutput += llmUsage.output_tokens ?? 0; }
+        if (llmUsage) {
+          totalTokensInput += llmUsage.input_tokens ?? 0;
+          totalTokensOutput += llmUsage.output_tokens ?? 0;
+          // Leaf-LLM cost pricing (measurement plumbing). compose /
+          // compose_parallel already set taskCostUsd from the child trace; a
+          // LEAF llm call left it undefined, so totalCostUsd aggregated to 0 and
+          // per-arm cost was uncomparable. Price from the stamped usage via the
+          // MODEL_PRICES seam and fold into the aggregate. Absent tokens => 0
+          // (byte-identical to prior behaviour).
+          if (taskCostUsd === undefined) {
+            const llmModel =
+              (task.config?.["model"] as string | undefined) ??
+              ((task as { prompt?: { model?: string } }).prompt?.model) ??
+              (llmUsage as { model?: string }).model;
+            const leafCostUsd = priceLlmUsage(llmModel, llmUsage.input_tokens, llmUsage.output_tokens);
+            if (leafCostUsd > 0) {
+              taskCostUsd = leafCostUsd;
+              totalCostUsd += leafCostUsd;
+            }
+          }
+        }
 
         taskRecords.push({
           taskId: task.id,
