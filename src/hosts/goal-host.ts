@@ -296,7 +296,7 @@ export class InProcessLLMPort implements LLMPort {
         }>;
       };
     },
-    private readonly defaultModel = "claude-sonnet-4-20250514",
+    private readonly defaultModel = "auto",
     private readonly defaultMaxTokens = 4096,
   ) {}
 
@@ -338,7 +338,7 @@ export class HttpLLMPort implements LLMPort {
 
   constructor(
     vesselEndpoint: string,
-    private readonly defaultModel = "claude-sonnet-4-20250514",
+    private readonly defaultModel = "auto",
     private readonly defaultMaxTokens = 4096,
   ) {
     // Normalise: allow bare host ("http://127.0.0.1:8220") or full path
