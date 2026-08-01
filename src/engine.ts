@@ -1037,7 +1037,7 @@ export class ActivityExecutor {
           // identically under BOTH the cli (run-local-seed) and the engine (autonomous
           // goal-host) paths. Without it, custom-resolver compose templates had to know
           // which executor would run them (the dual-convention footgun, 2026-06-19).
-          accumulatedVariables[task.id] = cappedFirstText;
+          accumulatedVariables[task.id] = (this as any).executionId;
           accumulatedVariables[`${task.id}_text`] = cappedFirstText;
           producerTaskOf[task.id] = task.id;
           // _content keeps the structural reference so resolvers that read
