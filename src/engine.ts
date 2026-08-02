@@ -162,6 +162,33 @@ export class ActivityExecutor {
     // gap blocking lift: substrate-authored templates couldn't reach
     // activity-api with their LLM-drafted content.
     const accumulatedVariables: Record<string, unknown> = { ...(options.variables ?? {}) };
+    // TEMPLATE-DECLARED DEFAULTS (2026-08-02). A template may declare
+    // `variables: [{ name, required: false, default }]`, but nothing merged those
+    // defaults into the execution, so an unsupplied variable was simply ABSENT.
+    // In a conditional gate that is fatal rather than defaulted: the interpolator
+    // throws UNRESOLVABLE_GATE (engine.interpolation.ts, `resolveDottedPath` ->
+    // `if (!res.found) throw unresolvable(...)`), so the whole execution FAILS at
+    // that task instead of taking the declared-default branch.
+    //
+    // Measured: `ribosome-extract` reached its final task `dispatch_write_attempt`
+    // and died on `{{variables.applyExtraction}} which cannot be resolved` — 218
+    // UNRESOLVABLE_GATE / 457 failed in 6h, i.e. extraction ran the full quality
+    // chain and then threw away the result. Three templates fleet-wide use a
+    // defaulted variable inside a gate; all three are the activity-lifecycle
+    // machinery (ribosome-extract, prune-activity, replace-activity).
+    //
+    // Seeding is STRICTLY CONSERVATIVE — each declared default resolves the gate
+    // to the branch the template author intended, never to a more destructive one:
+    //   applyExtraction=false   gate `== 'true'`   -> write task SKIPS (no mint)
+    //   dryRun=true             gate `== 'false'`  -> deprecate SKIPS (dry-run kept)
+    //   requireValidation=true  gate `== 'true'`   -> validation RUNS
+    // Caller-provided variables still win: like the executionId seed below, this
+    // only fills holes.
+    for (const v of template.variables ?? []) {
+      if (v?.name && v.default !== undefined && accumulatedVariables[v.name] === undefined) {
+        accumulatedVariables[v.name] = v.default;
+      }
+    }
     // Reverse map of {{<priorTaskId>_<shape>}} placeholder keys -> shape name, so a
     // consuming task's interpolation references reveal which shapes it ACTUALLY consumes
     // (the empirical input contract). Populated as each task's shape-keyed outputs are
