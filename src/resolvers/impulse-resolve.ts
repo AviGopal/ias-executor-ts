@@ -1,4 +1,4 @@
-/**
+const LLM_ENVELOPE_META = new Set(["model","requested_model","fallback_from","provider","usage","tokens_used","cost","costUsd","cost_usd","finish_reason","stop_reason","latencyMs","latency_ms","duration_ms","cached","degraded"]);/**
  * impulse-resolve resolver — minimal port for templates that need to
  * dispatch arbitrary shape pointers through activity-api.
  *
@@ -53,7 +53,7 @@ function parseSlotContent(raw: unknown): unknown {
   if (typeof raw === "object" && !Array.isArray(raw)) {
     const obj = raw as Record<string, unknown>;
     for (const k of ["text", "content", "completion", "body"]) {
-      if (typeof obj[k] === "string" && Object.keys(obj).length <= 3) {
+      if (typeof obj[k] === "string" && Object.keys(obj).every((key) => key === k || LLM_ENVELOPE_META.has(key))) {
         return parseSlotContent(obj[k]);
       }
     }
