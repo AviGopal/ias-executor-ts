@@ -5,7 +5,7 @@
  *       and §H Phase 2 (forge migration — first consumer).
  *
  * activity-api's POST /v2/activities/execution-traces expects
- * `StoreExecutionTraceRequestSchema` (see repos/metabob-activity-api/src/
+ * `StoreExecutionTraceRequestSchema` (see repos/activity-api/src/
  * models/schemas.ts): snake_case top-level keys, `status: "success" |
  * "failure" | "partial"`, and `execution_trace.tasks` rows carrying
  * actualPrompt/response/inputState/outputState fields.
@@ -42,7 +42,7 @@ export interface TranslatingTraceSinkOptions {
 
 /**
  * Canonical failure types accepted by activity-api's FailureModeSchema
- * (discriminatedUnion in repos/metabob-activity-api/src/models/schemas.ts).
+ * (discriminatedUnion in repos/activity-api/src/models/schemas.ts).
  * Any other type the engine produces (e.g. "execution_error" for unhandled
  * resolver throws) is filtered out at the wire boundary.
  */
