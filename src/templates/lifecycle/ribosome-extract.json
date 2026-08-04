@@ -221,7 +221,7 @@
         "dispatch_write_succeeded"
       ],
       "conditional": {
-        "expression": "{{impulse:quality_assessment}} contains '\"score\"'"
+        "expression": "{{impulse:quality_assessment}} contains 'score'"
       },
       "optionalInputImpulses": [
         "trace_signature",
