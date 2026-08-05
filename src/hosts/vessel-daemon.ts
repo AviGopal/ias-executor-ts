@@ -153,8 +153,51 @@ export class VesselDaemon {
       await this.discoveryLoop.stop();
     }
     if (this.server) {
-      this.server.stop(true);
+      // BOUNDED DRAIN (2026-08-05). This was `this.server.stop(true)`, and in Bun the `true`
+      // means CLOSE EVERY ACTIVE CONNECTION IMMEDIATELY. start() wires this to SIGTERM, so every
+      // vessel on the shared daemon destroyed its in-flight work the instant systemd asked it to
+      // stop. No vessel could drain, and raising a unit's TimeoutStopSec bought nothing because
+      // the force-close happened first.
+      //
+      // That is what made restarts destructive rather than merely disruptive. development-vessel
+      // hosts feature_compose, whose runs take 5-8 MINUTES, and edit-intent goals are excluded
+      // from goal-host's auto-resume (index.ts:10315) because re-running a partially applied edit
+      // could double-apply it — so a killed compose is PERMANENT loss. Measured tonight: the
+      // compose drafting a grounding-evidence edit died mid-run and pull-sync later reaped its
+      // orphan, "REAPING leaked authoring marker patch_with_tools-activity-api.json (pid DEAD)",
+      // after development-vessel restarted under a cutover triggered by an earlier edit. Landed
+      // edits were killing the edits that followed them.
+      //
+      // Order matters. Deregister from discovery FIRST (above) so no new work routes here, then
+      // stop accepting new connections while leaving in-flight requests alive, then wait on the
+      // server's own pendingRequests counter. Force-close stays as the BACKSTOP it should always
+      // have been, not the normal path.
+      //
+      // The budget must sit UNDER the unit's TimeoutStopSec or systemd's SIGKILL lands first and
+      // the drain can never complete — the same by-construction defect as a caller timeout below
+      // its callee's floor. The paired drop-ins set 300s stop against this 240s default, leaving
+      // headroom for deregistration and the backstop. Note the llm-resolver arms run
+      // TimeoutStopSec=15, so VESSEL_DRAIN_MS must be set below that for those units.
+      const server = this.server;
       this.server = undefined;
+      const parsed = Number.parseInt(process.env["VESSEL_DRAIN_MS"] ?? "", 10);
+      const drainMs = Number.isFinite(parsed) && parsed > 0 ? parsed : 240_000;
+      void server.stop(false);
+      const pending = server.pendingRequests;
+      if (pending > 0) {
+        console.log(`[VesselDaemon:${this.config.vesselId}] draining ${pending} in-flight request(s), budget ${Math.round(drainMs / 1000)}s`);
+      }
+      const deadline = Date.now() + drainMs;
+      while (server.pendingRequests > 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      const left = server.pendingRequests;
+      if (left > 0) {
+        console.warn(`[VesselDaemon:${this.config.vesselId}] drain budget exhausted with ${left} request(s) still in flight — force-closing`);
+      } else if (pending > 0) {
+        console.log(`[VesselDaemon:${this.config.vesselId}] drained cleanly`);
+      }
+      await server.stop(true);
     }
     console.log(`[VesselDaemon:${this.config.vesselId}] stopped`);
   }
