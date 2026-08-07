@@ -92,7 +92,19 @@ export class VesselResolver implements Resolver {
     // {{taskid_*}} variable (root cause of the stalled cross-template synthesis
     // loop, 2026-06-19). Prefer content; fall back to the body payload.
     let resolvedContent: unknown = body.content !== undefined ? body.content : body.body;
-        if (body.shape === "llm_completion_result" && resolvedContent && typeof resolvedContent === "object" && typeof (resolvedContent as Record<string, unknown>)["text"] === "string") {
+        // SHAPE-NAME MISMATCH — this unwrap was DEAD on the real envelope. The producer
+        // (development-vessel llm_completion_dispatch) returns shape "llmTextCompletion",
+        // never "llm_completion_result", so the guard never matched and the whole
+        // envelope object was passed through as the impulse content. Downstream any
+        // stringify of a value slot then writes
+        //   {"text":"...","model":"auto","requested_model":"auto"}
+        // into whatever the slot fed — a source file or a proposal artifact. Both were
+        // observed on 2026-08-07. Sibling site: goal-host-vessel's proxy resolver, which
+        // carried the identical literal and is fixed in b164b73; fixing only one of the
+        // two executors would have left the class alive in the other.
+        // Both names accepted: federated peers and older seeds may still emit the legacy
+        // one, and dropping it would trade one dead branch for another.
+        if ((body.shape === "llmTextCompletion" || body.shape === "llm_completion_result") && resolvedContent && typeof resolvedContent === "object" && typeof (resolvedContent as Record<string, unknown>)["text"] === "string") {
           resolvedContent = ((resolvedContent as Record<string, unknown>)["text"] as string).replace(/^```(?:json|JSON)?\s*\n?/i, "").replace(/\n?```\s*$/i, "").trim();
         }
     // Drain Bun's native HTTP buffers — without this the response's mmap'd
