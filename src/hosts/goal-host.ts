@@ -785,6 +785,10 @@ export class GoalHost {
 
     let templateId: string | undefined = opts.targetTemplateId;
     let candidates: RecommendCandidate[] | undefined;
+    // Only fall through to the next ranked candidate when the id came from SELECTION.
+    // An explicitly requested opts.targetTemplateId that does not exist must still throw:
+    // silently running something else than the caller asked for would be worse than failing.
+    let selectedFromRecommendations = false;
 
     if (!templateId) {
       // Build impulse_state_space from the current pool + the about-to-be-seeded
@@ -821,9 +825,45 @@ export class GoalHost {
         );
       }
       templateId = top.template_id;
+      selectedFromRecommendations = true;
     }
 
-    const template = await this.runtime.templateProvider!.getTemplate(templateId);
+    let template = await this.runtime.templateProvider!.getTemplate(templateId);
+    if (!template && selectedFromRecommendations) {
+      // A RECOMMENDED TEMPLATE THAT DOES NOT EXIST USED TO KILL THE DISPATCH (2026-08-09).
+      //
+      // Selection returned 'development-vessel:db_performance_slow_queries'; that id
+      // 404s on activity-api. The throw below then escaped before any trace was written,
+      // and goal-host reported exactly what that costs:
+      //
+      //   reach-patch NOT ATTEMPTED (walk-threw): no executionId on the dispatch record
+      //   — this execution stays ungraded and its arm learns nothing from it
+      //
+      // Which makes it SELF-PERPETUATING. The phantom arm keeps its prior because its
+      // failures are never recorded, so it keeps winning selection and keeps killing
+      // every dispatch that draws it. A broken arm that cannot be observed failing is
+      // exactly the defect this repo already names for scripts nothing invokes: it can
+      // never be trusted when it passes, because it is never seen when it fails.
+      //
+      // The recommendation list is ranked, so the honest response to an unresolvable
+      // top pick is to take the next one — not to abandon a goal the substrate is
+      // otherwise equipped to serve. Each skip is logged loudly so a phantom is visible
+      // as a phantom rather than as a mysteriously dead goal class.
+      for (const cand of candidates ?? []) {
+        if (cand.template_id === templateId) continue;
+        const next = await this.runtime.templateProvider!.getTemplate(cand.template_id);
+        if (next) {
+          console.warn(
+            `[goal-host] recommended template '${templateId}' does not exist (404) — ` +
+              `falling through to next ranked candidate '${cand.template_id}'. ` +
+              `The missing arm still holds a posterior it cannot earn; prune it.`,
+          );
+          templateId = cand.template_id;
+          template = next;
+          break;
+        }
+      }
+    }
     if (!template) {
       throw new Error(
         `GoalHost.runGoal: template '${templateId}' not found in shared catalogue or activity-api`,
