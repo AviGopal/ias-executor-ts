@@ -115,6 +115,14 @@ export class TranslatingTraceSink implements TraceSink {
           response: (t as { response?: string }).response ?? "",
           input_impulse_ids: t.inputImpulseIds ?? [],
           output_impulse_ids: t.outputImpulseIds ?? [],
+          // Per-task SHAPES (2026-08-13): previously omitted, so a composite trace
+          // persisted to the hub with tasks reading ∅ → ∅ — the ribosome's
+          // acquire_trace_signature then had no shape sequence to extract and
+          // synthesize_template produced nothing (no learned-* template, hub 404).
+          // The impulse_ids above are not enough: the ribosome recipe is a
+          // shape→shape sequence. Send them; normalizePersistedTask preserves them.
+          input_shapes: (t as { inputShapes?: string[] }).inputShapes ?? [],
+          output_shapes: t.outputShapes ?? [],
           // Option-B placeholder-provenance: which producer tasks this task
           // consumed via {{placeholders}}, and (for dispatch tasks) the activity
           // it ran. The composition-edge reconcile maps consumer.consumed_from
