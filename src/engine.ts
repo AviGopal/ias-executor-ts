@@ -715,6 +715,7 @@ export class ActivityExecutor {
                 description: task.description,
                 resolverId: task.resolver,
                 resolverTier: "deterministic",
+                resolvedConfig: redactResolvedConfig(task.config),
                 inputImpulseIds: inputImpulses.map((imp) => imp.id),
                 outputImpulseIds: aOut.map((imp) => imp.id),
                 inputShapes: [
@@ -833,6 +834,7 @@ export class ActivityExecutor {
               description: task.description,
               resolverId: task.resolver,
               resolverTier: undefined,
+              resolvedConfig: redactResolvedConfig(task.config),
               inputImpulseIds: inputImpulses.map((imp) => imp.id),
               outputImpulseIds: [],
               inputShapes: [
@@ -918,6 +920,7 @@ export class ActivityExecutor {
               description: task.description,
               resolverId: task.resolver,
               resolverTier: this.runtime.resolvers.get(task.resolver)?.tier,
+              resolvedConfig: redactResolvedConfig(task.config),
               inputImpulseIds: inputImpulses.map((imp) => imp.id),
               outputImpulseIds: [],
               inputShapes: [
@@ -1394,6 +1397,7 @@ export class ActivityExecutor {
           description: inFlightTask.description,
           resolverId: inFlightTask.resolver,
           resolverTier: this.runtime.resolvers.get(inFlightTask.resolver)?.tier,
+          resolvedConfig: redactResolvedConfig(inFlightTask.config),
           inputImpulseIds: inFlightInputs.map((imp) => imp.id),
           outputImpulseIds: [],
           inputShapes: [
