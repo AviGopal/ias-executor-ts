@@ -34,6 +34,7 @@ import { join } from "node:path";
 
 import type { ExecutionTrace } from "../ontology";
 import type { FetchPort, TraceSink } from "../ports";
+import { redactResolvedConfig } from "../engine";
 
 export interface TranslatingTraceSinkOptions {
   /** Inject a fake fetch in tests; defaults to `globalThis.fetch`. */
@@ -129,7 +130,16 @@ export class TranslatingTraceSink implements TraceSink {
           // `invalid URL: undefined`. This sink projects an explicit key set, so a field the
           // engine records is NOT sent unless it is named here — the engine-side recording
           // was inert until this line existed.
-          resolved_config: (t as { resolvedConfig?: Record<string, unknown> }).resolvedConfig,
+          // Redacted AGAIN here, deliberately. The engine already redacts when it records,
+          // so this is a second pass at the trust boundary rather than the only one: this
+          // sink is exported and anything constructing a task record by another path would
+          // otherwise ship credentials over the wire to a cross-network hub. Redaction is
+          // by key name and idempotent, so re-running it on already-redacted values is a
+          // no-op. Caught by validation/scripts/argument-chain-check.test.ts, which put a
+          // live-looking token in a config and watched it reach the wire intact.
+          resolved_config: redactResolvedConfig(
+            (t as { resolvedConfig?: Record<string, unknown> }).resolvedConfig,
+          ),
           // Option-B placeholder-provenance: which producer tasks this task
           // consumed via {{placeholders}}, and (for dispatch tasks) the activity
           // it ran. The composition-edge reconcile maps consumer.consumed_from

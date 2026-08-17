@@ -68,7 +68,14 @@ describe("trace sink — every recorded task field is forwarded or exempted", ()
     // The specific field whose loss made four correct commits inert. Asserted by name rather
     // than left to the general check below, because this one has already been lost once.
     expect(sink).toContain("resolved_config");
-    expect(sink).toMatch(/resolved_config:\s*\(t as \{ resolvedConfig/);
+    // Asserts the field is SOURCED from the record, not the exact expression that does it.
+    // The first version of this pinned `resolved_config: (t as { resolvedConfig` verbatim and
+    // broke the moment the value was wrapped in the redactor — a test that fails on a correct
+    // change is a test that gets deleted rather than heeded.
+    expect(sink).toMatch(/resolved_config:[\s\S]{0,400}?resolvedConfig/);
+    // And that it passes through redaction on the way out: this sink is exported, so it is
+    // the last boundary before credentials would leave the process.
+    expect(sink).toMatch(/resolved_config:\s*redactResolvedConfig\(/);
   });
 
   it("no recorded field is silently dropped by the projection", async () => {
