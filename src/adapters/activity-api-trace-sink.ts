@@ -123,6 +123,13 @@ export class TranslatingTraceSink implements TraceSink {
           // shape→shape sequence. Send them; normalizePersistedTask preserves them.
           input_shapes: (t as { inputShapes?: string[] }).inputShapes ?? [],
           output_shapes: t.outputShapes ?? [],
+          // Per-task RESOLVED CONFIG (2026-08-17): the arguments the resolver was actually
+          // called with. Same reason as the shapes directly above, one step further: without
+          // them an extracted composition replays with `paths[0] … got undefined` and
+          // `invalid URL: undefined`. This sink projects an explicit key set, so a field the
+          // engine records is NOT sent unless it is named here — the engine-side recording
+          // was inert until this line existed.
+          resolved_config: (t as { resolvedConfig?: Record<string, unknown> }).resolvedConfig,
           // Option-B placeholder-provenance: which producer tasks this task
           // consumed via {{placeholders}}, and (for dispatch tasks) the activity
           // it ran. The composition-edge reconcile maps consumer.consumed_from
