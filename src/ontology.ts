@@ -153,6 +153,30 @@ export interface ExecutionTaskRecord {
   description: string;
   resolverId: string;
   resolverTier?: ResolverTier;
+  /**
+   * The config this task's resolver was ACTUALLY called with, after placeholder
+   * interpolation — redacted and size-bounded.
+   *
+   * WHY IT EXISTS. A trace previously recorded which resolver ran and which shapes moved,
+   * and never what the resolver was called with. That single omission is why learned
+   * compositions cannot execute: the ribosome extracts from traces, so with no arguments in
+   * the trace there are none to extract, and measured 2026-08-17 all 98 tasks across the 26
+   * stored learned compositions carry config {type} and nothing else. Replaying one invokes
+   * its resolvers with undefined arguments, which the engine then reports as
+   * "paths[0] must be of type string, got undefined" (fs_read), "invalid URL: undefined"
+   * (http_fetch) and "undefined is not an object (evaluating path.split)"
+   * (json_path_extract). Learned compositions completed 6 of 61 runs; five-hop ones 0 of 12.
+   *
+   * It is the law-8 case at its origin: the fact needed to make a pathway reusable exists
+   * exactly once, at dispatch, and was discarded. First/last-mile adaptation — reuse a
+   * pathway and walk only the difference — is impossible without it, because there is
+   * nothing to rebind.
+   *
+   * Recorded AFTER interpolation deliberately: what matters for reuse is the value the
+   * resolver received, not the template that produced it. Arguments that VARY across the
+   * executions a composition is extracted from are its slots; the rest are constants.
+   */
+  resolvedConfig?: Record<string, unknown>;
   inputImpulseIds: string[];
   outputImpulseIds: string[];
   /** Declared input shapes for this task (template.tasks[i].inputShapes, normalized

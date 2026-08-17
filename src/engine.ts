@@ -39,6 +39,40 @@ const DEFAULT_MODEL_PRICE = { inRate: 3 / 1e6, outRate: 15 / 1e6 };
  * present, preserving byte-identical behaviour for calls that carry no usage
  * (backward-compatible: absent tokens => cost stays 0 as before this seam).
  */
+/**
+ * What a task's resolver was actually called with, made safe to persist in a trace.
+ *
+ * Two constraints, both real rather than defensive. SECRETS: synthesised shell commands and
+ * fetch headers carry tokens, and a trace is read by the ribosome, the drafter and any
+ * operator — so key-looking fields are replaced, not truncated, because a truncated secret is
+ * still a leaked prefix. SIZE: a config can carry a whole document body and traces are already
+ * under retention pressure, so long values are cut with a marker that says so rather than
+ * silently.
+ *
+ * Redacts by KEY NAME and not by value pattern: a value-sniffing redactor fails open on the
+ * secret it does not recognise, and the key name is what the caller controls.
+ */
+export function redactResolvedConfig(config: unknown, maxValueChars = 600): Record<string, unknown> | undefined {
+  if (!config || typeof config !== "object" || Array.isArray(config)) return undefined;
+  const SECRET_KEY = /(secret|token|password|passwd|api[_-]?key|authorization|auth|credential|bearer|cookie|private[_-]?key)/i;
+  const walk = (v: unknown, keyName: string, depth: number): unknown => {
+    if (SECRET_KEY.test(keyName)) return "[redacted]";
+    if (depth > 4) return "[depth-capped]";
+    if (typeof v === "string") {
+      return v.length > maxValueChars ? `${v.slice(0, maxValueChars)}…[+${v.length - maxValueChars} chars]` : v;
+    }
+    if (Array.isArray(v)) return v.slice(0, 20).map((e) => walk(e, keyName, depth + 1));
+    if (v && typeof v === "object") {
+      const out: Record<string, unknown> = {};
+      for (const [k, val] of Object.entries(v as Record<string, unknown>)) out[k] = walk(val, k, depth + 1);
+      return out;
+    }
+    return v;
+  };
+  const result = walk(config, "", 0);
+  return result && typeof result === "object" ? (result as Record<string, unknown>) : undefined;
+}
+
 export function priceLlmUsage(
   model: string | undefined,
   inTokens: number | undefined,
@@ -1136,6 +1170,9 @@ export class ActivityExecutor {
           taskId: task.id,
           description: task.description,
           resolverId: task.resolver,
+          // Recorded AFTER interpolation: the value the resolver received is what a future
+          // replay needs, not the template that produced it. See ExecutionTaskRecord.
+          resolvedConfig: redactResolvedConfig(task.config),
           resolverTier: task.resolver === "compose" || task.resolver === "compose_parallel" ? "deterministic" : this.runtime.resolvers.get(task.resolver)?.tier,
           inputImpulseIds: inputImpulses.map((impulse) => impulse.id),
           outputImpulseIds: storedOutputs.map((impulse) => impulse.id),
