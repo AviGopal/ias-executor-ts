@@ -1,0 +1,6 @@
+[test]
+# Point IAS_TRACE_SPOOL_DIR at a temp dir before any test constructs a trace
+# sink. Without this the default is /workspace/trace-spool — the LIVE retry
+# queue — and running the suite buries real traces behind test debris.
+# See test/setup-spool-isolation.ts for the measurement that motivated it.
+preload = ["./test/setup-spool-isolation.ts"]
