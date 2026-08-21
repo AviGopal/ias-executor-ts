@@ -141,11 +141,35 @@ class BudgetExceededError extends Error {
 export class ActivityExecutor {
   constructor(private readonly runtime: ExecutionRuntime) {}
 
+  /** Output impulse ids the last top-level execution deliberately left in the
+   *  store so its caller could read the content back after execute() returned.
+   *  Reaped at the next top-level entry — see execute() and
+   *  evictExecutionScope(). Tracking the ids (rather than clearing the store)
+   *  keeps caller-seeded impulses, which this class does not own, intact. */
+  private readonly retainedOutputIds = new Set<string>();
+
   async execute(template: ActivityTemplate, options: ExecuteOptions = {}): Promise<ExecutionTrace> {
     const executionId = this.runtime.random.id("exec");
     const startedAt = this.runtime.clock.now();
     const compositionChain = options.compositionChain ?? [];
     const compositionTemplateChain = options.compositionTemplateChain ?? [];
+
+    // Reap the PREVIOUS top-level execution's retained outputs before seeding
+    // this one. evictExecutionScope deliberately leaves those behind so the
+    // caller can read its content back after execute() returns (see there);
+    // reaping here, rather than on the way out, is what bounds that retention
+    // to a single execution instead of letting it accumulate across runs.
+    //
+    // Reap ONLY the ids this class retained. A caller may legitimately seed the
+    // store directly via `runtime.store.put()` instead of `options.impulses`
+    // (several fixtures and the predicate-binding path do exactly that), and
+    // those impulses are not ours to discard — a blanket clear here silently
+    // starved task binding of its inputs.
+    if (!options.parentExecutionId && compositionChain.length === 0) {
+      const store = this.runtime.store as unknown as { impulses?: Map<string, Impulse> };
+      for (const id of this.retainedOutputIds) store.impulses?.delete?.(id);
+      this.retainedOutputIds.clear();
+    }
 
     const seededImpulses = options.impulses ?? [];
     for (const impulse of seededImpulses) {
@@ -1476,14 +1500,39 @@ export class ActivityExecutor {
   }): void {
     try {
       if (opts.isTopLevel) {
-        // Clean slate: every impulse seen during this top-level execution
-        // (seeded inputs, every output of every task, every subscriber-
-        // injected lifecycle impulse, every nested compose output) is no
-        // longer needed in-process. The trace + impulse refs are durable
-        // via traceSink.record() already.
+        // Evict everything EXCEPT this execution's outputs, which the caller
+        // reads back AFTER execute() returns — the goal-host walk does exactly
+        // that at goal-host-vessel/src/index.ts:9380 (`store.get(id)` →
+        // addToPool). A walk step is top-level by this function's own test (no
+        // parentExecutionId, empty compositionChain), so the previous
+        // `store.impulses.clear()` made every one of those reads miss. The walk
+        // fell through to its stub branch and pooled
+        // `{producedBy, executionId}` in place of the produced data,
+        // permanently — addToPool is first-write-wins with no upgrade path — so
+        // step N+1 interpolated metadata where the data belonged and the reach
+        // judge graded the stub as evidence, while the walk logged
+        // `new_shapes=1` for a stub exactly as for real content.
+        //
+        // "The trace + impulse refs are durable via traceSink.record()" was
+        // true and beside the point: the trace stores SHAPES, never bodies, so
+        // durability there does not hand the caller back its content.
+        //
+        // The retained set is bounded to ONE execution's outputs and is reaped
+        // at the next top-level entry (see execute()), so the store cannot grow
+        // across runs — the leak this branch exists to prevent stays fixed.
+        // See test/engine-output-readback.test.ts.
         const store = this.runtime.store as unknown as { impulses: Map<string, Impulse> };
-        if (store.impulses && typeof store.impulses.clear === "function") {
-          store.impulses.clear();
+        if (store.impulses && typeof store.impulses.delete === "function") {
+          for (const id of [...store.impulses.keys()]) {
+            if (opts.outputImpulseIds.has(id)) continue;
+            store.impulses.delete(id);
+          }
+          // Record what we left behind so the next top-level entry can reap
+          // exactly this set — and nothing a caller seeded itself.
+          this.retainedOutputIds.clear();
+          for (const id of opts.outputImpulseIds) {
+            if (store.impulses.has(id)) this.retainedOutputIds.add(id);
+          }
         }
       } else {
         // Nested execution: evict only seeded inputs. Outputs stay live so
