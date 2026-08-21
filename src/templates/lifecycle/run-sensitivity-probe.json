@@ -11,9 +11,7 @@
     "sensitivity",
     "test.audit.loop"
   ],
-  "input_shapes": [
-    "test_registration"
-  ],
+  "input_shapes": [],
   "output_shapes": [
     "sensitivity_evidence"
   ],

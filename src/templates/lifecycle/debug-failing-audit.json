@@ -20,7 +20,7 @@
     "dedupe_key": "{test_registration_id}:{audit_subtype}"
   },
   "input_shapes": [
-    "test_audit_report"
+    "lifecycle:execution:succeeded"
   ],
   "output_shapes": [
     "code_modification_proposal",

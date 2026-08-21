@@ -17,8 +17,7 @@
     }
   },
   "input_shapes": [
-    "test_report",
-    "test_registration"
+    "lifecycle:execution:succeeded"
   ],
   "output_shapes": [
     "test_audit_report"
