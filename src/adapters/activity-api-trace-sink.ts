@@ -42,10 +42,13 @@ export interface TranslatingTraceSinkOptions {
 }
 
 /**
- * Canonical failure types accepted by activity-api's FailureModeSchema
- * (discriminatedUnion in repos/activity-api/src/models/schemas.ts).
- * Any other type the engine produces (e.g. "execution_error" for unhandled
- * resolver throws) is filtered out at the wire boundary.
+ * Failure types this sink forwards INTACT, reason included.
+ *
+ * Named for activity-api's FailureModeSchema, but note that schema is declared and
+ * never applied on any ingest route — the trace-store handler reads
+ * `body.failure_mode?.type` directly and the column is FLEXIBLE option<object>. The
+ * set is therefore a deliberate bound on what this sink puts on the wire, not a
+ * contract imposed from the other side. Anything outside it is still flattened.
  */
 const CANONICAL_FAILURE_TYPES = new Set([
   "verifier_negative",
@@ -53,7 +56,27 @@ const CANONICAL_FAILURE_TYPES = new Set([
   "safety_breach",
   "cascading",
   "user_abort",
+  // `execution_error` is what the engine emits for an unhandled resolver throw
+  // (engine.ts:1407, `{ type: "execution_error", reason: message }`) and it is
+  // NOT an edge case: it is 1,761 of 1,801 failures on the live substrate — 98%.
+  // It was excluded here, so every one of those arrived carrying its type and
+  // nothing else, and the system could not tell an arm that is genuinely bad
+  // from one that happened to run during an infrastructure outage. Blame is
+  // unattributable when 98% of failures are an information-free label.
+  "execution_error",
 ]);
+
+/**
+ * Best-effort one-line description of a failure mode whose `type` this sink does not
+ * recognise. Keeps the diagnostic instead of discarding it, while still bounding what
+ * goes on the wire: only the type and a short reason-ish string, never the whole object.
+ */
+function describeUnknownFailure(fm: { type?: unknown; reason?: unknown }): string {
+  const t = typeof fm?.type === "string" ? fm.type : "unknown";
+  const r = typeof fm?.reason === "string" ? fm.reason : "";
+  const detail = r.length > 0 ? `: ${r}` : "";
+  return `${t}${detail}`.slice(0, 512);
+}
 
 export class TranslatingTraceSink implements TraceSink {
   private readonly fetch: FetchPort;
@@ -177,17 +200,34 @@ export class TranslatingTraceSink implements TraceSink {
       tags: trace.tags,
       parent_execution_id: trace.parentExecutionId,
       composition_chain: trace.compositionChain,
-      // activity-api's FailureModeSchema is a closed discriminatedUnion over
-      // five canonical types: verifier_negative, budget_exhausted,
-      // safety_breach, cascading, user_abort. The engine sometimes emits
-      // `type: "execution_error"` for unhandled resolver throws — useful
-      // internally but rejected by the discriminator. Filter at the wire
-      // boundary so the trace still lands (status: "failure" is the load-
-      // bearing signal); rich error info travels in the per-task error
-      // field instead.
+      // THE REASON MUST SURVIVE THE WIRE. This used to collapse any
+      // non-canonical failure to a bare `{ type: "execution_error" }`, on the
+      // stated grounds that activity-api's FailureModeSchema is a closed
+      // discriminatedUnion that would reject it and that "rich error info
+      // travels in the per-task error field instead".
+      //
+      // Both halves were wrong, measured 2026-08-22:
+      //
+      //   * FailureModeSchema is declared in schemas.ts and applied on NO ingest
+      //     route. The trace-store handler reads `body.failure_mode?.type`
+      //     directly, and the column is `FLEXIBLE TYPE option<object>` with no
+      //     ASSERT. Nothing was ever going to reject the reason.
+      //   * The per-task error field does not survive either. Sampling a failed
+      //     execution's persisted tasks shows no error/reason/message key at all.
+      //
+      // So the reason was destroyed here and nowhere recovered it, on 1,761 of
+      // 1,801 failures. That is why blame cannot be attributed: an outage and a
+      // genuinely bad arm are indistinguishable when both record only a type.
+      //
+      // The guard is kept, not removed — an unrecognised type still flattens, so
+      // a future engine type cannot smuggle an unbounded object onto the wire.
+      // What changed is that `execution_error` is now recognised, so its reason
+      // rides along.
       failure_mode: CANONICAL_FAILURE_TYPES.has(trace.failureMode?.type as string)
         ? trace.failureMode
-        : { type: "execution_error" },
+        : trace.failureMode
+          ? { type: "execution_error", reason: describeUnknownFailure(trace.failureMode) }
+          : { type: "execution_error" },
       // Collect input shapes for state_space_signature derivation. Prefer a top-level
       // `trace.inputShapes` (the decision-time pool snapshot the walk conditioned on) and
       // union with per-task inputShapes. Populating this is what un-starves the
