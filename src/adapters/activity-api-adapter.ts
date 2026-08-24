@@ -72,6 +72,14 @@ export interface RecommendCandidate {
   score?: number;
   /** Raw selection_metadata bag, preserved for callers that want detail. */
   selection_metadata?: Record<string, unknown>;
+  /**
+   * Correlation id minted by /recommend for THIS candidate (activities.ts:7150),
+   * also written to thompson_selection_log. The law-12 join key: carrying it here
+   * lets the host stamp `correlation:<id>` onto the execution the draw produced, so
+   * the selection can be joined to its outcome. Dropping it (as this adapter did)
+   * is why 0 organic executions carried correlation_id.
+   */
+  correlation_id?: string;
 }
 
 export interface RecommendResponse {
@@ -160,6 +168,7 @@ export class ActivityApiAdapter {
           activity_id?: string;
           variant_id?: string;
           selection_metadata?: Record<string, unknown>;
+          correlation_id?: string;
         }>;
         fallback_tier?: string | null;
         decision_record?: Record<string, unknown>;
@@ -173,7 +182,14 @@ export class ActivityApiAdapter {
         if (!id) continue;
         const meta = r.selection_metadata ?? {};
         const score = typeof meta.score === "number" ? meta.score : undefined;
-        recommendations.push({ template_id: id, score, selection_metadata: meta });
+        recommendations.push({
+          template_id: id,
+          score,
+          selection_metadata: meta,
+          ...(typeof r.correlation_id === "string" && r.correlation_id.length > 0
+            ? { correlation_id: r.correlation_id }
+            : {}),
+        });
       }
       return {
         recommendations,

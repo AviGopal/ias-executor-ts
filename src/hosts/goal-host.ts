@@ -870,11 +870,22 @@ export class GoalHost {
       );
     }
 
+    // Law-12 join key: stamp the correlation id of the candidate we ACTUALLY ran
+    // (templateId may have moved to a fallback candidate above) so the execution can
+    // be joined back to the Thompson draw that chose it. activity-api's ingest lifts
+    // `correlation:<id>` off the tags into execution.correlation_id, and the credit
+    // path (posterior-update → recordDecisionOutcome) joins it to thompson_selection_log.
+    // Only present when this run came from a recommend draw that carried the id.
+    const pickedCorrelationId = candidates?.find(
+      (c) => c.template_id === templateId,
+    )?.correlation_id;
+    const correlationTags = pickedCorrelationId ? [`correlation:${pickedCorrelationId}`] : [];
+    const mergedTags = [...(opts.tags ?? []), ...correlationTags];
     const trace = await this.executor.execute(template, {
       variables,
       impulses: [goalImpulse, ...(opts.seedImpulses ?? [])],
       goalContext: { goal: goalText },
-      ...(opts.tags?.length ? { tags: opts.tags } : {}),
+      ...(mergedTags.length ? { tags: mergedTags } : {}),
       ...(opts.parentExecutionId ? { parentExecutionId: opts.parentExecutionId } : {}),
       ...(opts.compositionChain?.length ? { compositionChain: opts.compositionChain } : {}),
       // Record the caller's originally-requested template id (only when the
