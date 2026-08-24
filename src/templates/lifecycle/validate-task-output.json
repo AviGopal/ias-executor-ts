@@ -1,0 +1,41 @@
+{
+  "id": "reliability:validate-task-output-v1",
+  "name": "Validate Task Output",
+  "description": "General post-task validator. Judges whether a completed task's output impulse is present, well-formed, and free of error/truncation, and emits a validation_result with a boolean passed field. Exists so validator-dispatch's backward discoverByShapesQuery (mode=backward, output_shapes=[validation_result]) finds a validator for common content outputs — real validator templates carry their shapes on TASKS (top-level None), which discover-by-shapes cannot see, so no general validator was discoverable and validator-dispatch ran only its first task. This template advertises validation_result at the TOP LEVEL with broad content input_shapes so the backward query matches parent task outputs like bash_output, file, source_code, gitDiff, llm_completion_result, problem_detection.",
+  "category": "infrastructure",
+  "version": "0.1.0",
+  "tags": ["validator", "reliability", "validators.and.failure.modes"],
+  "inputShapes": [
+    "bash_output", "file", "fileContent", "gitDiff", "memo", "source_code",
+    "json_extracted_value", "analysis", "httpResponse", "web_resource",
+    "codeSearchResult", "problem_detection", "code_quality", "conceptDescription",
+    "llm_completion_result", "shellResult", "execution_trace"
+  ],
+  "input_shapes": [
+    "bash_output", "file", "fileContent", "gitDiff", "memo", "source_code",
+    "json_extracted_value", "analysis", "httpResponse", "web_resource",
+    "codeSearchResult", "problem_detection", "code_quality", "conceptDescription",
+    "llm_completion_result", "shellResult", "execution_trace"
+  ],
+  "outputShapes": ["validation_result"],
+  "output_shapes": ["validation_result"],
+  "variables": [],
+  "tasks": [
+    {
+      "id": "validate_output",
+      "description": "Judge whether the parent task's output impulse is a valid, non-empty, well-formed result and emit a validation_result.",
+      "resolver": "llm",
+      "inputShapes": [
+        "bash_output", "file", "fileContent", "gitDiff", "memo", "source_code",
+        "json_extracted_value", "analysis", "httpResponse", "web_resource",
+        "codeSearchResult", "problem_detection", "code_quality", "conceptDescription",
+        "llm_completion_result", "shellResult", "execution_trace"
+      ],
+      "outputShapes": ["validation_result"],
+      "config": {
+        "prompt": "Validate a completed task's output impulse.\n\nOutput type: {{outputType}}\nOutput preview (first 500 chars): {{contentPreview}}\n\nDecide whether the output is a valid, usable result. Fail it if it is: empty/null when content was expected; malformed for its declared type (e.g. invalid JSON for a json shape); visibly truncated or cut off; an error message where data was expected; or binary/garbled where text was expected. Be conservative: if the output is present and plausibly well-formed, pass it.\n\nProduce EXACTLY this JSON (no markdown, no prose):\n{\"passed\": true, \"reason\": \"one-sentence explanation\"}",
+        "maxTokens": 800
+      }
+    }
+  ]
+}

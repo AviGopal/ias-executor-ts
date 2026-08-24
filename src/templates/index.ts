@@ -38,6 +38,7 @@ import type { ActivityTemplate } from "../ontology";
 // ──────────────────────────────────────────────────────────────────────────
 import slotBinding from "./lifecycle/slot-binding.json" with { type: "json" };
 import validatorDispatch from "./lifecycle/validator-dispatch.json" with { type: "json" };
+import validateTaskOutput from "./lifecycle/validate-task-output.json" with { type: "json" };
 import auditTestReport from "./lifecycle/audit-test-report.json" with { type: "json" };
 import runSensitivityProbe from "./lifecycle/run-sensitivity-probe.json" with { type: "json" };
 import debugFailingAudit from "./lifecycle/debug-failing-audit.json" with { type: "json" };
@@ -102,6 +103,7 @@ export const SHARED_TEMPLATES: ActivityTemplate[] = [
   // lifecycle
   cast(slotBinding),
   cast(validatorDispatch),
+  cast(validateTaskOutput),
   cast(auditTestReport),
   cast(runSensitivityProbe),
   cast(debugFailingAudit),
