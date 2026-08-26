@@ -89,8 +89,52 @@ export function makeLLMPromptResolver(llm: LLMPort): Resolver {
       const impulseVars: Record<string, unknown> = {};
       for (const imp of context.inputImpulses) {
         const shape = (imp.metadata as Record<string, unknown> | undefined)?.["shape"] as string | undefined;
-        if (shape && imp.loaded && imp.content != null && !(shape in impulseVars)) {
+        if (!shape || (shape in impulseVars)) continue;
+        if (imp.loaded && imp.content != null) {
           impulseVars[shape] = imp.content;
+          continue;
+        }
+        // Law 8: an unmaterialized (loaded:false) input used to reach the prompt as
+        // NOTHING, silently — the structural root of confabulation-from-starvation.
+        // Try to materialize the lazy pointer via the resolve endpoint before dropping
+        // it. Fail OPEN to the prior skip on any error, but never SILENTLY: emit a loud
+        // lifecycle event so a missing input is observable rather than invisible.
+        let materialized = false;
+        const resolveEndpoint = process.env.IMPULSE_RESOLVE_ENDPOINT ?? process.env.ACTIVITY_API_ENDPOINT;
+        if (resolveEndpoint && imp.pointer) {
+          try {
+            const r = await fetch(`${resolveEndpoint}/v2/impulses/resolve`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", ...(process.env.METABOB_API_KEY ? { Authorization: `ApiKey ${process.env.METABOB_API_KEY}` } : {}) },
+              body: JSON.stringify({ pointer: imp.pointer }),
+              signal: AbortSignal.timeout(10_000),
+            });
+            if (r.ok) {
+              const d = (await r.json().catch(() => null)) as { content?: unknown } | null;
+              // Size cap: don't splice an unbounded blob into a prompt.
+              const asStr = d?.content == null ? "" : (typeof d.content === "string" ? d.content : JSON.stringify(d.content));
+              if (d && d.content != null && asStr.length <= 100_000) {
+                impulseVars[shape] = d.content;
+                materialized = true;
+              }
+            }
+          } catch {
+            /* fail open — fall through to the drop-event below */
+          }
+        }
+        if (!materialized) {
+          await context.eventSink.emit({
+            type: "lifecycle:llm:input-dropped",
+            timestamp: context.clock.now(),
+            data: {
+              executionId: context.executionId,
+              taskId: context.task.id,
+              shape,
+              impulseId: imp.id,
+              reason: imp.loaded ? "content-null" : "unmaterialized",
+              pointerType: imp.pointer?.type,
+            },
+          });
         }
       }
       const prompt = interpolate(template, { ...impulseVars, ...context.variables });

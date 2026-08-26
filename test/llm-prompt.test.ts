@@ -186,4 +186,52 @@ describe("makeLLMPromptResolver", () => {
     expect(ev.data["inputImpulseIds"]).toEqual(["imp_audit"]);
     expect(ev.data["inputShapes"]).toEqual(["myReport"]);
   });
+
+  test("materializes a loaded:false input via the resolve endpoint into the prompt", async () => {
+    const origFetch = globalThis.fetch;
+    const origEnv = process.env.ACTIVITY_API_ENDPOINT;
+    process.env.ACTIVITY_API_ENDPOINT = "http://test-endpoint";
+    globalThis.fetch = (async () => ({ ok: true, json: async () => ({ content: "lazily-materialized" }) })) as unknown as typeof fetch;
+    try {
+      const llm = new CapturingLLM("done");
+      const resolver = makeLLMPromptResolver(llm);
+      const ctx = makeContext({ id: "t", description: "", resolver: null, prompt: { template: "data: {{lazyReport}}" } }, {});
+      (ctx.inputImpulses as unknown[]).push({
+        id: "imp_lazy", pointer: { type: "activityExecutionTrace", executionId: "x" },
+        metadata: { shape: "lazyReport" }, loaded: false,
+      });
+      await resolver.resolve(ctx);
+      expect(llm.lastInput?.prompt).toBe("data: lazily-materialized");
+      expect(ctx.eventSpy.ofType("lifecycle:llm:input-dropped").length).toBe(0);
+    } finally {
+      globalThis.fetch = origFetch;
+      if (origEnv === undefined) delete process.env.ACTIVITY_API_ENDPOINT; else process.env.ACTIVITY_API_ENDPOINT = origEnv;
+    }
+  });
+
+  test("emits lifecycle:llm:input-dropped (never silent) when a loaded:false input cannot be materialized", async () => {
+    const origFetch = globalThis.fetch;
+    const origEnv = process.env.ACTIVITY_API_ENDPOINT;
+    process.env.ACTIVITY_API_ENDPOINT = "http://test-endpoint";
+    globalThis.fetch = (async () => { throw new Error("unreachable"); }) as unknown as typeof fetch;
+    try {
+      const llm = new CapturingLLM("done");
+      const resolver = makeLLMPromptResolver(llm);
+      const ctx = makeContext({ id: "t", description: "", resolver: null, prompt: { template: "data: {{lazyReport}}" } }, {});
+      (ctx.inputImpulses as unknown[]).push({
+        id: "imp_lazy", pointer: { type: "memo" },
+        metadata: { shape: "lazyReport" }, loaded: false,
+      });
+      await resolver.resolve(ctx);
+      // dropped -> placeholder stays literal (NOT silently empty), and a drop event fired
+      expect(llm.lastInput?.prompt).toBe("data: {{lazyReport}}");
+      const dropped = ctx.eventSpy.ofType("lifecycle:llm:input-dropped");
+      expect(dropped.length).toBe(1);
+      expect(dropped[0]!.data["shape"]).toBe("lazyReport");
+      expect(dropped[0]!.data["reason"]).toBe("unmaterialized");
+    } finally {
+      globalThis.fetch = origFetch;
+      if (origEnv === undefined) delete process.env.ACTIVITY_API_ENDPOINT; else process.env.ACTIVITY_API_ENDPOINT = origEnv;
+    }
+  });
 });
