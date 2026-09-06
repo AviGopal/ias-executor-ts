@@ -28,6 +28,39 @@ export class ActivityApiTemplateProvider implements TemplateProvider {
     const raw = await res.json() as RawTemplate;
     try { await res.body?.cancel(); } catch { /* swallow */ }
     if (!raw?.id) return null;
+
+    // A RETIRED TEMPLATE MUST NOT LOAD FOR EXECUTION (2026-09-06).
+    //
+    // Every retirement mechanism in this architecture is SELECTION-scoped. The
+    // promote/prune sweep and the recommend path both filter on
+    // `proposed = true AND (retired = false OR retired IS NONE) AND
+    // (deprecated = false OR deprecated IS NONE)`. But the by-id route this
+    // provider calls is `SELECT * FROM activity WHERE meta::id(id) = $variant_id`
+    // with no such filter — so a caller that PINS a template id bypasses
+    // selection and, with it, every retirement decision ever made about that row.
+    //
+    // Demonstrated rather than argued: a template flagged deprecated AND retired
+    // was pin-dispatched and executed normally (exec_0hgne02w), returning 200
+    // from this very route. Deprecating a bad arm was therefore unenforceable —
+    // the flag was advisory to selection and invisible to execution.
+    //
+    // Blast radius measured before landing: of 6,828 executions in the preceding
+    // two days across 416 distinct activities, 16 (0.2%) ran on a retired or
+    // deprecated template, spread over 4 ids — two of which were the probes
+    // written to establish this defect. Refusing them is the intent of the flag.
+    //
+    // Returns null rather than throwing: null is this method's existing
+    // not-found contract, so callers already handle it, and an unloadable
+    // template surfaces the same way a missing one does.
+    if (raw["retired"] === true || raw["deprecated"] === true) {
+      console.warn(
+        `[ActivityApiTemplateProvider] refusing to load ${raw.id} for execution: ` +
+          `retired=${String(raw["retired"])} deprecated=${String(raw["deprecated"])}. ` +
+          `Retirement is selection-scoped; a pinned id would otherwise bypass it.`,
+      );
+      return null;
+    }
+
     return mapTemplate(raw);
   }
 }

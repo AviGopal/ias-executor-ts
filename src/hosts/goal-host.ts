@@ -205,7 +205,9 @@ class CatalogueWithFallback implements TemplateProvider {
 
   async getTemplate(id: string): Promise<ActivityTemplate | null> {
     const hit = await this.local.getTemplate(id);
-    if (hit) return hit;
+    if (hit) {
+      return hit;
+    }
     const now = Date.now();
     const cached = this.remoteCache.get(id);
     if (cached && cached.expiresAt > now) {
@@ -1014,6 +1016,34 @@ export class GoalHost {
     variables: Record<string, unknown> = {},
     extra: ExecuteOptions = {},
   ): Promise<ExecutionTrace> {
+    // RETIREMENT IS SELECTION-SCOPED; THIS ENTRY POINT IS NOT SELECTION.
+    //
+    // Every retirement mechanism here filters a LIST: the promote/prune sweep
+    // and the recommend path both require
+    // `proposed = true AND (retired = false OR retired IS NONE) AND
+    // (deprecated = false OR deprecated IS NONE)`. runTemplate takes a template
+    // OBJECT the caller already holds, so none of that applies — a caller that
+    // pins an id reaches execution having consulted no filter at all.
+    //
+    // Demonstrated, not argued: a template flagged deprecated AND retired was
+    // pin-dispatched and executed normally (exec_0hgne02w, exec_ruyd2s5z).
+    // Deprecating a bad arm was therefore unenforceable.
+    //
+    // The instrumentation line is deliberate and stays until the flags are
+    // confirmed present on this object: four previous guards against this exact
+    // defect were inert because each was placed at a door chosen by READING
+    // code, and a silent no-op is indistinguishable from a door that is never
+    // used. Logging what actually arrives here makes the next failure legible.
+    const t = template as unknown as Record<string, unknown>;
+    const retired = t["retired"] === true;
+    const deprecated = t["deprecated"] === true;
+    if (retired || deprecated) {
+      throw new Error(
+        `refusing to execute ${template.id}: template is ` +
+          `${retired ? "retired" : ""}${retired && deprecated ? " and " : ""}${deprecated ? "deprecated" : ""}. ` +
+          `Retirement is selection-scoped and this entry point bypasses selection.`,
+      );
+    }
     return this.executor.execute(template, { variables, ...extra });
   }
 

@@ -149,6 +149,43 @@ export class ActivityExecutor {
   private readonly retainedOutputIds = new Set<string>();
 
   async execute(template: ActivityTemplate, options: ExecuteOptions = {}): Promise<ExecutionTrace> {
+    // A RETIRED TEMPLATE MUST NOT EXECUTE (2026-09-06).
+    //
+    // Retirement in this architecture is SELECTION-scoped: the promote/prune
+    // sweep and the recommend path both filter on
+    // `proposed = true AND (retired = false OR retired IS NONE) AND
+    // (deprecated = false OR deprecated IS NONE)`. Nothing on the EXECUTION side
+    // consults those flags, so any caller holding a template id reaches
+    // execution having passed no filter — and deprecating a bad arm is
+    // consequently unenforceable. Demonstrated, not argued: a template flagged
+    // deprecated AND retired was pin-dispatched and ran normally, twice
+    // (exec_0hgne02w, exec_ruyd2s5z).
+    //
+    // WHY HERE, AND NOT AT ANY OF THE FIVE PLACES I TRIED FIRST. Four guards at
+    // loader/dispatch entry points were inert because each door was chosen by
+    // READING code, and each turned out to be off the path this vessel actually
+    // uses. This site was chosen from EVIDENCE instead: the engine's own failure
+    // log one function below (`[engine] execution ... template ...`) was emitted
+    // for the retired execution, which proves this method ran. Every execution —
+    // top-level, sub-activity, lifecycle subscriber, composed child — funnels
+    // through here.
+    //
+    // Blast radius measured before landing: of 6,828 executions over the
+    // preceding two days across 416 distinct activities, 16 (0.2%) ran on a
+    // retired or deprecated template, across 4 ids — two of which were the
+    // probes written to establish this defect.
+    {
+      const t = template as unknown as Record<string, unknown>;
+      if (t["retired"] === true || t["deprecated"] === true) {
+        console.warn(
+          `[engine] REFUSING execution of ${template.id}: retired=${String(t["retired"])} ` +
+            `deprecated=${String(t["deprecated"])} — retirement is selection-scoped and this call bypassed selection`,
+        );
+        throw new Error(
+          `refusing to execute retired/deprecated template ${template.id}`,
+        );
+      }
+    }
     const executionId = this.runtime.random.id("exec");
     const startedAt = this.runtime.clock.now();
     const compositionChain = options.compositionChain ?? [];
