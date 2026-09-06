@@ -531,7 +531,16 @@ export class GoalHost {
 
   private readonly auditDepthCap: number;
 
+  // Retained so the bypass guard in runGoal can read a pinned template's LEARNED
+  // posterior before executing it. The adapter keeps its own private copies and
+  // exposes no metrics accessor, so these are held here rather than reaching
+  // through it.
+  private readonly activityApiEndpointForPosterior: string;
+  private readonly apiKeyForPosterior: string;
+
   constructor(options: GoalHostOptions) {
+    this.activityApiEndpointForPosterior = options.activityApiEndpoint;
+    this.apiKeyForPosterior = options.apiKey;
     this.fs = new BunFileSystemAdapter();
     this.proc = new BunProcessAdapter();
     this.fetchAdapter = new FetchAdapter();
@@ -881,6 +890,45 @@ export class GoalHost {
     )?.correlation_id;
     const correlationTags = pickedCorrelationId ? [`correlation:${pickedCorrelationId}`] : [];
     const mergedTags = [...(opts.tags ?? []), ...correlationTags];
+
+    // PINNING A TARGET MUST NOT ALSO SKIP THE EVIDENCE (2026-09-06).
+    //
+    // When a caller pins opts.targetTemplateId the recommender is bypassed
+    // entirely — that is deliberate and stays, because it stops selection from
+    // misrouting a goal to an unrelated high-alpha template. But bypassing the
+    // CHOICE and bypassing the RECORD are separable, and until now they were the
+    // same act: nothing on this path ever asked whether the pinned template works.
+    //
+    // Measured cost of that on one arm: development-vessel:scaffold-and-publish-vessel
+    // sat at thompson_alpha 6.05 against thompson_beta 8601.67 — one success in
+    // 7997 executions, every one of its 2340 trace rows a failure, not deprecated —
+    // and it kept being dispatched here, twice more during a thirty-minute
+    // observation window, because the component whose whole job is to weigh what
+    // happened last time was never consulted.
+    //
+    // PROCEEDS ON ABSENCE OF EVIDENCE, deliberately. No match, transport failure,
+    // unparseable body, missing or non-finite metric, or fewer than 100 combined
+    // observations all fall through and execute as before. A template with no
+    // history has to stay reachable or this becomes a permanent block on anything
+    // new — the failure shape of a threshold that can never be met.
+    //
+    // Control run against every pinned target in the fleet before this landed
+    // (22 templates: boredom's AUTONOMOUS_GOAL_TARGET_TEMPLATES plus the direct
+    // callers): exactly ONE declines. The nearest healthy template is
+    // mitosis-tick at 0.0883, roughly 9x above the cutoff; the rest sit at
+    // 0.63-0.86 or below the evidence floor.
+    if (opts.targetTemplateId) {
+      const verdict = await this.pinnedTargetPosteriorVerdict(opts.targetTemplateId);
+      if (verdict) {
+        throw new Error(
+          `refusing pinned target ${opts.targetTemplateId}: learned posterior is decisively negative ` +
+            `(alpha=${verdict.alpha.toFixed(2)} beta=${verdict.beta.toFixed(2)} ` +
+            `rate=${verdict.rate.toExponential(2)} over ${Math.round(verdict.alpha + verdict.beta)} observations). ` +
+            `Pinning a target bypasses selection, not the evidence.`,
+        );
+      }
+    }
+
     const trace = await this.executor.execute(template, {
       variables,
       impulses: [goalImpulse, ...(opts.seedImpulses ?? [])],
@@ -898,6 +946,62 @@ export class GoalHost {
     });
 
     return { trace, selectedTemplateId: templateId, recommendCandidates: candidates };
+  }
+
+  /**
+   * Read a pinned template's LEARNED posterior and report whether it is
+   * decisively negative. Returns null — meaning "proceed" — for every condition
+   * other than a confident negative, including any failure to obtain the record.
+   *
+   * BY-ID, NOT A LIST SCAN. `/v2/activities/templates?limit=N` reports a total in
+   * the thousands but caps the page at 100 and ignores a larger limit, so a scan
+   * silently misses and this check would fail open forever while typechecking
+   * clean. Two earlier attempts at this same guard were inert, one of them for
+   * exactly that reason.
+   *
+   * READS metrics.* AND NOT THE TOP LEVEL. The template record carries a
+   * top-level `thompson_alpha` that is the static prior and is literally 1 on the
+   * very record this was built against; reading it would make the check pass
+   * unconditionally.
+   */
+  private async pinnedTargetPosteriorVerdict(
+    templateId: string,
+  ): Promise<{ alpha: number; beta: number; rate: number } | null> {
+    try {
+      const base = this.activityApiEndpointForPosterior;
+      if (!base) return null;
+      const res = await fetch(
+        `${base}/v2/activities/templates/${encodeURIComponent(templateId)}`,
+        {
+          headers: {
+            "Content-Type": "application/json",
+            ...(this.apiKeyForPosterior
+              ? { Authorization: `ApiKey ${this.apiKeyForPosterior}` }
+              : {}),
+          },
+          signal: AbortSignal.timeout(5_000),
+        },
+      );
+      if (!res.ok) return null;
+      const body = (await res.json()) as {
+        metrics?: { thompson_alpha?: number; thompson_beta?: number };
+      };
+      const alpha = body.metrics?.thompson_alpha;
+      const beta = body.metrics?.thompson_beta;
+      if (!Number.isFinite(alpha) || !Number.isFinite(beta)) return null;
+      const a = alpha as number;
+      const b = beta as number;
+      const total = a + b;
+      // Evidence floor: below this the arm has not been observed enough to refuse.
+      if (total < 100) return null;
+      const rate = a / total;
+      if (rate >= 0.01) return null;
+      return { alpha: a, beta: b, rate };
+    } catch {
+      // Transport failure, timeout, bad JSON — proceed. Never let this check
+      // become a new way for a dispatch to die.
+      return null;
+    }
   }
 
   /**
