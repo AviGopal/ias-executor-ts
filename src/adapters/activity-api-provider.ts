@@ -21,6 +21,7 @@ export class ActivityApiTemplateProvider implements TemplateProvider {
       headers: { Authorization: `ApiKey ${this.apiKey}` },
     });
     if (!res.ok) {
+      console.warn(`[ActivityApiTemplateProvider] getTemplate(${templateId}) ${res.status >= 500 ? "server" : "client"} error ${res.status} — returning null`);
       try { await res.body?.cancel(); } catch { /* swallow */ }
       return null;
     }
