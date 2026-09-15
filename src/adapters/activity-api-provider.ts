@@ -231,6 +231,19 @@ function mapTemplate(raw: RawTemplate): ActivityTemplate {
 }
 
 function mapTask(raw: RawTask): import("../ontology").ActivityTask {
+  function interpolateBoundValues(config: Record<string, unknown>): Record<string, unknown> {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(config)) {
+      if (typeof value === 'string') {
+        result[key] = value.replace(/\{\{(.*?)\}\}/g, (_, name) => {
+          return String((raw as Record<string, unknown>)[name.trim()] ?? '');
+        });
+      } else {
+        result[key] = value;
+      }
+    }
+    return result;
+  }
   // 2026-05-20: when raw.prompt is present, default resolver to "llm-prompt"
   // (NOT "llm") — the llm-prompt resolver (src/resolvers/llm-prompt.ts)
   // reads task.prompt.template and interpolates {{var}} placeholders, which
@@ -270,6 +283,11 @@ function mapTask(raw: RawTask): import("../ontology").ActivityTask {
   if (subActivityId !== undefined) out.subActivityId = subActivityId;
   if (raw.prompt) {
     (out as { prompt?: unknown }).prompt = raw.prompt;
+  }
+  
+  // Interpolate bound values in non-LLM task config fields (gap 'the-executor-does-not-resolve-bound-values-in-non-llm-task-configs')
+  if (raw.config && resolver !== 'llm-prompt') {
+    out.config = interpolateBoundValues(raw.config);
   }
 
   // Pass through any other catalogue-canonical extras (validation,
