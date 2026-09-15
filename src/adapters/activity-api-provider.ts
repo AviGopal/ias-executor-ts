@@ -273,7 +273,7 @@ function mapTask(raw: RawTask): import("../ontology").ActivityTask {
     id: raw.id ?? "",
     description: raw.description ?? "",
     resolver,
-    config: raw.config as Record<string, unknown> | undefined,
+    config: raw.config ? interpolateBoundValues(raw.config) : undefined,
   };
   if (inputShapes !== undefined) out.inputShapes = inputShapes;
   if (outputShapes !== undefined) out.outputShapes = outputShapes;
