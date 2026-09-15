@@ -244,6 +244,9 @@ function mapTask(raw: RawTask): import("../ontology").ActivityTask {
     }
     return result;
   }
+
+  const interpolatedConfig = raw.config ? interpolateBoundValues(raw.config) : undefined;
+
   // 2026-05-20: when raw.prompt is present, default resolver to "llm-prompt"
   // (NOT "llm") — the llm-prompt resolver (src/resolvers/llm-prompt.ts)
   // reads task.prompt.template and interpolates {{var}} placeholders, which
@@ -273,7 +276,7 @@ function mapTask(raw: RawTask): import("../ontology").ActivityTask {
     id: raw.id ?? "",
     description: raw.description ?? "",
     resolver,
-    config: raw.config ? interpolateBoundValues(raw.config) : undefined,
+    config: interpolatedConfig,
   };
   if (inputShapes !== undefined) out.inputShapes = inputShapes;
   if (outputShapes !== undefined) out.outputShapes = outputShapes;
