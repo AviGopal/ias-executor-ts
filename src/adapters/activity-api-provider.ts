@@ -1,4 +1,7 @@
 import type { ActivityTemplate, ExecutionTrace } from "../ontology";
+function interpolateBoundValues(config: Record<string, unknown>): Record<string, unknown> {
+    return config;
+  }
 import type { TemplateProvider, TraceSink, RecommendationProvider } from "../ports";
 
 /**
