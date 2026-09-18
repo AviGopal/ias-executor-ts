@@ -42,9 +42,10 @@ export class HttpDiscoveryAdapter implements DiscoveryPort {
       new URL(resolveEndpoint);
       return resolveEndpoint;
     } catch {
-      // If it's not an absolute URL and not a bare path, it's invalid.
-      // This should ideally not happen if vessels register valid URLs.
-      throw new Error(`Invalid resolve endpoint for vessel ${vesselId}: ${resolveEndpoint}. Must be an absolute URL or a bare path.`);
+      // If it's not an absolute URL and not a bare path, return an empty string
+      // so the caller's skip-empty logic drops it - one bad row shouldn't abort
+      // the whole lookup when other valid producers exist for this shape.
+      return "";
     }
   }
 
@@ -105,7 +106,15 @@ export class HttpDiscoveryAdapter implements DiscoveryPort {
     const re = String(v["resolve_endpoint"] ?? "");
     if (/^https?:\/\//.test(re)) return re;
     const ep = String(v["endpoint"] ?? "");
-    if (re && ep) return ep.replace(/\/+$/, "") + (re.startsWith("/") ? re : "/" + re);
+    if (re && ep) {
+      try {
+        const url = new URL(ep);
+        url.pathname = re.startsWith("/") ? re : "/" + re;
+        return url.toString();
+      } catch {
+        return "";
+      }
+    }
     return "";
   }
 
