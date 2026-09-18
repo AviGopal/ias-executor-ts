@@ -12,6 +12,14 @@ interface CacheEntry {
  * are immediately visible to subsequent lookupShapeProducers calls.
  */
 export class HttpDiscoveryAdapter implements DiscoveryPort {
+  private ensureAbsoluteUrl(endpoint: string): string {
+    try {
+      new URL(endpoint);
+      return endpoint;
+    } catch {
+      throw new Error(`Invalid endpoint URL: ${endpoint}. Must be an absolute URL including protocol`);
+    }
+  }
   private readonly cache = new Map<string, CacheEntry>();
   private readonly cacheTtlMs: number;
   private readonly apiKey?: string;
@@ -21,6 +29,7 @@ export class HttpDiscoveryAdapter implements DiscoveryPort {
     private readonly discoveryEndpoint: string,
     opts: { cacheTtlMs?: number; apiKey?: string } = {},
   ) {
+    this.ensureAbsoluteUrl(this.discoveryEndpoint);
     this.cacheTtlMs = opts.cacheTtlMs ?? 30_000;
     this.apiKey = opts.apiKey;
   }
@@ -50,7 +59,7 @@ export class HttpDiscoveryAdapter implements DiscoveryPort {
     const rows = data.content?.vessels ?? data.vessels ?? [];
     const results: VesselSummary[] = rows.map((v) => ({
       id: String(v["id"] ?? v["vesselId"] ?? ""),
-      resolveEndpoint: String(v["resolve_endpoint"] ?? ""),
+      resolveEndpoint: this.ensureAbsoluteUrl(String(v["resolve_endpoint"] ?? "")),
       healthScore: typeof v["health_score"] === "number" ? v["health_score"] : undefined,
       orgId: typeof v["org_id"] === "string" ? v["org_id"] : undefined,
     }));
