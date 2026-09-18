@@ -73,13 +73,40 @@ export class HttpDiscoveryAdapter implements DiscoveryPort {
     const rows = data.content?.vessels ?? data.vessels ?? [];
     const results: VesselSummary[] = rows.map((v) => ({
       id: String(v["id"] ?? v["vesselId"] ?? ""),
-      resolveEndpoint: String(v["resolve_endpoint"] ?? ""),
+      resolveEndpoint: this.buildResolveUrl(v),
       healthScore: typeof v["health_score"] === "number" ? v["health_score"] : undefined,
       orgId: typeof v["org_id"] === "string" ? v["org_id"] : undefined,
     }));
 
     this.cache.set(cacheKey, { results, expiresAt: Date.now() + this.cacheTtlMs });
     return results;
+  }
+
+
+  /**
+   * Build a fetchable resolve URL from a registry row (mirrors the goal-host
+   * walk routeFor helper). Three row kinds arrive here:
+   *  1. libp2p facade rows (protocol "libp2p" + circuit multiaddr) are not
+   *     HTTP-dialable at all — route them through the local federation
+   *     transport egress with the multiaddr as ?target=.
+   *  2. Absolute http(s) resolve_endpoints pass through verbatim.
+   *  3. Bare paths join onto the row endpoint field.
+   * Never throws: an unusable row degrades to "" so the caller existing
+   * skip-empty pick loop drops it — one malformed row must not abort the
+   * whole lookup for a shape that has other producers.
+   */
+  private buildResolveUrl(v: Record<string, unknown>): string {
+    const ma = v["libp2p_multiaddr"];
+    if (v["protocol"] === "libp2p" && Array.isArray(ma) && typeof ma[0] === "string" && ma[0]) {
+      const egress = process.env["FED_TRANSPORT_EGRESS"] ?? "http://127.0.0.1:8401";
+      const vid = String(v["id"] ?? v["vesselId"] ?? "");
+      return egress.replace(/\/+$/, "") + "/egress/resolve?target=" + encodeURIComponent(ma[0]) + (vid ? "&vessel=" + encodeURIComponent(vid) : "");
+    }
+    const re = String(v["resolve_endpoint"] ?? "");
+    if (/^https?:\/\//.test(re)) return re;
+    const ep = String(v["endpoint"] ?? "");
+    if (re && ep) return ep.replace(/\/+$/, "") + (re.startsWith("/") ? re : "/" + re);
+    return "";
   }
 
   async registerVessel(payload: VesselRegistration): Promise<void> {
