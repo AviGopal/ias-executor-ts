@@ -25,6 +25,29 @@ export class HttpDiscoveryAdapter implements DiscoveryPort {
     this.apiKey = opts.apiKey;
   }
 
+  // This resolves the vessel's internal resolve_endpoint. If it's a bare path,
+  // it's treated as relative to the discovery service's own transport egress.
+  // e.g. for libp2p vessels, this means the discovery service acts as a proxy.
+  private resolveVesselEndpoint(vesselId: string, resolveEndpoint: string): string {
+    if (resolveEndpoint.startsWith("/")) {
+      // This is a bare path; resolve it against the discovery endpoint.
+      // Vessels may register bare paths, for example libp2p vessels can use
+      // the discovery service's HTTP proxy for transport egress.
+      const url = new URL(this.discoveryEndpoint);
+      url.pathname = `/vessels/${vesselId}/resolve`;
+      url.searchParams.set("target", resolveEndpoint);
+      return url.toString();
+    }
+    try {
+      new URL(resolveEndpoint);
+      return resolveEndpoint;
+    } catch {
+      // If it's not an absolute URL and not a bare path, it's invalid.
+      // This should ideally not happen if vessels register valid URLs.
+      throw new Error(`Invalid resolve endpoint for vessel ${vesselId}: ${resolveEndpoint}. Must be an absolute URL or a bare path.`);
+    }
+  }
+
   async lookupShapeProducers(shape: string, orgIds?: string[]): Promise<VesselSummary[]> {
     const cacheKey = `${shape}:${(orgIds ?? []).sort().join(",")}`;
     const cached = this.cache.get(cacheKey);
