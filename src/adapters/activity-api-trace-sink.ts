@@ -90,6 +90,14 @@ export class TranslatingTraceSink implements TraceSink {
       request: (input, init) => globalThis.fetch(input, init),
     };
     this.maybeStartSpoolReplay();
+    // Start a periodic background scan to replay any spooled traces written after construction.
+    // A one-shot replay risks missing files created later; a short interval keeps it draining.
+    try {
+      const iv = setInterval(() => { this.maybeStartSpoolReplay(); }, 5000) as unknown as { unref?: () => void };
+      iv.unref?.();
+    } catch {
+      // Environments without Node timers (e.g. some browsers) won't expose unref; ignore.
+    }
   }
 
   async record(trace: ExecutionTrace): Promise<void> {
