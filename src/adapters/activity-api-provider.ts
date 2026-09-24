@@ -293,7 +293,32 @@ function mapTask(raw: RawTask): import("../ontology").ActivityTask {
   
   // Interpolate bound values in non-LLM task config fields (gap 'the-executor-does-not-resolve-bound-values-in-non-llm-task-configs')
   if (raw.config && resolver !== 'llm-prompt') {
-    out.config = interpolateBoundValues(raw.config);
+    // Interpolate only known task-bound fields; leave unknown {{...}} literals intact.
+    const interpolateBoundValues = (config: Record<string, unknown>): Record<string, unknown> => {
+      const interpolateString = (s: string): string =>
+        s.replace(/\{\{(.*?)\}\}/g, (match: string, name: string) => {
+          const key = name.trim();
+          if (Object.prototype.hasOwnProperty.call(raw as Record<string, unknown>, key)) {
+            const v = (raw as Record<string, unknown>)[key];
+            return v === undefined || v === null ? match : String(v);
+          }
+          return match;
+        });
+      const walk = (val: unknown): unknown => {
+        if (typeof val === "string") return interpolateString(val);
+        if (Array.isArray(val)) return val.map((x) => walk(x));
+        if (val && typeof val === "object") {
+          const out: Record<string, unknown> = {};
+          for (const [k, v] of Object.entries(val as Record<string, unknown>)) {
+            out[k] = walk(v) as unknown;
+          }
+          return out;
+        }
+        return val;
+      };
+      return walk(config) as Record<string, unknown>;
+    };
+    out.config = interpolateBoundValues(raw.config as Record<string, unknown>);
   }
 
   // Pass through any other catalogue-canonical extras (validation,
