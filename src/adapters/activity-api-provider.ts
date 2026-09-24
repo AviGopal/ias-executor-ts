@@ -238,8 +238,9 @@ function mapTask(raw: RawTask): import("../ontology").ActivityTask {
     const result: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(config)) {
       if (typeof value === 'string') {
-        result[key] = value.replace(/\{\{(.*?)\}\}/g, (_, name) => {
-          return String((raw as Record<string, unknown>)[name.trim()] ?? '');
+        result[key] = value.replace(/\{\{(.*?)\}\}/g, (m, name) => {
+          const v = (raw as Record<string, unknown>)[name.trim()];
+          return v === undefined || v === null ? m : String(v);
         });
       } else {
         result[key] = value;
