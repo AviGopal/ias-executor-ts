@@ -29,7 +29,7 @@
  * and return; execution never aborts due to trace-sink failure.
  */
 
-import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, unlink, writeFile, rename } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { ExecutionTrace } from "../ontology";
@@ -81,6 +81,8 @@ function describeUnknownFailure(fm: { type?: unknown; reason?: unknown }): strin
 export class TranslatingTraceSink implements TraceSink {
   private readonly fetch: FetchPort;
 
+  private replayInFlight = false;
+
   constructor(
     private readonly endpoint: string,
     private readonly apiKey: string,
@@ -89,14 +91,120 @@ export class TranslatingTraceSink implements TraceSink {
     this.fetch = options.fetch ?? {
       request: (input, init) => globalThis.fetch(input, init),
     };
-    this.maybeStartSpoolReplay();
+    this._maybeStartSpoolReplayInternal();
     // Start a periodic background scan to replay any spooled traces written after construction.
     // A one-shot replay risks missing files created later; a short interval keeps it draining.
     try {
-      const iv = setInterval(() => { this.maybeStartSpoolReplay(); }, 5000) as unknown as { unref?: () => void };
+      const iv = setInterval(() => { this._maybeStartSpoolReplayInternal(); }, 5000) as unknown as { unref?: () => void };
       iv.unref?.();
     } catch {
       // Environments without Node timers (e.g. some browsers) won't expose unref; ignore.
+    }
+  }
+
+  // Start a single bounded, non-overlapping spool replay pass if idle.
+  private _maybeStartSpoolReplayInternal(): void {
+    if (this.replayInFlight) return;
+    this.replayInFlight = true;
+    void this._replaySpoolOnce().finally(() => { this.replayInFlight = false; });
+  }
+
+  // One pass: oldest-first, bounded batch, delete on 2xx, keep on 5xx/network/401/403, quarantine other 4xx or malformed.
+  private async _replaySpoolOnce(): Promise<void> {
+    try {
+      const dir = this.spoolDir();
+      await mkdir(dir, { recursive: true });
+      let names = await readdir(dir);
+      names = names.filter((n) => n !== "quarantine");
+      if (names.length === 0) return;
+      names.sort(); // oldest-first if filenames include timestamp prefix
+      const batchEnv = typeof process !== "undefined" ? process.env?.IAS_TRACE_SPOOL_DRAIN_BATCH : undefined;
+      const parsed = batchEnv ? parseInt(batchEnv, 10) : NaN;
+      const limit = Number.isFinite(parsed) && parsed > 0 ? parsed : 100;
+
+      const url = this.endpoint.replace(/\/$/, "") + "/v2/activities/execution-traces";
+      let sent = 0, kept = 0, quarantined = 0;
+
+      for (const name of names.slice(0, limit)) {
+        const p = join(dir, name);
+        let content: string;
+        try {
+          content = await readFile(p, "utf-8");
+        } catch {
+          // unreadable → quarantine
+          quarantined++;
+          await this._quarantineFile(p, name).catch(() => {});
+          continue;
+        }
+
+        // Minimal sanity check: JSON and has execution_id (shape this sink writes).
+        try {
+          const obj = JSON.parse(content) as Record<string, unknown>;
+          if (typeof obj?.["execution_id"] === "undefined") {
+            quarantined++;
+            await this._quarantineFile(p, name).catch(() => {});
+            continue;
+          }
+        } catch {
+          quarantined++;
+          await this._quarantineFile(p, name).catch(() => {});
+          continue;
+        }
+
+        try {
+          const res = await this.fetch.request(url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `ApiKey ${this.apiKey}`,
+            },
+            body: content,
+          });
+          if (res.ok) {
+            try { await res.body?.cancel(); } catch { /* swallow */ }
+            await unlink(p).catch(() => {});
+            sent++;
+          } else {
+            const status = res.status ?? 0;
+            try { await res.body?.cancel(); } catch { /* swallow */ }
+            if (status >= 500 || status === 401 || status === 403 || status === 0) {
+              // keep for retry on server errors or auth outages
+              kept++;
+            } else if (status >= 400) {
+              // malformed forever → quarantine
+              quarantined++;
+              await this._quarantineFile(p, name).catch(() => {});
+            } else {
+              kept++;
+            }
+          }
+        } catch {
+          // network/transport error — keep
+          kept++;
+        }
+      }
+
+      // Count remaining (exclude quarantine dir itself)
+      let remaining = 0;
+      try { remaining = (await readdir(dir)).filter((n) => n !== "quarantine").length; } catch { /* swallow */ }
+      console.log(`[TranslatingTraceSink] SPOOL REPLAY sent=${sent} kept=${kept} quarantined=${quarantined} remaining=${remaining}`);
+    } catch {
+      // swallow — replay is best-effort and must never throw
+    }
+  }
+
+  private async _quarantineFile(p: string, name: string): Promise<void> {
+    const qdir = join(this.spoolDir(), "quarantine");
+    await mkdir(qdir, { recursive: true });
+    const qpath = join(qdir, name);
+    try {
+      await rename(p, qpath);
+    } catch {
+      try {
+        const data = await readFile(p);
+        await writeFile(qpath, data);
+        await unlink(p);
+      } catch { /* swallow */ }
     }
   }
 
