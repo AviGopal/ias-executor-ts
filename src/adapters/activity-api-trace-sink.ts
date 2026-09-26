@@ -419,10 +419,11 @@ export class TranslatingTraceSink implements TraceSink {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
+            "Idempotency-Key": traceId,
             Authorization: `ApiKey ${this.apiKey}`,
           },
           body: json,
-        signal: AbortSignal.timeout(15000),
+        signal: AbortSignal.timeout(120000),
         },
       );
       if (!res.ok) {
@@ -458,7 +459,8 @@ export class TranslatingTraceSink implements TraceSink {
    * such trace was silently lost (log-and-swallow, no second attempt).
    */
   private async postWithRetry(endpoint: string, json: string, traceId: string): Promise<boolean> {
-    const backoffsMs = [250, 1000];
+    const baseBackoffsMs = [1000, 5000];
+    const backoffsMs = baseBackoffsMs.map((ms) => ms + Math.floor(Math.random() * Math.max(1, Math.floor(ms * 0.2))));
     for (let attempt = 0; attempt <= backoffsMs.length; attempt++) {
       const outcome = await this.postOnce(endpoint, json, traceId);
       if (outcome === "ok") return true;
