@@ -319,7 +319,32 @@ function mapTask(raw: RawTask): import("../ontology").ActivityTask {
       };
       return walk(config) as Record<string, unknown>;
     };
-    out.config = interpolateBoundValues(raw.config as Record<string, unknown>);
+    out.config = (() => {
+      const cfg = raw.config as unknown;
+      const interpolateString = (val: string): string =>
+        val.replace(/\{\{(.*?)\}\}/g, (match: string, name: string) => {
+          const key = name.trim();
+          return Object.prototype.hasOwnProperty.call(raw, key)
+            ? String((raw as Record<string, unknown>)[key] ?? "")
+            : match; // leave literal when not a bound field on raw
+        });
+      const walk = (val: unknown): unknown => {
+        if (typeof val === "string") return interpolateString(val);
+        if (Array.isArray(val)) return val.map((x) => walk(x));
+        if (val && typeof val === "object") {
+          const outObj: Record<string, unknown> = {};
+          for (const [k, v] of Object.entries(val as Record<string, unknown>)) {
+            outObj[k] = walk(v) as unknown;
+          }
+          return outObj;
+        }
+        return val;
+      };
+      if (cfg && typeof cfg === "object") {
+        return walk(cfg) as Record<string, unknown>;
+      }
+      return {} as Record<string, unknown>;
+    })();
   }
 
   // Pass through any other catalogue-canonical extras (validation,
