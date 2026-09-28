@@ -361,7 +361,11 @@ export class TranslatingTraceSink implements TraceSink {
         ? trace.failureMode
         : trace.failureMode
           ? { type: "execution_error", reason: describeUnknownFailure(trace.failureMode) }
-          : { type: "execution_error" },
+          // A walk persisted without a failureMode carries its verdict in metadata.reach_reason; keep it as the
+          // reason so a failed walk records WHY instead of a bare type the learner can only penalise blindly.
+          : typeof (trace.metadata as Record<string, unknown> | undefined)?.["reach_reason"] === "string"
+            ? { type: "execution_error", reason: String((trace.metadata as Record<string, unknown>)["reach_reason"]).slice(0, 500) }
+            : { type: "execution_error" },
       // Collect input shapes for state_space_signature derivation. Prefer a top-level
       // `trace.inputShapes` (the decision-time pool snapshot the walk conditioned on) and
       // union with per-task inputShapes. Populating this is what un-starves the
