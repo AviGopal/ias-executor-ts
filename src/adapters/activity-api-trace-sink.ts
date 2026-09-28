@@ -96,7 +96,7 @@ export class TranslatingTraceSink implements TraceSink {
     // A one-shot replay risks missing files created later; a short interval keeps it draining.
     try {
       const iv = setInterval(() => { this._maybeStartSpoolReplayInternal(); }, 5000) as unknown as { unref?: () => void };
-      iv.unref?.();
+      // iv.unref?.(); // Keep process alive to allow spool replay timer to fire.
     } catch {
       // Environments without Node timers (e.g. some browsers) won't expose unref; ignore.
     }
