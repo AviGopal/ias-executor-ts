@@ -193,6 +193,7 @@ export class TranslatingTraceSink implements TraceSink {
     }
   }
 
+
   private async _quarantineFile(p: string, name: string): Promise<void> {
     const qdir = join(this.spoolDir(), "quarantine");
     await mkdir(qdir, { recursive: true });
@@ -208,7 +209,24 @@ export class TranslatingTraceSink implements TraceSink {
     }
   }
 
+  private async _quarantineFile2(p: string, name: string): Promise<void> {
+    const qdir = join(this.spoolDir(), "quarantine");
+    await mkdir(qdir, { recursive: true });
+    const qpath = join(qdir, name);
+    try {
+      await rename(p, qpath);
+    } catch {
+      try {
+        const data = await readFile(p);
+        await writeFile(qpath, data);
+        await unlink(p);
+      } catch { /* swallow */ }
+    }
+  }
+
   async record(trace: ExecutionTrace): Promise<void> {
+    this._maybeStartSpoolReplayInternal();
+
     // 2026-05-20 bug fix: StoreExecutionTraceRequestSchema's status enum is
     // {"success","failure","partial"}, but the route's derivation logic at
     // execution-traces.ts:1560 only treats body.status === "completed" OR
