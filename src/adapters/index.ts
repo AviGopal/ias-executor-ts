@@ -6,7 +6,14 @@ export { ActivityApiTemplateProvider, ActivityApiRecommendationProvider, Activit
 export { VesselResolver } from "./vessel-resolver";
 export { BunDockerAdapter } from "./docker-adapter";
 export { BunHelmfileAdapter, HelmfileTimeoutError } from "./helmfile-adapter";
-export { HttpDiscoveryAdapter } from "./discovery-adapter";
+export {
+  HttpDiscoveryAdapter,
+  describeDiscoveryLookup,
+  DISCOVERY_FORWARD_BUDGET_MS,
+  DISCOVERY_LOOKUP_BUDGET_MS,
+  DISCOVERY_FAILURE_BACKOFF_MS,
+} from "./discovery-adapter";
+export type { DiscoveryLookup, DiscoveryLookupFailureReason } from "./discovery-adapter";
 export { ActivityApiAdapter } from "./activity-api-adapter";
 export type {
   RecommendRequest,
