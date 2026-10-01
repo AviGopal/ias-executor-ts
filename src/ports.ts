@@ -177,6 +177,13 @@ export interface VesselSummary {
   resolveEndpoint: string;
   healthScore?: number;
   orgId?: string;
+  /** Where the ANSWERING discovery got this producer, stamped by it on receive (never copied from
+   *  a peer): "local", "overlay" (a libp2p facade in its own registry), or "peer:<http origin of
+   *  the peer discovery it asked>". Absent from an older discovery, and then not provably anyone's:
+   *  a reader that must take only its own substrate's producers treats an absent origin as foreign. */
+  origin?: string;
+  /** For a peer row: the origin the asked peer itself reported (a recorded claim, not provenance). */
+  originUpstream?: string | null;
 }
 
 /** Minimal vessel registration payload for DiscoveryPort.registerVessel. */

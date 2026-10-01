@@ -163,6 +163,10 @@ export class HttpDiscoveryAdapter implements DiscoveryPort {
       resolveEndpoint: this.buildResolveUrl(v),
       healthScore: typeof v["health_score"] === "number" ? v["health_score"] : undefined,
       orgId: typeof v["org_id"] === "string" ? v["org_id"] : undefined,
+      // Provenance passes through untouched: dropping it would make every producer unattributable,
+      // and a reader of substrate-local policy must then refuse them all.
+      origin: typeof v["origin"] === "string" ? v["origin"] : undefined,
+      originUpstream: typeof v["origin_upstream"] === "string" ? v["origin_upstream"] : (v["origin_upstream"] === null ? null : undefined),
     }));
     return { ok: true, shape, producers, cached: false };
   }

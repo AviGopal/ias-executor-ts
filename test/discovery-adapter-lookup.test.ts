@@ -103,4 +103,22 @@ describe("HttpDiscoveryAdapter.lookup", () => {
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.producers).toHaveLength(1);
   }, DISCOVERY_LOOKUP_BUDGET_MS + 4_000);
+
+  test("provenance passes through: origin and origin_upstream reach the caller, absent stays absent", async () => {
+    const url = fakeDiscovery(() => answer([
+      { ...row, origin: "local" },
+      { ...row, vesselId: "dv-node2", endpoint: "http://node-b:26090", origin: "peer:http://node-b:26100", origin_upstream: "local" },
+      { ...row, vesselId: "dv-relayed", endpoint: "http://node-c:9000", origin: "peer:http://node-b:26100", origin_upstream: null },
+      { ...row, vesselId: "dv-old", endpoint: "http://node-d:9000" },
+    ]));
+    const r = await new HttpDiscoveryAdapter(new FetchAdapter(), url).lookup("poolImpulse");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const by = Object.fromEntries(r.producers.map((p) => [p.id, p]));
+    expect(by["development-vessel-local"]!.origin).toBe("local");
+    expect(by["dv-node2"]).toMatchObject({ origin: "peer:http://node-b:26100", originUpstream: "local" });
+    expect(by["dv-relayed"]!.originUpstream).toBeNull();
+    expect(by["dv-old"]!.origin).toBeUndefined();
+    expect(by["dv-old"]!.originUpstream).toBeUndefined();
+  });
 });
