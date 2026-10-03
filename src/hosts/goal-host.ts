@@ -802,19 +802,12 @@ export class GoalHost {
     let selectedFromRecommendations = false;
 
     if (!templateId) {
-      // Build impulse_state_space from the current pool + the about-to-be-seeded
-      // goal impulse. This activates activity-api's v1 precondition-conditioned
-      // Thompson path (context_thompson_scores). Without this field the endpoint
-      // falls back to the shape-blind posterior and context_thompson_scores
-      // accumulates zero v1 rows.
-      const poolEntries: ImpulseStateEntry[] = this.runtime.store.all().map((imp) => {
-        const entry: ImpulseStateEntry = { shape: getImpulseShape(imp) };
-        const producedBy =
-          (imp.metadata.produced_at_task_id as string | undefined) ??
-          (imp.metadata.producedBy as string | undefined);
-        if (producedBy) entry.task_id = producedBy;
-        return entry;
-      });
+      // Build impulse_state_space from the caller's context (seed impulses)
+      // and the goal impulse. This scopes selection to the current execution
+      // and prevents cross-talk from other concurrent runs. The parent execution
+      // is responsible for threading context by passing impulses from one step
+      // as seed impulses to the next.
+      const poolEntries: ImpulseStateEntry[] = [];
       // Include the goal impulse that will seed this execution.
       poolEntries.push({ shape: "goal" });
       // Seed impulses (e.g. the reach-gate verdict) join the signature too, so
