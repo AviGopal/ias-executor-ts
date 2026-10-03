@@ -225,6 +225,42 @@ export interface ExecutionTaskRecord {
   filesModified?: string[];
   filesCreated?: string[];
   materialsConsulted?: string[];
+  /**
+   * Where every impulse this task CONSUMED came from: its bound inputs plus every
+   * impulse a `{{impulse:<slot>}}` placeholder or gate operand resolved to.
+   *
+   * The store is shared by every execution a host runs, so "this task read impulse X"
+   * says nothing about whether X belonged to this run. Recording the producing
+   * execution at bind time is what lets a reach verdict or the ribosome refuse a run
+   * that was fed another run's data (see `foreignConsumption`). Absent on traces
+   * written by an engine that predates the field — read that as "unknown", never
+   * as "clean".
+   */
+  consumedProvenance?: ConsumedImpulseProvenance[];
+}
+
+/**
+ * Why an execution was allowed to consume an impulse.
+ *   declared   — seeded into this execution (`ExecuteOptions.impulses`): the one way to
+ *                hand a run another run's data on purpose.
+ *   own        — produced by this execution.
+ *   descendant — produced by an execution nested under this one (compose children,
+ *                lifecycle subscribers such as slot-binding filling this run's inputs).
+ *   ancestor   — produced or seeded by an execution this one is nested under.
+ *   ambient    — put into the store by the host, not produced or seeded by any execution.
+ *   foreign    — produced or seeded by an unrelated execution. Never bound by the engine;
+ *                its presence in a trace means something bypassed the scoped binder.
+ */
+export type ConsumedImpulseOrigin = "declared" | "own" | "descendant" | "ancestor" | "ambient" | "foreign";
+
+export interface ConsumedImpulseProvenance {
+  impulseId: string;
+  /** The execution whose task produced the impulse; null when no execution produced it
+   *  (a seed or a host-placed impulse). */
+  producerExecutionId: string | null;
+  /** The producer's composition chain (root-first) at production time. */
+  producerChain?: string[];
+  origin: ConsumedImpulseOrigin;
 }
 
 export interface ExecutionTrace {

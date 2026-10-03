@@ -5,6 +5,8 @@ import type { ResolverContext } from "./resolvers";
 import { ExecutionRuntime } from "./runtime";
 import { VesselResolver } from "./adapters/vessel-resolver";
 import { classifyShape } from "./shape-lifecycle";
+import { ORIGIN_RANK, provenanceLedger, type BindingScope } from "./impulse-provenance";
+import type { ConsumedImpulseProvenance } from "./ontology";
 
 /**
  * Leaf-LLM cost pricing — MEASUREMENT SEAM.
@@ -141,14 +143,37 @@ class BudgetExceededError extends Error {
 export class ActivityExecutor {
   constructor(private readonly runtime: ExecutionRuntime) {}
 
-  /** Output impulse ids the last top-level execution deliberately left in the
-   *  store so its caller could read the content back after execute() returned.
-   *  Reaped at the next top-level entry — see execute() and
-   *  evictExecutionScope(). Tracking the ids (rather than clearing the store)
-   *  keeps caller-seeded impulses, which this class does not own, intact. */
-  private readonly retainedOutputIds = new Set<string>();
+  /** Provenance for the SHARED store: who produced, seeded, and still owns each
+   *  impulse. One ledger per store, so every executor on a runtime shares it. Also
+   *  holds the output ids finished executions left behind for caller read-back
+   *  (formerly a per-executor set — which a second executor on the same runtime,
+   *  or a second concurrent run on this one, could neither see nor reap). */
+  private get ledger() {
+    return provenanceLedger(this.runtime.store);
+  }
 
   async execute(template: ActivityTemplate, options: ExecuteOptions = {}): Promise<ExecutionTrace> {
+    // Every exit must end the execution in the provenance ledger. The normal and
+    // task-failure paths do so in evictExecutionScope; this catches a throw before
+    // the task loop (e.g. a failing activity.started emit). A run left marked LIVE
+    // would protect everything it owns from eviction forever.
+    const live: { executionId?: string; seedStoreIds?: string[] } = {};
+    try {
+      return await this.executeScoped(template, options, live);
+    } finally {
+      const ledger = this.ledger;
+      if (live.executionId && ledger.isLive(live.executionId)) {
+        ledger.end(live.executionId);
+        for (const id of live.seedStoreIds ?? []) ledger.release(id, live.executionId);
+      }
+    }
+  }
+
+  private async executeScoped(
+    template: ActivityTemplate,
+    options: ExecuteOptions,
+    live: { executionId?: string; seedStoreIds?: string[] },
+  ): Promise<ExecutionTrace> {
     // A RETIRED TEMPLATE MUST NOT EXECUTE (2026-09-06).
     //
     // Retirement in this architecture is SELECTION-scoped: the promote/prune
@@ -202,16 +227,122 @@ export class ActivityExecutor {
     // (several fixtures and the predicate-binding path do exactly that), and
     // those impulses are not ours to discard — a blanket clear here silently
     // starved task binding of its inputs.
+    const ledger = this.ledger;
     if (!options.parentExecutionId && compositionChain.length === 0) {
       const store = this.runtime.store as unknown as { impulses?: Map<string, Impulse> };
-      for (const id of this.retainedOutputIds) store.impulses?.delete?.(id);
-      this.retainedOutputIds.clear();
+      // A retained output being handed to THIS run as a seed (the walk's hand-off)
+      // is about to be claimed; reaping it here would also erase who produced it.
+      const incoming = new Set((options.impulses ?? []).map((impulse) => impulse.id));
+      for (const id of [...ledger.retained]) {
+        ledger.retained.delete(id);
+        if (incoming.has(id)) continue;
+        // A retained output a running execution has since been seeded with is
+        // that execution's input now — not ours to reap.
+        if (ledger.isProtected(id)) continue;
+        store.impulses?.delete?.(id);
+        ledger.forget(id);
+      }
     }
 
     const seededImpulses = options.impulses ?? [];
+    ledger.begin(executionId, compositionChain);
+    live.executionId = executionId;
+    // THE SCOPE KEY IS (executionId, impulseId), NOT impulseId. Ids are minted by
+    // whoever builds an impulse — resolvers, remote vessels, the walk pool — and
+    // the same id can name DIFFERENT impulses in different executions. The store
+    // holds one object per id, so two runs seeded with (or producing) the same id
+    // would read whichever was put last. This execution therefore binds its seeds
+    // and its own outputs from `mine` — the objects IT put — never from the store
+    // by id; the store only contributes impulses of related executions.
+    const mine = new Map<string, Impulse>();
+    // Store ids this execution's seeds sit under (claimed; released on exit).
+    const seedStoreIds: string[] = [];
+    live.seedStoreIds = seedStoreIds;
+    const store = this.runtime.store;
+    /** An id free for this execution to (re)write: absent, or already ours. */
+    const uniqueStoreId = (id: string): string => {
+      if (!store.get(id) || mine.has(id)) return id;
+      let n = 0;
+      let candidate = `${id}~${executionId}`;
+      while (store.get(candidate) && !mine.has(candidate)) candidate = `${id}~${executionId}~${++n}`;
+      return candidate;
+    };
     for (const impulse of seededImpulses) {
-      this.runtime.store.put(impulse);
+      mine.set(impulse.id, impulse);
+      const existing = store.get(impulse.id);
+      // Same object (a compose child seeded with its parent's input) or a free id:
+      // share it. A DIFFERENT object under the same id stays untouched; our copy
+      // goes in under a distinct key, so neither run clobbers the other.
+      const storeId = !existing || existing === impulse ? impulse.id : uniqueStoreId(impulse.id);
+      store.put(storeId === impulse.id ? impulse : { ...impulse, id: storeId });
+      ledger.claim(storeId, executionId);
+      seedStoreIds.push(storeId);
     }
+
+    // ── Binding scope (gap: concurrent-executions-consume-each-others-impulses) ──
+    // The store is shared by every execution the host runs, concurrently. Binding
+    // used to take the FIRST store-wide match, so concurrent runs consumed each
+    // other's impulses (3 of 5 concurrent ribosome-extract runs cross-bound; one
+    // minted a template from another run's trace). Every binding site below now
+    // sees only impulses this execution may consume: its seeds (the explicit
+    // cross-execution declaration), its own outputs, outputs of executions nested
+    // under it, impulses of executions it is nested under, and host-placed
+    // impulses no execution owns. Another run's impulse is never a candidate.
+    const bindingScope: BindingScope = {
+      executionId,
+      chain: compositionChain,
+      declared: new Set(seededImpulses.map((impulse) => impulse.id)),
+    };
+    /** Everything this execution may consume, as [impulse, rank] in preference
+     *  order: its own objects first (seeds, then outputs, in the order it put
+     *  them), then related executions' impulses from the store. A store entry
+     *  that is ours by id (own/declared) is skipped — `mine` is the authority for
+     *  those, and the store's object under that id may be another run's. */
+    const scopedCandidates = (): Array<[Impulse, number]> => {
+      const out: Array<[Impulse, number]> = [];
+      for (const imp of mine.values()) out.push([imp, ORIGIN_RANK.own]);
+      for (const imp of store.all()) {
+        if (mine.has(imp.id)) continue;
+        const origin = ledger.originFor(imp.id, bindingScope);
+        if (origin === "foreign" || origin === "own" || origin === "declared") continue;
+        out.push([imp, ORIGIN_RANK[origin]]);
+      }
+      return out;
+    };
+    const scopedPool = (): Impulse[] => scopedCandidates().map(([imp]) => imp);
+    /** Best in-scope match: own/declared, then descendant, ancestor, ambient;
+     *  insertion order breaks ties (the old first-match order, within scope). */
+    const pickInScope = (match: (imp: Impulse) => boolean): Impulse | undefined => {
+      let best: Impulse | undefined;
+      let bestRank = Infinity;
+      for (const [imp, rank] of scopedCandidates()) {
+        if (rank < bestRank && match(imp)) {
+          best = imp;
+          bestRank = rank;
+        }
+      }
+      return best;
+    };
+    // Impulses a {{impulse:<slot>}} placeholder or gate operand resolved to in the
+    // CURRENT task — consumed as surely as bound inputs, so they join its provenance.
+    const slotBoundThisTask = new Map<string, Impulse>();
+    const consumedProvenanceOf = (inputs: Impulse[]): ConsumedImpulseProvenance[] => {
+      const seen = new Map<string, Impulse>();
+      for (const imp of inputs) seen.set(imp.id, imp);
+      for (const [id, imp] of slotBoundThisTask) seen.set(id, imp);
+      return [...seen.keys()].map((id): ConsumedImpulseProvenance => {
+        const local = mine.get(id);
+        if (local && !bindingScope.declared.has(id)) {
+          return { impulseId: id, producerExecutionId: executionId, producerChain: [...compositionChain], origin: "own" };
+        }
+        if (local && store.get(id) !== local) {
+          // Our seed's id is held in the store by a different object: the ledger's
+          // producer for that id describes THAT object, not ours.
+          return { impulseId: id, producerExecutionId: null, origin: "declared" };
+        }
+        return ledger.provenanceOf(id, bindingScope);
+      });
+    };
 
     await this.emit({
       type: "activity.started",
@@ -358,25 +489,14 @@ export class ActivityExecutor {
       const head = dot >= 0 ? slot.slice(0, dot) : slot;
       const tail = dot >= 0 ? slot.slice(dot + 1) : "";
 
-      let impulse: Impulse | undefined;
-      // Try by outputImpulseKey
-      for (const imp of this.runtime.store.all()) {
-        const meta = imp.metadata as Record<string, unknown> | undefined;
-        if (meta?.["outputImpulseKey"] === head) {
-          impulse = imp;
-          break;
-        }
-      }
-      // Fallback to by shape
+      // Try by outputImpulseKey, then by shape — within this execution's scope only.
+      let impulse: Impulse | undefined = pickInScope(
+        (imp) => (imp.metadata as Record<string, unknown> | undefined)?.["outputImpulseKey"] === head,
+      );
       if (!impulse) {
-        for (const imp of this.runtime.store.all()) {
-          const meta = imp.metadata as Record<string, unknown> | undefined;
-          if (meta?.["shape"] === head) {
-            impulse = imp;
-            break;
-          }
-        }
+        impulse = pickInScope((imp) => (imp.metadata as Record<string, unknown> | undefined)?.["shape"] === head);
       }
+      if (impulse) slotBoundThisTask.set(impulse.id, impulse);
 
       let rawResolved: string | undefined;
       if (impulse) {
@@ -447,6 +567,7 @@ export class ActivityExecutor {
     try {
       for (const rawTask of template.tasks) {
         inFlightTask = undefined;
+        slotBoundThisTask.clear();
 
         // ── Lifecycle-subscriber contract: gates + {{lifecycle.*}} interpolation ──
         // (gap ias-executor-template-contract-mismatch; helpers above class)
@@ -574,7 +695,9 @@ export class ActivityExecutor {
           typeof entry === "string" ? entry : entry.shape,
         );
         if (declaredInputShapeNames.length > 0) {
-          const poolImpulses = this.runtime.store.all();
+          // Scoped: slot-binding subscribers fill from {{lifecycle.currentImpulseIds}},
+          // and missingShapes must not call a shape "present" because another run holds it.
+          const poolImpulses = scopedPool();
           const poolShapes = poolImpulses.map((imp) => getImpulseShape(imp));
           const presentShapes = new Set(poolShapes);
           const missingShapes = declaredInputShapeNames.filter(
@@ -628,7 +751,7 @@ export class ActivityExecutor {
         });
 
         const taskStart = this.runtime.clock.now();
-        const inputImpulses = await this.resolveInputs(task.inputShapes ?? [], task.id);
+        const inputImpulses = await this.resolveInputs(task.inputShapes ?? [], task.id, scopedPool);
         inFlightTask = task;
         inFlightInputs = inputImpulses;
         // Empirical input-shape discovery: scan this task's config + prompt for
@@ -669,10 +792,9 @@ export class ActivityExecutor {
           const seen = new Set(inputImpulses.map((i) => i.id));
           for (const slot of namedInputSlots) {
             if (typeof slot !== "string") continue;
-            const match = this.runtime.store.all().find((imp) => {
-              const meta = imp.metadata as Record<string, unknown> | undefined;
-              return meta?.["outputImpulseKey"] === slot;
-            });
+            const match = pickInScope(
+              (imp) => (imp.metadata as Record<string, unknown> | undefined)?.["outputImpulseKey"] === slot,
+            );
             if (match && !seen.has(match.id)) {
               inputImpulses.push(match);
               seen.add(match.id);
@@ -767,7 +889,7 @@ export class ActivityExecutor {
               );
               const aOut = cr.outputs;
     const namedSlotsForActivity = Array.isArray((task as Record<string, unknown>)["outputImpulses"]) ? ((task as Record<string, unknown>)["outputImpulses"] as unknown[]).filter((v): v is string => typeof v === "string") : [];
-    aOut.forEach((imp, idx) => { const slot = namedSlotsForActivity[idx]; if (slot) { const stamped = { ...imp, metadata: { ...((imp.metadata as Record<string, unknown>) ?? {}), outputImpulseKey: slot } }; this.runtime.store.put(stamped); } else { this.runtime.store.put(imp); }});
+    aOut.forEach((imp, idx) => { const slot = namedSlotsForActivity[idx]; if (slot) { const stamped = { ...imp, metadata: { ...((imp.metadata as Record<string, unknown>) ?? {}), outputImpulseKey: slot } }; this.runtime.store.put(stamped); mine.set(stamped.id, stamped); } else { this.runtime.store.put(imp); } ledger.recordProduced(imp.id, executionId, compositionChain); });
               for (const imp of aOut) outputImpulseIds.add(imp.id);
               if (cr.childTrace.costUsd !== undefined) totalCostUsd += cr.childTrace.costUsd;
               taskRecords.push({
@@ -777,6 +899,7 @@ export class ActivityExecutor {
                 resolverTier: "deterministic",
                 resolvedConfig: redactResolvedConfig(task.config),
                 inputImpulseIds: inputImpulses.map((imp) => imp.id),
+                consumedProvenance: consumedProvenanceOf(inputImpulses),
                 outputImpulseIds: aOut.map((imp) => imp.id),
                 inputShapes: [
                   ...new Set([
@@ -896,6 +1019,7 @@ export class ActivityExecutor {
               resolverTier: undefined,
               resolvedConfig: redactResolvedConfig(task.config),
               inputImpulseIds: inputImpulses.map((imp) => imp.id),
+                consumedProvenance: consumedProvenanceOf(inputImpulses),
               outputImpulseIds: [],
               inputShapes: [
                 ...new Set([
@@ -982,6 +1106,7 @@ export class ActivityExecutor {
               resolverTier: this.runtime.resolvers.get(task.resolver)?.tier,
               resolvedConfig: redactResolvedConfig(task.config),
               inputImpulseIds: inputImpulses.map((imp) => imp.id),
+                consumedProvenance: consumedProvenanceOf(inputImpulses),
               outputImpulseIds: [],
               inputShapes: [
                 ...new Set([
@@ -1013,10 +1138,16 @@ export class ActivityExecutor {
           storedOutputs = outputs.map((impulse, index) => {
             const complete = this.ensureImpulse(task.outputShapes ?? [], impulse, index);
             const slot = namedOutputSlotArray[index];
-            const stamped = slot
+            const slotted = slot
               ? { ...complete, metadata: { ...complete.metadata, outputImpulseKey: slot } }
               : complete;
+            // A resolver may emit an id another execution's impulse already holds
+            // (fixed ids, remote vessels): re-key ours rather than overwrite theirs.
+            const storeId = uniqueStoreId(slotted.id);
+            const stamped = storeId === slotted.id ? slotted : { ...slotted, id: storeId };
             this.runtime.store.put(stamped);
+            mine.set(stamped.id, stamped);
+            ledger.recordProduced(stamped.id, executionId, compositionChain);
             outputImpulseIds.add(stamped.id);
             return stamped;
           });
@@ -1122,7 +1253,7 @@ export class ActivityExecutor {
               // the lifecycle-subscriber depth-cap reads parentDepth.
               outputShapes: [],
               skip_validation: task.config?.["skip_validation"] === true,
-              allImpulseIds: this.runtime.store.all().map((imp) => imp.id),
+              allImpulseIds: scopedPool().map((imp) => imp.id),
               loadedImpulseIds: inputImpulses.filter((imp) => imp.loaded === true).map((imp) => imp.id),
               toolCallRecords: [],
               parentDepth: compositionChain.length,
@@ -1238,6 +1369,7 @@ export class ActivityExecutor {
           resolvedConfig: redactResolvedConfig(task.config),
           resolverTier: task.resolver === "compose" || task.resolver === "compose_parallel" ? "deterministic" : this.runtime.resolvers.get(task.resolver)?.tier,
           inputImpulseIds: inputImpulses.map((impulse) => impulse.id),
+          consumedProvenance: consumedProvenanceOf(inputImpulses),
           outputImpulseIds: storedOutputs.map((impulse) => impulse.id),
           // Record the ACTUAL shapes of the resolved input impulses (unioned with
           // any declared input shapes) so the trace sink can union them into
@@ -1337,7 +1469,7 @@ export class ActivityExecutor {
             // toolCallRecords). The engine keeps no tool-call transcript, so
             // an empty array is the honest value.
             skip_validation: task.config?.["skip_validation"] === true,
-            allImpulseIds: this.runtime.store.all().map((imp) => imp.id),
+            allImpulseIds: scopedPool().map((imp) => imp.id),
             loadedImpulseIds: inputImpulses.filter((imp) => imp.loaded === true).map((imp) => imp.id),
             toolCallRecords: [],
             // 2026-05-20 fix (task 40): include depth info so the
@@ -1414,7 +1546,9 @@ export class ActivityExecutor {
         },
       });
       this.evictExecutionScope({
-        inputImpulseIds,
+        executionId,
+        compositionChain,
+        inputImpulseIds: seedStoreIds,
         outputImpulseIds,
         isTopLevel: !options.parentExecutionId && compositionChain.length === 0,
       });
@@ -1498,7 +1632,9 @@ export class ActivityExecutor {
         data: { executionId, templateId: template.id, error: message },
       });
       this.evictExecutionScope({
-        inputImpulseIds,
+        executionId,
+        compositionChain,
+        inputImpulseIds: seedStoreIds,
         outputImpulseIds,
         isTopLevel: !options.parentExecutionId && compositionChain.length === 0,
       });
@@ -1522,7 +1658,7 @@ export class ActivityExecutor {
    * heapUsed. This matches the cgroup-vs-JS divergence signature in
    * concept_T-CTTOEl97IM.
    *
-   * Top-level executions clear the entire store (clean slate per runGoal).
+   * Top-level executions clear everything no running execution owns.
    * Nested executions only evict their own seeded inputs + intermediate
    * outputs that the parent doesn't need — declared outputs survive because
    * `dispatchCompose` reads them via `runtime.store.get(id)` after the
@@ -1530,11 +1666,23 @@ export class ActivityExecutor {
    * nested executions; the parent's eviction at top level reaps them.
    */
   private evictExecutionScope(opts: {
+    executionId: string;
+    compositionChain: readonly string[];
     inputImpulseIds: string[];
     outputImpulseIds: Set<string>;
     isTopLevel: boolean;
   }): void {
+    const ledger = this.ledger;
+    // This execution is over: release its seeds and stop protecting its data.
+    ledger.end(opts.executionId);
+    for (const id of opts.inputImpulseIds) ledger.release(id, opts.executionId);
     try {
+      const store = this.runtime.store as unknown as { impulses: Map<string, Impulse> };
+      if (!store.impulses || typeof store.impulses.delete !== "function") return;
+      const drop = (id: string) => {
+        store.impulses.delete(id);
+        ledger.forget(id);
+      };
       if (opts.isTopLevel) {
         // Evict everything EXCEPT this execution's outputs, which the caller
         // reads back AFTER execute() returns — the goal-host walk does exactly
@@ -1553,29 +1701,43 @@ export class ActivityExecutor {
         // true and beside the point: the trace stores SHAPES, never bodies, so
         // durability there does not hand the caller back its content.
         //
-        // The retained set is bounded to ONE execution's outputs and is reaped
+        // ...AND EXCEPT anything a still-RUNNING execution owns. The store is
+        // shared by concurrent executions; sweeping it whole on one run's exit
+        // deleted the seeds and intermediates of every other run in flight. With
+        // first-match binding that did worse than starve them: the finisher's
+        // retained outputs were then the ONLY candidates for the next run's slot
+        // lookup, so the sweep itself steered runs onto each other's data.
+        //
+        // The retained set is bounded to finished executions' outputs and is reaped
         // at the next top-level entry (see execute()), so the store cannot grow
         // across runs — the leak this branch exists to prevent stays fixed.
-        // See test/engine-output-readback.test.ts.
-        const store = this.runtime.store as unknown as { impulses: Map<string, Impulse> };
-        if (store.impulses && typeof store.impulses.delete === "function") {
-          for (const id of [...store.impulses.keys()]) {
-            if (opts.outputImpulseIds.has(id)) continue;
-            store.impulses.delete(id);
-          }
-          // Record what we left behind so the next top-level entry can reap
-          // exactly this set — and nothing a caller seeded itself.
-          this.retainedOutputIds.clear();
-          for (const id of opts.outputImpulseIds) {
-            if (store.impulses.has(id)) this.retainedOutputIds.add(id);
-          }
+        // See test/engine-output-readback.test.ts and
+        // test/concurrent-slot-binding.test.ts.
+        for (const id of [...store.impulses.keys()]) {
+          if (opts.outputImpulseIds.has(id)) continue;
+          if (ledger.isProtected(id)) continue;
+          drop(id);
+        }
+        for (const id of opts.outputImpulseIds) {
+          if (store.impulses.has(id)) ledger.retained.add(id);
         }
       } else {
-        // Nested execution: evict only seeded inputs. Outputs stay live so
-        // the parent's compose path can read them via `runtime.store.get`.
+        // Nested execution: evict only seeded inputs nobody running still owns —
+        // a seed can be the parent's input or output, or shared with siblings.
+        // Outputs stay live so the parent's compose path can read them via
+        // `runtime.store.get`.
         for (const id of opts.inputImpulseIds) {
-          const store = this.runtime.store as unknown as { impulses: Map<string, Impulse> };
-          store.impulses?.delete?.(id);
+          if (opts.outputImpulseIds.has(id)) continue;
+          if (ledger.isProtected(id)) continue;
+          drop(id);
+        }
+        // No running ancestor to reap our outputs (a walk step chained under a
+        // step that already returned): retain them for read-back so the next
+        // top-level entry reaps them, as for a top-level run.
+        if (!ledger.anyLive(opts.compositionChain)) {
+          for (const id of opts.outputImpulseIds) {
+            if (store.impulses.has(id)) ledger.retained.add(id);
+          }
         }
       }
     } catch {
@@ -1813,6 +1975,7 @@ export class ActivityExecutor {
   private async resolveInputs(
     shapes: (string | InputShapeRef)[],
     taskId: string,
+    pool: () => Impulse[] = () => this.runtime.store.all(),
   ): Promise<Impulse[]> {
     const timeoutMs = parseInt(
       process.env["EXECUTOR_INPUT_RESOLUTION_TIMEOUT_MS"] ?? "0",
@@ -1829,7 +1992,9 @@ export class ActivityExecutor {
         : { cardinality: "any", ...entry };
 
       const filterCandidates = (): Impulse[] => {
-        const byShape = this.runtime.store.findByShape(ref.shape);
+        // Scoped: cardinality "any" used to union every live match in the shared
+        // store, so a task received concurrent runs' impulses beside its own.
+        const byShape = pool().filter((imp) => getImpulseShape(imp) === ref.shape);
         return ref.producedBy
           ? byShape.filter((imp) =>
               imp.metadata.producedBy === ref.producedBy

@@ -4,6 +4,7 @@ export * from "./impulses";
 export * from "./resolvers";
 export * from "./runtime";
 export * from "./engine";
+export * from "./impulse-provenance";
 export * from "./lifecycle-subscriber";
 export * from "./templates";
 
