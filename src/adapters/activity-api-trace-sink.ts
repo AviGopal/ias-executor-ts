@@ -91,6 +91,28 @@ export class TranslatingTraceSink implements TraceSink {
     this.fetch = options.fetch ?? {
       request: (input, init) => globalThis.fetch(input, init),
     };
+    // Inject vessel_version into trace POST bodies when codeVersion provided in options.
+    try {
+      const __underlyingRequest = this.fetch.request.bind(this.fetch);
+      this.fetch.request = (input: string, init?: RequestInit) => {
+        try {
+          if (typeof input === "string" && init?.body && typeof init.body === "string" && input.includes("/v2/activities/execution-traces")) {
+            const __b = JSON.parse(init.body as string) as Record<string, unknown>;
+            const v = (options as unknown as { codeVersion?: unknown })?.codeVersion;
+            const vs = typeof v === "string" ? v : undefined;
+            if (vs && vs.length > 0 && __b.vessel_version === undefined) {
+              __b.vessel_version = vs;
+              init = { ...init, body: JSON.stringify(__b) };
+            }
+          }
+        } catch {
+          // swallow parse errors; never block trace persistence
+        }
+        return __underlyingRequest(input, init);
+      };
+    } catch {
+      // Environments that forbid function patching: ignore and proceed without stamping.
+    }
     this._maybeStartSpoolReplayInternal();
     // Start a periodic background scan to replay any spooled traces written after construction.
     // A one-shot replay risks missing files created later; a short interval keeps it draining.
