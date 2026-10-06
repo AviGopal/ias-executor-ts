@@ -51,12 +51,8 @@ const NOT_FORWARDED: Record<string, string> = {
   // written by this sink and read by nothing. Do not "fix" this by sending it; fix it by
   // wiring a reader first, then removing this exemption.
   childExecutionId: "no reader exists in activity-api; sending it would add dead weight",
-  // Read IN-PROCESS by the host that ran the execution (goal-host's reach verdict and its
-  // reach->mint gate call `foreignConsumption` on the trace object it holds). activity-api
-  // stores nothing that reads it yet, so ribosome-vessel — which gates on activity-api's
-  // execution_completed census — cannot see it. Forward it in the same change that gives
-  // that census a reader, then remove this exemption.
-  consumedProvenance: "read in-process by the executing host; no activity-api reader yet",
+  // consumedProvenance is no longer exempt: activity-api reads it (normalizePersistedTask keeps
+  // consumed_provenance and chain credit follows it), so the sink forwards it.
 };
 
 describe("trace sink — every recorded task field is forwarded or exempted", () => {

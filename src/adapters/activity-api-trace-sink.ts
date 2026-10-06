@@ -326,6 +326,19 @@ export class TranslatingTraceSink implements TraceSink {
           // producer->consumer capability edges.
           consumed_from_task_ids: (t as { consumedFromTaskIds?: string[] }).consumedFromTaskIds ?? [],
           child_activity_id: (t as { childActivityId?: string }).childActivityId,
+          // Data-flow provenance (credit from use): which execution produced each impulse this task
+          // consumed. activity-api's normalizePersistedTask keeps it and chain credit follows it, so
+          // a producer is credited or blamed by its consumer's outcome — failed tasks included. An
+          // empty array is sent (it declares nothing was consumed); an absent record sends no key.
+          ...(Array.isArray(t.consumedProvenance)
+            ? {
+                consumed_provenance: t.consumedProvenance.map((p) => ({
+                  impulse_id: p.impulseId,
+                  producer_execution_id: p.producerExecutionId ?? null,
+                  origin: p.origin,
+                })),
+              }
+            : {}),
           error: t.error,
           // Keep nested result block too for any reader expecting the legacy shape.
           result: {
