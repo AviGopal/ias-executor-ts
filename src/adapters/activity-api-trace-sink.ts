@@ -131,11 +131,21 @@ export class TranslatingTraceSink implements TraceSink {
     void this._replaySpoolOnce().finally(() => { this.replayInFlight = false; });
   }
 
-  // One pass: oldest-first, bounded batch, delete on 2xx, keep on 5xx/network/401/403, quarantine other 4xx or malformed.
+  // One pass: oldest-first, bounded batch. The ONE replay, and it reads the format this sink writes:
+  // spoolTrace's wrapper { endpoint, trace_id, spooled_at, body } (the body is the translated trace),
+  // plus a legacy bare trace with a top-level execution_id. Delete on 2xx or when the store already
+  // holds the trace; keep on 5xx/network/401/403; quarantine other 4xx or a malformed file.
+  //
+  // RECOVERY: until 2026-10-07 this pass quarantined every wrapper unread (it accepted only a bare
+  // trace, and the wrapper-aware drainSpool had no caller), so quarantine/ holds real, never-stored
+  // traces. Each pass moves wrapper files from quarantine/ back into the spool ONCE, renamed with an
+  // "rq-" prefix; a recovered file the store rejects again is re-quarantined under that name and is
+  // never recovered a second time.
   private async _replaySpoolOnce(): Promise<void> {
     try {
       const dir = this.spoolDir();
       await mkdir(dir, { recursive: true });
+      await this._recoverQuarantinedWrappers(dir).catch(() => {});
       let names = await readdir(dir);
       names = names.filter((n) => n !== "quarantine");
       if (names.length === 0) return;
@@ -159,15 +169,8 @@ export class TranslatingTraceSink implements TraceSink {
           continue;
         }
 
-        // Minimal sanity check: JSON and has execution_id (shape this sink writes).
-        try {
-          const obj = JSON.parse(content) as Record<string, unknown>;
-          if (typeof obj?.["execution_id"] === "undefined") {
-            quarantined++;
-            await this._quarantineFile(p, name).catch(() => {});
-            continue;
-          }
-        } catch {
+        const rec = TranslatingTraceSink.spooledPayload(content);
+        if (!rec) {
           quarantined++;
           await this._quarantineFile(p, name).catch(() => {});
           continue;
@@ -178,9 +181,10 @@ export class TranslatingTraceSink implements TraceSink {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
+              "Idempotency-Key": rec.traceId,
               Authorization: `ApiKey ${this.apiKey}`,
             },
-            body: content,
+            body: rec.body,
           });
           if (res.ok) {
             try { await res.body?.cancel(); } catch { /* swallow */ }
@@ -188,8 +192,12 @@ export class TranslatingTraceSink implements TraceSink {
             sent++;
           } else {
             const status = res.status ?? 0;
-            try { await res.body?.cancel(); } catch { /* swallow */ }
-            if (status >= 500 || status === 401 || status === 403 || status === 0) {
+            const text = await res.text().catch(() => "");
+            if ((status >= 500 || status === 409) && text.includes("already contains") && text.includes("execution_id")) {
+              // The store already holds this trace (an earlier delivery landed): delivered.
+              await unlink(p).catch(() => {});
+              sent++;
+            } else if (status >= 500 || status === 401 || status === 403 || status === 0) {
               // keep for retry on server errors or auth outages
               kept++;
             } else if (status >= 400) {
@@ -215,23 +223,42 @@ export class TranslatingTraceSink implements TraceSink {
     }
   }
 
-
-  private async _quarantineFile(p: string, name: string): Promise<void> {
-    const qdir = join(this.spoolDir(), "quarantine");
-    await mkdir(qdir, { recursive: true });
-    const qpath = join(qdir, name);
+  /** The POST body and its trace id: a spoolTrace wrapper's body, or a legacy bare trace; null if neither. */
+  private static spooledPayload(content: string): { body: string; traceId: string } | null {
     try {
-      await rename(p, qpath);
+      const obj = JSON.parse(content) as Record<string, unknown>;
+      if (typeof obj?.["body"] === "string") {
+        const inner = obj["body"] as string;
+        let id = typeof obj["trace_id"] === "string" ? (obj["trace_id"] as string) : "";
+        try { JSON.parse(inner); } catch { return null; }
+        if (!id) { try { id = String((JSON.parse(inner) as Record<string, unknown>)["execution_id"] ?? ""); } catch { /* none */ } }
+        return id ? { body: inner, traceId: id } : null;
+      }
+      if (typeof obj?.["execution_id"] !== "undefined") return { body: content, traceId: String(obj["execution_id"]) };
+      return null;
     } catch {
-      try {
-        const data = await readFile(p);
-        await writeFile(qpath, data);
-        await unlink(p);
-      } catch { /* swallow */ }
+      return null;
     }
   }
 
-  private async _quarantineFile2(p: string, name: string): Promise<void> {
+  /** Move wrapper files the old replay quarantined back into the spool, once each (see _replaySpoolOnce). */
+  private async _recoverQuarantinedWrappers(dir: string): Promise<void> {
+    const qdir = join(dir, "quarantine");
+    let names: string[];
+    try { names = await readdir(qdir); } catch { return; }
+    // At most 20 per pass (every 5 s): each recorded execution costs ~12-15 DB statements, so the backlog drains
+    // in a slow stream instead of a burst.
+    for (const name of names.filter((n) => n.endsWith(".json") && !n.startsWith("rq-")).sort().slice(0, 20)) {
+      const q = join(qdir, name);
+      try {
+        const obj = JSON.parse(await readFile(q, "utf-8")) as Record<string, unknown>;
+        if (typeof obj?.["body"] !== "string") continue;
+        await rename(q, join(dir, `rq-${name}`));
+      } catch { /* leave it for operator inspection */ }
+    }
+  }
+
+  private async _quarantineFile(p: string, name: string): Promise<void> {
     const qdir = join(this.spoolDir(), "quarantine");
     await mkdir(qdir, { recursive: true });
     const qpath = join(qdir, name);
@@ -529,9 +556,6 @@ export class TranslatingTraceSink implements TraceSink {
     return false;
   }
 
-  private static spoolReplayStarted = false;
-  private static spoolDraining = false;
-
   /** Spool directory for traces that failed all live delivery attempts. */
   private spoolDir(): string {
     return (typeof process !== "undefined" ? process.env?.IAS_TRACE_SPOOL_DIR : undefined) ?? "/workspace/trace-spool";
@@ -539,7 +563,7 @@ export class TranslatingTraceSink implements TraceSink {
 
   /**
    * Write a failed trace to the durable spool. Returns true when the spool
-   * file was written; the 60s replay loop re-POSTs it when the store returns.
+   * file was written; _replaySpoolOnce (every 5s) re-POSTs its body when the store returns.
    */
   private async spoolTrace(json: string, traceId: string): Promise<boolean> {
     try {
@@ -552,49 +576,6 @@ export class TranslatingTraceSink implements TraceSink {
       return true;
     } catch {
       return false;
-    }
-  }
-
-  /**
-   * Start the spool replay loop once per process. Every 60s it re-POSTs
-   * spooled traces: delete on 2xx, delete + TRACE_PERSIST_LOSS on a
-   * deterministic 4xx, keep for the next cycle on transport errors / 5xx.
-   * Disable with IAS_TRACE_SPOOL_REPLAY=0 (tests, oneshot tools).
-   */
-  private maybeStartSpoolReplay(): void {
-    if (TranslatingTraceSink.spoolReplayStarted) return;
-    if (typeof process !== "undefined" && process.env?.IAS_TRACE_SPOOL_REPLAY === "0") return;
-    if (typeof setInterval !== "function") return;
-    TranslatingTraceSink.spoolReplayStarted = true;
-    const timer = setInterval(() => { void this.drainSpool(); }, 60_000);
-    (timer as unknown as { unref?: () => void }).unref?.();
-  }
-
-  private async drainSpool(): Promise<void> {
-    if (TranslatingTraceSink.spoolDraining) return;
-    TranslatingTraceSink.spoolDraining = true;
-    try {
-      const dir = this.spoolDir();
-      let files: string[];
-      try { files = await readdir(dir); } catch { return; }
-      for (const name of files.filter((f) => f.endsWith(".json")).sort().slice(0, 25)) {
-        const file = join(dir, name);
-        try {
-          const rec = JSON.parse(await readFile(file, "utf8")) as { endpoint?: string; trace_id?: string; body?: string };
-          if (!rec.body) { await unlink(file); continue; }
-          const outcome = await this.postOnce(rec.endpoint ?? this.endpoint, rec.body, rec.trace_id ?? name);
-          if (outcome === "ok") {
-            console.warn(`[TranslatingTraceSink] spool replay delivered ${rec.trace_id ?? name}`);
-            await unlink(file);
-          } else if (outcome === "fatal") {
-            console.error(`[TranslatingTraceSink] TRACE_PERSIST_LOSS execution_id=${rec.trace_id ?? name} endpoint=${rec.endpoint ?? this.endpoint} (spool replay got deterministic 4xx — dropping spool file ${file})`);
-            await unlink(file);
-          }
-          // retryable → keep the file for the next cycle
-        } catch { /* unreadable spool file — leave it for operator inspection */ }
-      }
-    } finally {
-      TranslatingTraceSink.spoolDraining = false;
     }
   }
 }
