@@ -98,8 +98,29 @@ describe("trace spool replay reads the format the sink writes", () => {
     respond = () => new Response("schema", { status: 422 });
     for (let i = 0; i < 4; i++) await pass(s);
     expect(calls.length).toBe(1);
-    expect(quarantined().length).toBe(1);
+    expect(quarantined()).toEqual(["rj-1790325919333-exec_bad.json"]);
     expect(files(dir)).toEqual([]);
+  });
+
+  it("MUST-FAIL: a recovered wrapper an OLDER replay re-quarantined (rq- name) is recovered again and delivered", async () => {
+    const s = await settled(sink());
+    mkdirSync(join(dir, "quarantine"), { recursive: true });
+    writeFileSync(join(dir, "quarantine", "rq-1790325919333-exec_pingpong.json"),
+      JSON.stringify({ endpoint: "http://store.test", trace_id: "exec_pingpong", spooled_at: "2026-09-25T08:45:19Z", body: traceJson("exec_pingpong") }));
+    await pass(s);
+    expect(calls.map((c) => c.body)).toEqual([traceJson("exec_pingpong")]);
+    expect(quarantined()).toEqual([]);
+    expect(files(dir)).toEqual([]);
+  });
+
+  it("MUST-FAIL: a file this replay rejected (rj- name) is never recovered (the loop bound)", async () => {
+    const s = await settled(sink());
+    mkdirSync(join(dir, "quarantine"), { recursive: true });
+    writeFileSync(join(dir, "quarantine", "rj-1790325919333-exec_rejected.json"),
+      JSON.stringify({ endpoint: "http://store.test", trace_id: "exec_rejected", spooled_at: "2026-09-25T08:45:19Z", body: traceJson("exec_rejected") }));
+    for (let i = 0; i < 3; i++) await pass(s);
+    expect(calls).toEqual([]);
+    expect(quarantined()).toEqual(["rj-1790325919333-exec_rejected.json"]);
   });
 
   it("CONTROL: a legacy bare trace (top-level execution_id) still replays", async () => {
