@@ -139,8 +139,10 @@ export class TranslatingTraceSink implements TraceSink {
   // RECOVERY: until 2026-10-07 this pass quarantined every wrapper unread (it accepted only a bare
   // trace, and the wrapper-aware drainSpool had no caller), so quarantine/ holds real, never-stored
   // traces. Each pass moves wrapper files from quarantine/ back into the spool ONCE, renamed with an
-  // "rq-" prefix; a recovered file the store rejects again is re-quarantined under that name and is
-  // never recovered a second time.
+  // "rq-" prefix. Everything THIS replay rejects is quarantined as "rj-<name>" and never recovered,
+  // which bounds the loop. A plain or "rq-" file in quarantine/ was put there by an older replay
+  // (during a staggered rollout every consumer of this package shares the spool dir, and an old
+  // replay quarantines a wrapper unread, keeping its name), so recovery takes those again.
   private async _replaySpoolOnce(): Promise<void> {
     try {
       const dir = this.spoolDir();
@@ -165,14 +167,14 @@ export class TranslatingTraceSink implements TraceSink {
         } catch {
           // unreadable → quarantine
           quarantined++;
-          await this._quarantineFile(p, name).catch(() => {});
+          await this._quarantineFile(p, TranslatingTraceSink.rejectedName(name)).catch(() => {});
           continue;
         }
 
         const rec = TranslatingTraceSink.spooledPayload(content);
         if (!rec) {
           quarantined++;
-          await this._quarantineFile(p, name).catch(() => {});
+          await this._quarantineFile(p, TranslatingTraceSink.rejectedName(name)).catch(() => {});
           continue;
         }
 
@@ -203,7 +205,7 @@ export class TranslatingTraceSink implements TraceSink {
             } else if (status >= 400) {
               // malformed forever → quarantine
               quarantined++;
-              await this._quarantineFile(p, name).catch(() => {});
+              await this._quarantineFile(p, TranslatingTraceSink.rejectedName(name)).catch(() => {});
             } else {
               kept++;
             }
@@ -248,14 +250,19 @@ export class TranslatingTraceSink implements TraceSink {
     try { names = await readdir(qdir); } catch { return; }
     // At most 20 per pass (every 5 s): each recorded execution costs ~12-15 DB statements, so the backlog drains
     // in a slow stream instead of a burst.
-    for (const name of names.filter((n) => n.endsWith(".json") && !n.startsWith("rq-")).sort().slice(0, 20)) {
+    for (const name of names.filter((n) => n.endsWith(".json") && !n.startsWith("rj-")).sort().slice(0, 20)) {
       const q = join(qdir, name);
       try {
         const obj = JSON.parse(await readFile(q, "utf-8")) as Record<string, unknown>;
         if (typeof obj?.["body"] !== "string") continue;
-        await rename(q, join(dir, `rq-${name}`));
+        await rename(q, join(dir, name.startsWith("rq-") ? name : `rq-${name}`));
       } catch { /* leave it for operator inspection */ }
     }
+  }
+
+  /** The quarantine name for a file this replay rejects: "rj-" marks it as never to be recovered. */
+  private static rejectedName(name: string): string {
+    return name.startsWith("rj-") ? name : `rj-${name.replace(/^rq-/, "")}`;
   }
 
   private async _quarantineFile(p: string, name: string): Promise<void> {
