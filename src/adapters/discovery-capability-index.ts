@@ -8,7 +8,7 @@ import type { CapabilityIndex } from "../ports";
  * capability lookup is dynamic (task 6.6: discovery lives behind the port).
  *
  * Usage (MiniBob host integration):
- *   const capIndex = new DiscoveryCapabilityIndex("https://discovery.metabob.com", apiKey);
+ *   const capIndex = new DiscoveryCapabilityIndex("http://127.0.0.1:8100", apiKey);
  *   const runtime = new ExecutionRuntime({ ... });
  *   // Pass capIndex to resolvers that need capability discovery
  *

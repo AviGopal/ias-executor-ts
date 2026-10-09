@@ -459,7 +459,7 @@ export interface GoalHostOptions {
   activityApiEndpoint: string;
   /** Canary or prod API key (`Authorization: ApiKey <key>`). */
   apiKey: string;
-  /** Optional discovery endpoint (e.g. https://discovery.metabob.com). */
+  /** Optional discovery endpoint (e.g. http://127.0.0.1:8100). When omitted, lookups fail closed. */
   discoveryEndpoint?: string;
   /** Optional identity-vessel endpoint. Reserved for per-request JWT minting
    *  (deferred per design §G.2). GoalHost itself uses `apiKey` for its own
@@ -556,12 +556,13 @@ export class GoalHost {
       });
 
     // Discovery adapter (spec §G.2). Endpoint optional — when absent the
-    // adapter targets a placeholder; resolvers that would call it must be
-    // attached explicitly by the host.
+    // adapter targets an unroutable placeholder (RFC 6761 `.invalid`) and
+    // carries no apiKey, so lookups fail closed; resolvers that would call it
+    // must be attached explicitly by the host.
     this.discovery = new HttpDiscoveryAdapter(
       this.fetchAdapter,
-      options.discoveryEndpoint ?? "https://discovery.metabob.com",
-      { apiKey: options.apiKey },
+      options.discoveryEndpoint ?? "http://discovery.invalid",
+      options.discoveryEndpoint ? { apiKey: options.apiKey } : {},
     );
 
     // Catalogue: SHARED_TEMPLATES in-memory, with activity-api fallback for
