@@ -43,6 +43,8 @@ import auditTestReport from "./lifecycle/audit-test-report.json" with { type: "j
 import runSensitivityProbe from "./lifecycle/run-sensitivity-probe.json" with { type: "json" };
 import debugFailingAudit from "./lifecycle/debug-failing-audit.json" with { type: "json" };
 import ribosomeExtract from "./lifecycle/ribosome-extract.json" with { type: "json" };
+// Bootstrap tier: the catalogue entry goal-host's closed verdict corpus runner names in its traces.
+import verdictCorpusRunner from "./lifecycle/verdict-corpus-runner.json" with { type: "json" };
 
 // ──────────────────────────────────────────────────────────────────────────
 // Escalation — slot-binding's recursive sub-goal path.
@@ -108,6 +110,7 @@ export const SHARED_TEMPLATES: ActivityTemplate[] = [
   cast(runSensitivityProbe),
   cast(debugFailingAudit),
   cast(ribosomeExtract),
+  cast(verdictCorpusRunner),
   // escalation
   cast(createShapeProviderGoal),
   // registry-quality

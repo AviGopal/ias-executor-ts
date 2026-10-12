@@ -1,0 +1,37 @@
+{
+  "id": "verdict-corpus-runner",
+  "name": "verdict corpus runner (judge behaviour pins)",
+  "description": "Replays goal-host's closed, append-only verdict corpus against the live in-process judge entries, publishes the verdictCorpusStatus record the credit hold reads, records a traced verdictCorpusReport, and files one gap per red case. Started by the time-shaped verdict-corpus rhythm and once at goal-host boot. Bootstrap tier: a containment check cannot be earned before it exists, so this template is seeded rather than extracted.",
+  "category": "meta",
+  "version": "0.1.0",
+  "tags": ["lifecycle", "meta", "judge", "verdict-corpus"],
+  "input_shapes": ["verdictCorpusRun"],
+  "output_shapes": ["verdictCorpusReport"],
+  "variables": [
+    {
+      "name": "trigger",
+      "type": "string",
+      "required": false,
+      "default": "rhythm",
+      "description": "What started the run: rhythm or boot."
+    }
+  ],
+  "metadata": {
+    "embedded": true,
+    "tier": "bootstrap",
+    "servedBy": "goal-host-vessel resolver verdictCorpusRun (src/judge/corpus-activity.ts)",
+    "traceContract": "The goal-host runner records its own trace with this templateId on every run; this template is the catalogue entry that trace names."
+  },
+  "tasks": [
+    {
+      "id": "run_corpus",
+      "description": "Resolve verdictCorpusRun on goal-host: the closed runner replays every case and writes the status, the report and the per-case gaps.",
+      "resolver": "impulse-resolve",
+      "config": { "pointer": { "type": "verdictCorpusRun", "trigger": "{{trigger}}" } },
+      "inputShapes": [],
+      "outputShapes": ["verdictCorpusReport"],
+      "outputImpulses": ["run_corpus_result"],
+      "notes": "The task issues the verdictCorpusRun pointer; it consumes no pool impulse, so it declares no inputShapes (a declared input with no impulse in the pool fires preBinding and a missing_input_shapes gap)."
+    }
+  ]
+}
