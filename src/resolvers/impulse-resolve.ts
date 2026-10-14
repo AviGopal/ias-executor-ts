@@ -146,6 +146,19 @@ export function makeImpulseResolveResolver(options: {
         ];
       }
 
+      // THE DEADLINE IS THE CALLER'S, PER CALL. A pointer may carry `timeout_ms` (a finite integer, clamped to
+      // 1000..60000): the activity that asks for a slow report says how long it will wait, in the template the walk
+      // reads and the trace records. Without it, today's process-wide default applies. The field is the caller's,
+      // not the producer's, so it is stripped from the pointer before the POST.
+      const envTimeoutMs =
+        Number.parseInt(process.env.IMPULSE_RESOLVE_TIMEOUT_MS ?? "", 10) > 0
+          ? Number.parseInt(process.env.IMPULSE_RESOLVE_TIMEOUT_MS ?? "", 10)
+          : 8000;
+      const perCall = pointer["timeout_ms"];
+      delete pointer["timeout_ms"];
+      const timeoutMs = typeof perCall === "number" && Number.isInteger(perCall)
+        ? Math.min(60_000, Math.max(1_000, perCall))
+        : envTimeoutMs;
       try {
         // Connection timeout via AbortController. Without this, fake or
         // unreachable endpoints (test fixtures, dev clusters) hang executors
@@ -153,11 +166,7 @@ export function makeImpulseResolveResolver(options: {
         // in 1-6s, and the previous 1s abort turned that congestion into
         // degraded-impulse failures that got retried (load amplification —
         // gap: store-pressure-invisible-to-sensing-2026-07-13). Ops can tune
-        // via IMPULSE_RESOLVE_TIMEOUT_MS without a rebuild.
-        const timeoutMs =
-          Number.parseInt(process.env.IMPULSE_RESOLVE_TIMEOUT_MS ?? "", 10) > 0
-            ? Number.parseInt(process.env.IMPULSE_RESOLVE_TIMEOUT_MS ?? "", 10)
-            : 8000;
+        // via IMPULSE_RESOLVE_TIMEOUT_MS without a rebuild; a pointer's timeout_ms overrides it (above).
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
         const res = await fetch(`${endpoint}/v2/impulses/resolve`, {
@@ -212,11 +221,9 @@ export function makeImpulseResolveResolver(options: {
         // Treat caller-side timeout (AbortController abort) as a FAILED read:
         // rethrow so the engine records task failure instead of a degraded absence.
         if (err instanceof Error && (err.name === "AbortError" || /aborted/i.test(err.message))) {
-          const ms =
-            Number.parseInt(process.env.IMPULSE_RESOLVE_TIMEOUT_MS ?? "", 10) > 0
-              ? Number.parseInt(process.env.IMPULSE_RESOLVE_TIMEOUT_MS ?? "", 10)
-              : 8000;
-          throw new Error(`impulse-resolve: timeout after ${ms}ms`);
+          const source = typeof perCall === "number" && Number.isInteger(perCall) ? "pointer timeout_ms" : "default";
+          console.warn(`[impulse-resolve] ${pointer.type}: timeout after ${timeoutMs}ms (${source})`);
+          throw new Error(`impulse-resolve: timeout after ${timeoutMs}ms`);
         }
         return [
           {
