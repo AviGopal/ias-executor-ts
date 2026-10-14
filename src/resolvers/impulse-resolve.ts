@@ -209,6 +209,15 @@ export function makeImpulseResolveResolver(options: {
           },
         ];
       } catch (err) {
+        // Treat caller-side timeout (AbortController abort) as a FAILED read:
+        // rethrow so the engine records task failure instead of a degraded absence.
+        if (err instanceof Error && (err.name === "AbortError" || /aborted/i.test(err.message))) {
+          const ms =
+            Number.parseInt(process.env.IMPULSE_RESOLVE_TIMEOUT_MS ?? "", 10) > 0
+              ? Number.parseInt(process.env.IMPULSE_RESOLVE_TIMEOUT_MS ?? "", 10)
+              : 8000;
+          throw new Error(`impulse-resolve: timeout after ${ms}ms`);
+        }
         return [
           {
             id: context.random.id(`resolve:${pointer.type}`),
