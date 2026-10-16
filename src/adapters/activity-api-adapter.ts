@@ -26,6 +26,7 @@
  * `ActivityApiTraceSink` from `activity-api-provider.ts` directly.
  */
 
+import type { SubscriberCountsBatch } from "./subscriber-run-counter";
 import type { ActivityTemplate, ExecutionTrace } from "../ontology";
 import type { FetchPort, TraceSink } from "../ports";
 import {
@@ -226,5 +227,41 @@ export class ActivityApiAdapter {
   /** TraceSink view for hosts that want to attach the sink to a runtime. */
   asTraceSink(): TraceSink {
     return { record: (trace) => this.recordTrace(trace) };
+  }
+
+  /** GET /v2/tuning-params/:name: the row's numeric value, or null when absent, non-numeric or unreachable (CHANGE DB1). */
+  async readTuningNumber(name: string): Promise<number | null> {
+    try {
+      const res = await this.fetch.request(`${this.endpoint}/v2/tuning-params/${encodeURIComponent(name)}`, {
+        method: "GET",
+        headers: { Authorization: `ApiKey ${this.apiKey}` },
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!res.ok) { try { await res.body?.cancel(); } catch { /* swallow */ } return null; }
+      const data = (await res.json()) as { value?: unknown };
+      return typeof data.value === "number" && Number.isFinite(data.value) ? data.value : null;
+    } catch { return null; }
+  }
+
+  /** POST /v2/activities/execution-traces/subscriber-counts: true when activity-api applied (or deduplicated) the batch. */
+  async postSubscriberCounts(batch: SubscriberCountsBatch): Promise<boolean> {
+    try {
+      const res = await this.fetch.request(`${this.endpoint}/v2/activities/execution-traces/subscriber-counts`, {
+        method: "POST",
+        headers: { Authorization: `ApiKey ${this.apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify(batch),
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        console.warn(`[subscriber-counts] activity-api answered ${res.status}: ${text.slice(0, 200)}`);
+        return false;
+      }
+      try { await res.body?.cancel(); } catch { /* swallow */ }
+      return true;
+    } catch (err) {
+      console.warn(`[subscriber-counts] post failed: ${(err as Error)?.message ?? String(err)}`);
+      return false;
+    }
   }
 }

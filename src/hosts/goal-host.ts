@@ -80,6 +80,7 @@ import {
 } from "../lifecycle-subscriber";
 import { SHARED_TEMPLATES, loadSubscriberTemplates } from "../templates/index";
 import type { ExecuteOptions } from "../engine";
+import { SubscriberRunCounter, SUBSCRIBER_TRACE_MODE_ROW } from "../adapters/subscriber-run-counter";
 
 // ────────────────────────────────────────────────────────────────────────
 // Built-in resolver factories (BunHost-equivalent surface; duplicated from
@@ -523,6 +524,8 @@ export class GoalHost {
   readonly runtime: ExecutionRuntime;
   readonly executor: ActivityExecutor;
   readonly activityApi: ActivityApiAdapter;
+  /** Counts normal lifecycle-subscriber runs instead of tracing each (CHANGE DB1); absent when a host supplies its own sink. */
+  subscriberRunCounter?: SubscriberRunCounter;
   readonly discovery: HttpDiscoveryAdapter;
   readonly subscriber: LifecycleSubscriberVessel;
   readonly catalogue: InMemoryTemplateProvider;
@@ -643,7 +646,12 @@ export class GoalHost {
     // Runtime + executor.
     this.runtime = new ExecutionRuntime({
       eventSink: this.subscriber, // subscriber fans out to options.eventSink
-      traceSink: options.traceSink ?? this.activityApi.asTraceSink(),
+      // CHANGE DB1: normal runs of the counted (meta) lifecycle subscribers are counted, not traced, when the shaped
+      // row lifecycle.subscriber_trace_mode is 1; anomalous runs and every other trace pass through unchanged.
+      traceSink: options.traceSink ?? (this.subscriberRunCounter = new SubscriberRunCounter(this.activityApi.asTraceSink(), {
+        readMode: () => this.activityApi.readTuningNumber(SUBSCRIBER_TRACE_MODE_ROW),
+        post: (batch) => this.activityApi.postSubscriberCounts(batch),
+      })),
       templateProvider,
       discovery: this.discovery,
       vesselApiKey: options.apiKey,
@@ -758,6 +766,13 @@ export class GoalHost {
    * SHALL NOT branch on goal-text pattern matching"). All routing decisions
    * are activity-api's job.
    */
+  /** Send the pending subscriber-run counts now (call on shutdown so a restart loses none). Never throws. */
+  async flushSubscriberCounts(): Promise<Readonly<Record<string, number>> | null> {
+    if (!this.subscriberRunCounter) return null;
+    try { await this.subscriberRunCounter.close(); } catch { /* counted inside */ }
+    return this.subscriberRunCounter.stats();
+  }
+
   async runGoal(
     goalText: string,
     opts: {
