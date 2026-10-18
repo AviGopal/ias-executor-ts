@@ -17,7 +17,7 @@
  *     the shapes, one tagged line is logged, and writeDoorTaskCounters counts it. A task depending on it is
  *     dependency-skipped. compose / compose_parallel and activities-as-resolvers pass the option to their children.
  * The resolver id counts because a vessel resolver is registered under the shape it serves (`uiPanel_write/pattern`
- * in the measured trace), so a task can write without declaring the shape as an output.
+ * in the measured trace), so a task can write without declaring the shape as an output; servedShape strips the `/kind`.
  */
 import type { ActivityTask } from "./ontology";
 
@@ -41,6 +41,13 @@ export function resetWriteDoorTaskCounters(): void {
   counters.by_shape = {};
 }
 
+/** The shape a resolver id serves: a vessel resolver is registered as `<shape>/<kind>`, so the id less its final
+ *  `/segment`; an id with no `/` is its own shape. Compare this, not the raw id, to a shape name. */
+export function servedShape(resolverId: string): string {
+  const slash = resolverId.lastIndexOf("/");
+  return slash > 0 ? resolverId.slice(0, slash) : resolverId;
+}
+
 /** The shapes this task would write that the door refuses; empty when the task runs.
  *  An impulse-resolve task writes the shape its config.pointer.type names (audit-test-report's test_audit_report_write,
  *  ribosome-extract's activityTemplate_write), so that type counts too. The engine checks before interpolation, so a
@@ -50,7 +57,9 @@ export function refusedTaskWrites(task: Pick<ActivityTask, "resolver" | "outputS
   if (!door || door.admitted === true || typeof door.governs !== "function") return [];
   const pointer = (task.config as { pointer?: { type?: unknown } } | undefined)?.pointer;
   const pointerType = pointer && typeof pointer === "object" ? pointer.type : undefined;
-  const shapes = [task.resolver, pointerType, ...(Array.isArray(task.outputShapes) ? task.outputShapes : [])]
+  // The raw id too, for a host that registers bare ids.
+  const resolver = typeof task.resolver === "string" ? task.resolver : undefined;
+  const shapes = [resolver, resolver && servedShape(resolver), pointerType, ...(Array.isArray(task.outputShapes) ? task.outputShapes : [])]
     .filter((s): s is string => typeof s === "string" && s.length > 0 && s !== "compose" && s !== "compose_parallel");
   return [...new Set(shapes)].filter((s) => door.governs(s));
 }

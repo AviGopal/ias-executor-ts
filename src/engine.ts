@@ -7,7 +7,7 @@ import { VesselResolver } from "./adapters/vessel-resolver";
 import { classifyShape } from "./shape-lifecycle";
 import { ORIGIN_RANK, provenanceLedger, type BindingScope } from "./impulse-provenance";
 import type { ConsumedImpulseProvenance } from "./ontology";
-import { noteTaskWriteDrop, refusedTaskWrites, WRITE_DOOR_SKIP_REASON, type WriteDoorOption } from "./write-door";
+import { noteTaskWriteDrop, refusedTaskWrites, servedShape, WRITE_DOOR_SKIP_REASON, type WriteDoorOption } from "./write-door";
 
 /**
  * Leaf-LLM cost pricing — MEASUREMENT SEAM.
@@ -1205,7 +1205,7 @@ export class ActivityExecutor {
         // An fs_write resolver that reports success but leaves no file behind is
         // a ghost write. Verify the written path actually exists. Only applies to
         // workspace-scoped paths (outside /workspace the engine has no read access).
-        if (task.resolver === "fs_write") {
+        if (typeof task.resolver === "string" && servedShape(task.resolver) === "fs_write") {
           const rawPath = (task.config as Record<string, unknown> | undefined)?.["path"];
           if (typeof rawPath === "string") {
             // Resolve any {{variable}} placeholders that were already interpolated

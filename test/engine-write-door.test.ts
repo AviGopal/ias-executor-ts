@@ -393,3 +393,86 @@ describe("write door, impulse-resolve final pointer type", () => {
     });
   }
 });
+
+// A vessel resolver is registered as `<shape>/<kind>` (the measured trace: `uiPanel_write/pattern`), and the host's
+// governs anchors on the shape (`/_write$/`), so the door must ask about the shape the id serves, not the id alone.
+function kindSuffixRig() {
+  const calls: string[] = [];
+  const runtime = new ias.ExecutionRuntime({ random: new SequentialRandom(), clock: new SteppingClock(), eventSink: new EventSinkSpy(), traceSink: new TraceSinkSpy() });
+  for (const id of ["uiPanel_write/pattern", "concept_write/pattern", "concept_write/widget", "llm_completion/llm", "uiPanel_write"]) {
+    runtime.resolvers.register({
+      id,
+      tier: "pattern",
+      async resolve(ctx) {
+        calls.push(id);
+        return [{ id: ctx.random.id("out"), pointer: { type: "memo" }, metadata: { shape: id }, loaded: true, content: `${id} ran` }];
+      },
+    } as Resolver);
+  }
+  const provider = new ias.InMemoryTemplateProvider();
+  provider.register({ id: "kind-child", name: "child", tasks: [{ id: "c-concept", description: "write a concept", resolver: "concept_write/pattern" }] });
+  runtime.registerTemplateProvider(provider);
+  const executor = new ias.ActivityExecutor(runtime);
+  runtime.resolvers.register(makeActivityResolver({ executor: () => executor }));
+  return { calls, runtime, executor };
+}
+const KIND_DOOR = { writeDoor: { admitted: false, governs: (s: string) => /_write$/.test(s) } } as unknown as ExecuteOptions;
+const one = (id: string, resolver: string): ActivityTemplate => ({ id, name: id, tasks: [{ id: "t", description: "run", resolver }] });
+
+describe("write door, a /kind-suffixed resolver id", () => {
+  beforeEach(() => ias.resetWriteDoorTaskCounters());
+
+  test("must-fail: a `uiPanel_write/pattern` task with no declared output is skipped and counted under uiPanel_write", async () => {
+    const { calls, executor } = kindSuffixRig();
+    const trace = await executor.execute(one("kind-write", "uiPanel_write/pattern"), KIND_DOOR);
+    expect(calls).toEqual([]);
+    expect(trace.tasks[0]!.skipped).toBe(true);
+    expect(trace.tasks[0]!.skipReason).toBe(ias.WRITE_DOOR_SKIP_REASON);
+    expect(ias.writeDoorTaskCounters().by_shape["uiPanel_write"]).toBe(1);
+  });
+
+  test("must-fail: an activity-as-resolver's composed child `concept_write/pattern` is skipped and counted under concept_write", async () => {
+    const { calls, runtime, executor } = kindSuffixRig();
+    const traces = runtime.traceSink as unknown as TraceSinkSpy;
+    await executor.execute(
+      { id: "kind-parent", name: "parent", tasks: [{ id: "a1", description: "run the child", resolver: "activity", config: { templateId: "kind-child" } }] },
+      KIND_DOOR,
+    );
+    expect(calls).toEqual([]);
+    const write = traces.traces.find((t) => t.templateId === "kind-child")!.tasks.find((t) => t.taskId === "c-concept")!;
+    expect(write.skipped).toBe(true);
+    expect(write.skipReason).toBe(ias.WRITE_DOOR_SKIP_REASON);
+    expect(ias.writeDoorTaskCounters().by_shape["concept_write"]).toBe(1);
+  });
+
+  test("must-fail: the kind word is not a list — `concept_write/widget` is refused and counted under concept_write", async () => {
+    const { calls, executor } = kindSuffixRig();
+    const trace = await executor.execute(one("kind-any", "concept_write/widget"), KIND_DOOR);
+    expect(calls).toEqual([]);
+    expect(trace.tasks[0]!.skipReason).toBe(ias.WRITE_DOOR_SKIP_REASON);
+    expect(ias.writeDoorTaskCounters().by_shape["concept_write"]).toBe(1);
+  });
+
+  test("servedShape strips only the final /segment; a bare, `:` or `_` name is its own shape", () => {
+    expect(ias.servedShape("uiPanel_write/pattern")).toBe("uiPanel_write");
+    expect(ias.servedShape("a/b/kind")).toBe("a/b");
+    for (const s of ["uiPanel_write", "activity:x_y", "/lead", "llm_completion"]) expect(ias.servedShape(s)).toBe(s);
+  });
+
+  test("control: a non-write `llm_completion/llm` runs; a bare `uiPanel_write` id is still skipped", async () => {
+    const { calls, executor } = kindSuffixRig();
+    const read = await executor.execute(one("kind-read", "llm_completion/llm"), KIND_DOOR);
+    expect(read.tasks[0]!.skipped).toBeUndefined();
+    const bare = await executor.execute(one("bare-write", "uiPanel_write"), KIND_DOOR);
+    expect(bare.tasks[0]!.skipReason).toBe(ias.WRITE_DOOR_SKIP_REASON);
+    expect(calls).toEqual(["llm_completion/llm"]);
+    expect(ias.writeDoorTaskCounters()).toEqual({ dropped_tasks: 1, by_shape: { uiPanel_write: 1 } });
+  });
+
+  test("control: with no door, both kind-suffixed writes run", async () => {
+    const { calls, executor } = kindSuffixRig();
+    await executor.execute(one("kind-write", "uiPanel_write/pattern"), {});
+    await executor.execute({ id: "kind-parent", name: "parent", tasks: [{ id: "a1", description: "run", resolver: "activity", config: { templateId: "kind-child" } }] }, {});
+    expect(calls).toEqual(["uiPanel_write/pattern", "concept_write/pattern"]);
+  });
+});
