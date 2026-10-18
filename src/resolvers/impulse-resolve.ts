@@ -46,7 +46,7 @@ interface ImpulseResolveConfig {
 /** Parse an impulse slot's content into a pointer-safe value: objects pass
  *  through; strings get markdown fences stripped and a JSON.parse attempt;
  *  unparseable strings pass through as strings. */
-function parseSlotContent(raw: unknown): unknown {
+export function parseSlotContent(raw: unknown): unknown {
   if (raw === null || raw === undefined) return raw;
   // LLM proxy resolvers often wrap the completion in an envelope object —
   // unwrap the single text-bearing field before parsing, otherwise the
