@@ -320,6 +320,9 @@ export class TranslatingTraceSink implements TraceSink {
           // learning store (a skip is neutral, not alpha) — see gap
           // skipped-tasks-invisible-to-trace-sink.
           skipped: (t as { skipped?: boolean }).skipped ?? false,
+          // Why a skipped task was skipped when no gate decided it (write-door.ts: "write_door_not_admitted"), so a
+          // door refusal reads as a refusal in the durable trace, not as a plain skip. Absent ⇒ no key is sent.
+          skip_reason: t.skipReason,
           resolver_id: t.resolverId,
           resolver_tier: t.resolverTier,
           duration_ms: (t as { durationMs?: number }).durationMs,
