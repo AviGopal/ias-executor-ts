@@ -351,15 +351,37 @@ describe("write door, impulse-resolve final pointer type", () => {
   afterEach(() => {
     globalThis.fetch = realFetch;
   });
-  const refusal = (runtime: ias.ExecutionRuntime) =>
-    runtime.store.all().find((i) => i.metadata.source === "impulse-resolve")?.content as Record<string, unknown> | undefined;
+  const refusal = (runtime: ias.ExecutionRuntime) => runtime.store.all().find((i) => i.metadata.source === "impulse-resolve");
+
+  test("must-fail: a non-string pointer type merged from a slot is refused when not admitted", async () => {
+    const { runtime, executor, tpl } = pointerRig();
+    await executor.execute(tpl('{"name":"concept_write"}', "slot"), NOT_ADMITTED);
+    expect(posted).toEqual([]);
+    const r = refusal(runtime)!;
+    expect(r.content).toBeNull();
+    expect(r.metadata).toMatchObject({ degraded: true, skipReason: ias.WRITE_DOOR_SKIP_REASON, refusedShapes: ["pointer.type:object"] });
+  });
+
+  test("control: a non-string pointer type from a slot is sent as before with no door", async () => {
+    const { executor, tpl } = pointerRig();
+    await executor.execute(tpl('{"name":"concept_write"}', "slot"), {});
+    expect(posted).toEqual([{ name: "concept_write" } as unknown as string]);
+  });
 
   for (const how of ["placeholder", "slot"] as const) {
     test(`must-fail: a write pointer type supplied by ${how === "placeholder" ? "a {{impulse:slotT}} placeholder" : "pointerFromImpulseSlots"} is refused when not admitted`, async () => {
       const { runtime, executor, tpl } = pointerRig();
       await executor.execute(tpl("concept_write", how), NOT_ADMITTED);
       expect(posted).toEqual([]);
-      expect(refusal(runtime)).toEqual({ skipped: true, skipReason: ias.WRITE_DOOR_SKIP_REASON, refusedShapes: ["concept_write"] });
+      expect(refusal(runtime)?.metadata).toMatchObject({ degraded: true, skipReason: ias.WRITE_DOOR_SKIP_REASON, refusedShapes: ["concept_write"] });
+    });
+
+    test(`must-fail (${how}): a refused write's result has null content, so it never reads as the shape produced`, async () => {
+      const { runtime, executor, tpl } = pointerRig();
+      await executor.execute(tpl("concept_write", how), NOT_ADMITTED);
+      const r = refusal(runtime)!;
+      expect(r.content).toBeNull();
+      expect(r.metadata.skipReason).toBe(ias.WRITE_DOOR_SKIP_REASON);
     });
 
     test(`control (${how}): admitted sends the write; a read type is sent when not admitted; no door sends the write`, async () => {

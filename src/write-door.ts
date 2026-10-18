@@ -44,7 +44,8 @@ export function resetWriteDoorTaskCounters(): void {
 /** The shapes this task would write that the door refuses; empty when the task runs.
  *  An impulse-resolve task writes the shape its config.pointer.type names (audit-test-report's test_audit_report_write,
  *  ribosome-extract's activityTemplate_write), so that type counts too. The engine checks before interpolation, so a
- *  `{{…}}` pointer type, or one set at run time from pointerFromImpulseSlots, is not recognised and still runs. */
+ *  `{{…}}` pointer type, or one set at run time from pointerFromImpulseSlots, is not recognised here; impulse-resolve
+ *  checks the final type itself before it sends (and, when not admitted, refuses a type it cannot read). */
 export function refusedTaskWrites(task: Pick<ActivityTask, "resolver" | "outputShapes" | "config">, door: WriteDoorOption | undefined): string[] {
   if (!door || door.admitted === true || typeof door.governs !== "function") return [];
   const pointer = (task.config as { pointer?: { type?: unknown } } | undefined)?.pointer;

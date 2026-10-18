@@ -126,28 +126,36 @@ export function makeImpulseResolveResolver(options: {
         }
       }
       // WRITE DOOR (write-door.ts) on the FINAL pointer type. The engine's task check runs before interpolation, so a
-      // {{impulse:…}} type or one merged from pointerFromImpulseSlots above first exists here. A refused write is not
-      // sent; the result records the skip as the iteration resolver's refused element does.
-      if (typeof pointer.type === "string") {
-        const refused = refusedTaskWrites({ resolver: pointer.type }, context.writeDoor);
-        if (refused.length > 0) {
-          console.log(noteTaskWriteDrop(refused));
-          return [
-            {
-              id: context.random.id(`resolve:${pointer.type}`),
-              pointer: { type: "memo" },
-              metadata: {
-                shape: pointer.type,
-                summary: `impulse-resolve: write door refused ${pointer.type} (dispatch not admitted)`,
-                source: "impulse-resolve",
-                degraded: true,
-                skipReason: WRITE_DOOR_SKIP_REASON,
-              },
-              loaded: true,
-              content: { skipped: true, skipReason: WRITE_DOOR_SKIP_REASON, refusedShapes: refused },
+      // {{impulse:…}} type or one merged from pointerFromImpulseSlots above first exists here. On a dispatch not
+      // admitted, a type the door cannot read (a slot merged in a non-string or an empty one) is refused too, since
+      // what it would write is unknown. A refused write is not sent. Like the sibling degraded returns, content is
+      // null, so the refusal never reads as the shape produced; the reason and the refused shapes ride in metadata.
+      const finalType = typeof pointer.type === "string" && pointer.type.length > 0 ? pointer.type : undefined;
+      const refused = finalType !== undefined
+        ? refusedTaskWrites({ resolver: finalType }, context.writeDoor)
+        : context.writeDoor && context.writeDoor.admitted !== true
+          ? [`pointer.type:${typeof pointer.type}`]
+          : [];
+      if (refused.length > 0) {
+        const shown = finalType ?? refused[0]!;
+        console.log(noteTaskWriteDrop(refused));
+        return [
+          {
+            id: context.random.id(`resolve:${shown}`),
+            pointer: { type: "memo" },
+            metadata: {
+              shape: shown,
+              summary: `impulse-resolve: write door refused ${shown} (dispatch not admitted)`,
+              source: "impulse-resolve",
+              degraded: true,
+              skipped: true,
+              skipReason: WRITE_DOOR_SKIP_REASON,
+              refusedShapes: refused,
             },
-          ];
-        }
+            loaded: true,
+            content: null,
+          },
+        ];
       }
       const endpoint = config.activityApiEndpoint ?? options.activityApiEndpoint ?? "";
       const apiKey = config.activityApiKey ?? options.activityApiKey ?? "";
