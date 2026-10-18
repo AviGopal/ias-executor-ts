@@ -1,6 +1,7 @@
 import type { ActivityTask, ActivityTemplate, Impulse, ResolverTier } from "./ontology";
 import type { AttachedVesselRegistry, ClockPort, EventSink, RandomPort, TemplateProvider, TraceSink } from "./ports";
 import type { ImpulseStore } from "./impulses";
+import type { WriteDoorOption } from "./write-door";
 
 export interface ResolverContext {
   executionId: string;
@@ -22,6 +23,9 @@ export interface ResolverContext {
    * guards. Read-only — resolvers must not mutate.
    */
   compositionChain?: readonly string[];
+  /** THE WRITE DOOR (write-door.ts), from the execute() options. A resolver that dispatches nested work (activity,
+   *  iteration) passes it on, so a child's writes meet the same door. Absent ⇒ every task runs. */
+  writeDoor?: WriteDoorOption;
 }
 
 export interface Resolver {

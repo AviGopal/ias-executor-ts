@@ -30,6 +30,7 @@
 import type { Resolver, ResolverContext } from "../resolvers";
 import type { Impulse } from "../ontology";
 import { _interpolate as interpolate } from "./llm-prompt";
+import { noteTaskWriteDrop, refusedTaskWrites, WRITE_DOOR_SKIP_REASON } from "../write-door";
 
 interface IterationBody {
   resolver: string;
@@ -163,6 +164,14 @@ export function makeIterationResolver(
           },
           variables: perVars,
         };
+        // WRITE DOOR (write-door.ts): the body is a task the engine never sees, so each element meets the door here,
+        // after interpolation. A refused element runs no resolver; its result records the skip.
+        const refused = refusedTaskWrites(innerContext.task, context.writeDoor);
+        if (refused.length > 0) {
+          console.log(noteTaskWriteDrop(refused));
+          perElementResults.push({ skipped: true, skipReason: WRITE_DOOR_SKIP_REASON, refusedShapes: refused, index: i });
+          continue;
+        }
         try {
           const impulses = await innerResolver.resolve(innerContext);
           // Reduce to content for aggregation; preserve the first impulse's

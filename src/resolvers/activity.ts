@@ -112,6 +112,8 @@ export function makeActivityResolver(options: {
           compositionChain: [...effectiveParentChain, effectiveParentExecutionId],
           reason: config.reason,
           goalContext: config.goal ? { goal: config.goal } : undefined,
+          // The write door holds in the child: a learned composite {resolver:"activity"} runs its child's writes here.
+          writeDoor: context.writeDoor,
         });
         // Emit a summary impulse so the calling task has something to read.
         return [

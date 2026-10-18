@@ -8,6 +8,8 @@ import type { ActivityTemplate, ExecuteOptions, ExecutionTrace, Resolver } from 
 import { TranslatingTraceSink } from "../src/adapters/activity-api-trace-sink";
 import { ActivityApiAdapter, type RecommendResponse } from "../src/adapters/activity-api-adapter";
 import { GoalHost } from "../src/hosts/goal-host";
+import { makeActivityResolver } from "../src/resolvers/activity";
+import { makeIterationResolver } from "../src/resolvers/iteration";
 import { EventSinkSpy, SequentialRandom, SteppingClock, TraceSinkSpy } from "./fakes";
 
 const GOVERNS = (s: string) => /_write$/.test(s) || s === "code_modification_proposal";
@@ -16,7 +18,8 @@ const NOT_ADMITTED = { writeDoor: { admitted: false, governs: GOVERNS } } as unk
 function setup() {
   const calls: string[] = [];
   const events = new EventSinkSpy();
-  const runtime = new ias.ExecutionRuntime({ random: new SequentialRandom(), clock: new SteppingClock(), eventSink: events });
+  const traces = new TraceSinkSpy();
+  const runtime = new ias.ExecutionRuntime({ random: new SequentialRandom(), clock: new SteppingClock(), eventSink: events, traceSink: traces });
   for (const id of ["resolver_pattern_report", "concept_write", "uiPanel_write", "code_modification_proposal"]) {
     const r: Resolver = {
       id,
@@ -38,7 +41,11 @@ function setup() {
     ],
   });
   runtime.registerTemplateProvider(provider);
-  return { calls, events, executor: new ias.ActivityExecutor(runtime) };
+  const executor = new ias.ActivityExecutor(runtime);
+  // The resolvers that dispatch nested work, wired as the hosts wire them.
+  runtime.resolvers.register(makeActivityResolver({ executor: () => executor }));
+  runtime.resolvers.register(makeIterationResolver((id) => runtime.resolvers.get(id)));
+  return { calls, events, traces, runtime, executor };
 }
 
 const LEARNED: ActivityTemplate = {
@@ -217,5 +224,62 @@ describe("write door, GoalHost.runTemplate", () => {
     const w = trace.tasks.find((t) => t.taskId === "w")!;
     expect(w.skipped).toBe(true);
     expect(w.skipReason).toBe(ias.WRITE_DOOR_SKIP_REASON);
+  });
+});
+
+// Learned composites are built as {resolver:"activity", config:{templateId}}, and an iteration body is a task the engine
+// never dispatches: both run nested work the door must reach.
+const VIA_ACTIVITY: ActivityTemplate = {
+  id: "learned-composite-via-activity",
+  name: "via activity",
+  tasks: [{ id: "a1", description: "run the cap", resolver: "activity", config: { templateId: "composed-cap-child" }, outputShapes: ["activityExecutionSummary"] }],
+};
+const VIA_ITERATION: ActivityTemplate = {
+  id: "iterate-writes",
+  name: "via iteration",
+  tasks: [{
+    id: "i1", description: "write each", resolver: "iteration",
+    config: { over: '["a","b"]', elementVar: "x", body: { resolver: "concept_write", config: { name: "{{x}}" } } },
+    outputShapes: ["iteration_result"],
+  }],
+};
+const iterationResult = (runtime: ias.ExecutionRuntime) =>
+  runtime.store.all().find((i) => i.metadata.shape === "iteration_result")?.content as Array<Record<string, unknown>>;
+
+describe("write door, nested resolvers", () => {
+  test("must-fail: an activity-resolver task's child write is skipped with WRITE_DOOR_SKIP_REASON", async () => {
+    const { calls, traces, executor } = setup();
+    await executor.execute(VIA_ACTIVITY, NOT_ADMITTED);
+    expect(calls).toEqual(["resolver_pattern_report"]);
+    const child = traces.traces.find((t) => t.templateId === "composed-cap-child")!;
+    const write = child.tasks.find((t) => t.taskId === "c-concept")!;
+    expect(write.skipped).toBe(true);
+    expect(write.skipReason).toBe(ias.WRITE_DOOR_SKIP_REASON);
+  });
+
+  test("must-fail: an iteration body that writes is skipped per element and recorded", async () => {
+    const { calls, runtime, executor } = setup();
+    const before = ias.writeDoorTaskCounters().by_shape["concept_write"] ?? 0;
+    await executor.execute(VIA_ITERATION, NOT_ADMITTED);
+    expect(calls).toEqual([]);
+    const out = iterationResult(runtime);
+    expect(out.map((r) => r.skipReason)).toEqual([ias.WRITE_DOOR_SKIP_REASON, ias.WRITE_DOOR_SKIP_REASON]);
+    expect(out[0]!.refusedShapes).toEqual(["concept_write"]);
+    expect(ias.writeDoorTaskCounters().by_shape["concept_write"]).toBe(before + 2);
+  });
+
+  test("control: with no door, the activity child and every iteration element write", async () => {
+    const { calls, executor } = setup();
+    await executor.execute(VIA_ACTIVITY, {});
+    await executor.execute(VIA_ITERATION, {});
+    expect(calls).toEqual(["resolver_pattern_report", "concept_write", "concept_write", "concept_write"]);
+  });
+
+  test("control: an admitted dispatch runs the activity child's write and every iteration element", async () => {
+    const { calls, executor } = setup();
+    const admitted = { writeDoor: { admitted: true, governs: GOVERNS } } as unknown as ExecuteOptions;
+    await executor.execute(VIA_ACTIVITY, admitted);
+    await executor.execute(VIA_ITERATION, admitted);
+    expect(calls).toEqual(["resolver_pattern_report", "concept_write", "concept_write", "concept_write"]);
   });
 });

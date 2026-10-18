@@ -1071,6 +1071,7 @@ export class ActivityExecutor {
             templateProvider: this.runtime.templateProvider,
             attachedVessels: this.runtime.attachedVessels,
             compositionChain,
+            writeDoor: options.writeDoor,
           };
 
           // Retry semantics (design §J.4): read max_attempts (snake_case) or
