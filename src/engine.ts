@@ -7,6 +7,7 @@ import { VesselResolver } from "./adapters/vessel-resolver";
 import { classifyShape } from "./shape-lifecycle";
 import { ORIGIN_RANK, provenanceLedger, type BindingScope } from "./impulse-provenance";
 import type { ConsumedImpulseProvenance } from "./ontology";
+import { noteTaskWriteDrop, refusedTaskWrites, WRITE_DOOR_SKIP_REASON, type WriteDoorOption } from "./write-door";
 
 /**
  * Leaf-LLM cost pricing — MEASUREMENT SEAM.
@@ -128,6 +129,10 @@ export interface ExecuteOptions {
    *  `safety_breach` failure_mode rather than letting an authored template
    *  recurse without bound. Default: 16. */
   maxCompositionDepth?: number;
+  /** THE WRITE DOOR, task level (write-door.ts): the host's admission for this dispatch and its governed class.
+   *  admitted:false skips and records every task whose resolver or output shape `governs` refuses, in composed
+   *  children too. ABSENT (every caller that does not pass it) ⇒ every task runs, as before. */
+  writeDoor?: WriteDoorOption;
 }
 
 class BudgetExceededError extends Error {
@@ -571,7 +576,7 @@ export class ActivityExecutor {
 
         // ── Lifecycle-subscriber contract: gates + {{lifecycle.*}} interpolation ──
         // (gap ias-executor-template-contract-mismatch; helpers above class)
-        const recordSkip = async (reason: string): Promise<void> => {
+        const recordSkip = async (reason: string, refusedShapes?: string[]): Promise<void> => {
           skippedTaskIds.add(rawTask.id);
           // Skipped ≠ success and ≠ failure: no resolver ran. The record
           // carries skipped=true; success=true only keeps the trace's
@@ -586,12 +591,13 @@ export class ActivityExecutor {
             outputShapes: [],
             success: true,
             skipped: true,
+            ...(refusedShapes ? { skipReason: reason } : {}),
             durationMs: 0,
           });
           await this.emit({
             type: "task.skipped",
             timestamp: this.runtime.clock.now(),
-            data: { executionId, taskId: rawTask.id, templateId: template.id, reason },
+            data: { executionId, taskId: rawTask.id, templateId: template.id, reason, ...(refusedShapes ? { refusedShapes } : {}) },
           });
         };
         // Dependency-skip propagation: a task whose dependency was skipped is
@@ -600,6 +606,14 @@ export class ActivityExecutor {
         const deps = Array.isArray(rawTask["dependencies"]) ? (rawTask["dependencies"] as unknown[]) : [];
         if (deps.some((d) => typeof d === "string" && skippedTaskIds.has(d))) {
           await recordSkip("dependency_skipped");
+          continue;
+        }
+        // WRITE DOOR (write-door.ts): on a dispatch not admitted as a change, a task that would write is skipped and
+        // recorded before any gate, interpolation or resolver runs. No option ⇒ nothing is refused.
+        const refusedWrites = refusedTaskWrites(rawTask, options.writeDoor);
+        if (refusedWrites.length > 0) {
+          console.log(noteTaskWriteDrop(refusedWrites));
+          await recordSkip(WRITE_DOOR_SKIP_REASON, refusedWrites);
           continue;
         }
         if (rawTask["conditional"] !== undefined && rawTask["conditional"] !== null) {
@@ -821,6 +835,7 @@ export class ActivityExecutor {
             budget,
             maxCompositionDepth: options.maxCompositionDepth,
             tags: options.tags,
+            writeDoor: options.writeDoor,
           });
           storedOutputs = result.outputs;
           taskCostUsd = result.childTrace.costUsd;
@@ -848,6 +863,7 @@ export class ActivityExecutor {
             budget,
             maxCompositionDepth: options.maxCompositionDepth,
             tags: options.tags,
+            writeDoor: options.writeDoor,
           });
           storedOutputs = result.outputs;
           taskCostUsd = result.totalChildCostUsd;
@@ -885,6 +901,7 @@ export class ActivityExecutor {
                   budget,
                   maxCompositionDepth: options.maxCompositionDepth,
                   tags: options.tags,
+                  writeDoor: options.writeDoor,
                 },
               );
               const aOut = cr.outputs;
@@ -1756,6 +1773,7 @@ export class ActivityExecutor {
       budget?: ExecutionBudget;
       maxCompositionDepth?: number;
       tags?: string[];
+      writeDoor?: WriteDoorOption;
     },
   ): Promise<{ outputs: Impulse[]; childTrace: ExecutionTrace }> {
     if (!task.subActivityId) {
@@ -1816,6 +1834,8 @@ export class ActivityExecutor {
       // activation thresholds. Tag inheritance multiplies tag density by the
       // composition fan-out factor (~5-10x in practice).
       tags: opts.tags,
+      // The write door holds in the child: a composed child's tasks are the parent's tasks.
+      writeDoor: opts.writeDoor,
     });
 
     if (childTrace.status === "failed") {
@@ -1858,6 +1878,7 @@ export class ActivityExecutor {
       budget?: ExecutionBudget;
       maxCompositionDepth?: number;
       tags?: string[];
+      writeDoor?: WriteDoorOption;
     },
   ): Promise<{ outputs: Impulse[]; childTraces: ExecutionTrace[]; totalChildCostUsd: number }> {
     const ids = task.subActivityIds;
@@ -1904,6 +1925,7 @@ export class ActivityExecutor {
           compositionTemplateChain: opts.compositionTemplateChain,
           maxCompositionDepth: opts.maxCompositionDepth,
           tags: opts.tags,
+          writeDoor: opts.writeDoor,
         });
       }),
     );

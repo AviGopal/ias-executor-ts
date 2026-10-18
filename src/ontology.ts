@@ -199,6 +199,8 @@ export interface ExecutionTaskRecord {
    *  success=true is kept only so clean-chain trace finalization holds, and
    *  consumers distinguish via this flag. */
   skipped?: boolean;
+  /** Why a skipped task was skipped, when the reason is not a gate: "write_door_not_admitted" (write-door.ts). */
+  skipReason?: string;
   error?: string;
   costUsd?: number;
   tokensInput?: number;

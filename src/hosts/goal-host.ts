@@ -80,6 +80,7 @@ import {
 } from "../lifecycle-subscriber";
 import { SHARED_TEMPLATES, loadSubscriberTemplates } from "../templates/index";
 import type { ExecuteOptions } from "../engine";
+import type { WriteDoorOption } from "../write-door";
 import { SubscriberRunCounter, SUBSCRIBER_TRACE_MODE_ROW } from "../adapters/subscriber-run-counter";
 
 // ────────────────────────────────────────────────────────────────────────
@@ -794,6 +795,8 @@ export class GoalHost {
        * SELECTED under a signature that includes it.
        */
       seedImpulses?: Impulse[];
+      /** THE WRITE DOOR, task level (write-door.ts), passed to the execution. Absent ⇒ every task runs. */
+      writeDoor?: WriteDoorOption;
     } = {},
   ): Promise<GoalRunResult> {
     // Make the goal text resolvable as `{{goal}}` in every task by default
@@ -954,6 +957,7 @@ export class GoalHost {
       // unconditional in the bypass path; when recommend ran, we leave the
       // field absent (the schema is open).
       ...(opts.targetTemplateId ? { dispatchTargetTemplateId: opts.targetTemplateId } : {}),
+      ...(opts.writeDoor ? { writeDoor: opts.writeDoor } : {}),
     });
 
     return { trace, selectedTemplateId: templateId, recommendCandidates: candidates };

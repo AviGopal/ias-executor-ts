@@ -7,6 +7,7 @@ export * from "./engine";
 export * from "./impulse-provenance";
 export * from "./lifecycle-subscriber";
 export * from "./templates";
+export * from "./write-door";
 
 // hosts/ — VesselDaemon toolkit (Phase 0). GoalHost canonical location is
 // src/hosts/goal-host.ts. The examples/goal-host.ts copy is kept for
