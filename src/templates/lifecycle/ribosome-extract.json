@@ -71,7 +71,7 @@
       "outputImpulses": [
         "trace_signature"
       ],
-      "notes": "Uses http_fetch (dev-vessel proxy) to POST to activity-api's canonical /v2/impulses/resolve endpoint with the executionTraceWithSignatures pointer. The http_fetch resolver auto-attaches METABOB_API_KEY for substrate-local hosts. The signature shape is context-budget-conscious. DEADLINE: pointer.timeout_ms is this task's own read deadline (impulse-resolve honours an integer, clamped 1000..60000, and strips it before the POST). PROVISIONAL VALUE 8000 = the process default; re-set it from the measured p95 of this read once the signature fix is live. It must stay a JSON number: a {{placeholder}} or quoted value stays a string and silently falls back to the process default. SHORT-CIRCUIT: when qualityEligible is false in the lifecycle payload, skip the whole chain."
+      "notes": "Uses http_fetch (dev-vessel proxy) to POST to activity-api's canonical /v2/impulses/resolve endpoint with the executionTraceWithSignatures pointer. The http_fetch resolver auto-attaches METABOB_API_KEY for substrate-local hosts. The signature shape is context-budget-conscious. DEADLINE: pointer.timeout_ms is this task's own read deadline (impulse-resolve honours an integer, clamped 1000..60000, and strips it before the POST). PROVISIONAL VALUE 8000 = the process default; re-set it from the measured p95 of this read once the signature fix is live. It must stay a JSON number: an interpolated placeholder or a quoted value is a string and silently falls back to the process default. SHORT-CIRCUIT: when qualityEligible is false in the lifecycle payload, skip the whole chain."
     },
     {
       "id": "assess_quality",
