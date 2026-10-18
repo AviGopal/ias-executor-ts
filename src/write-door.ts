@@ -12,7 +12,7 @@
  *   - ABSENT  ⇒ every task runs. That is the default for every caller that does not pass it: lifecycle subscribers,
  *     ribosome extraction, tests, other hosts. Back-compatible by construction.
  *   - admitted: true ⇒ every task runs.
- *   - admitted: false ⇒ a task whose resolver id or any declared output shape `governs` refuses is SKIPPED: no resolver
+ *   - admitted: false ⇒ a task whose resolver id, pointer type or any declared output shape `governs` refuses is SKIPPED: no resolver
  *     runs, the task record carries skipped:true with skipReason "write_door_not_admitted", the task.skipped event names
  *     the shapes, one tagged line is logged, and writeDoorTaskCounters counts it. A task depending on it is
  *     dependency-skipped. compose / compose_parallel and activities-as-resolvers pass the option to their children.
@@ -41,10 +41,15 @@ export function resetWriteDoorTaskCounters(): void {
   counters.by_shape = {};
 }
 
-/** The shapes this task would write that the door refuses; empty when the task runs. */
-export function refusedTaskWrites(task: Pick<ActivityTask, "resolver" | "outputShapes">, door: WriteDoorOption | undefined): string[] {
+/** The shapes this task would write that the door refuses; empty when the task runs.
+ *  An impulse-resolve task writes the shape its config.pointer.type names (audit-test-report's test_audit_report_write,
+ *  ribosome-extract's activityTemplate_write), so that type counts too. The engine checks before interpolation, so a
+ *  `{{…}}` pointer type, or one set at run time from pointerFromImpulseSlots, is not recognised and still runs. */
+export function refusedTaskWrites(task: Pick<ActivityTask, "resolver" | "outputShapes" | "config">, door: WriteDoorOption | undefined): string[] {
   if (!door || door.admitted === true || typeof door.governs !== "function") return [];
-  const shapes = [task.resolver, ...(Array.isArray(task.outputShapes) ? task.outputShapes : [])]
+  const pointer = (task.config as { pointer?: { type?: unknown } } | undefined)?.pointer;
+  const pointerType = pointer && typeof pointer === "object" ? pointer.type : undefined;
+  const shapes = [task.resolver, pointerType, ...(Array.isArray(task.outputShapes) ? task.outputShapes : [])]
     .filter((s): s is string => typeof s === "string" && s.length > 0 && s !== "compose" && s !== "compose_parallel");
   return [...new Set(shapes)].filter((s) => door.governs(s));
 }

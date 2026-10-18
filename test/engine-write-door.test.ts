@@ -20,7 +20,7 @@ function setup() {
   const events = new EventSinkSpy();
   const traces = new TraceSinkSpy();
   const runtime = new ias.ExecutionRuntime({ random: new SequentialRandom(), clock: new SteppingClock(), eventSink: events, traceSink: traces });
-  for (const id of ["resolver_pattern_report", "concept_write", "uiPanel_write", "code_modification_proposal"]) {
+  for (const id of ["resolver_pattern_report", "concept_write", "uiPanel_write", "code_modification_proposal", "impulse-resolve"]) {
     const r: Resolver = {
       id,
       tier: "pattern",
@@ -281,5 +281,31 @@ describe("write door, nested resolvers", () => {
     await executor.execute(VIA_ACTIVITY, admitted);
     await executor.execute(VIA_ITERATION, admitted);
     expect(calls).toEqual(["resolver_pattern_report", "concept_write", "concept_write", "concept_write"]);
+  });
+});
+
+// An impulse-resolve task writes the shape its pointer names: the lifecycle audit-test-report persists through
+// pointer test_audit_report_write, ribosome-extract through activityTemplate_write.
+const viaPointer = (type: string): ActivityTemplate => ({
+  id: `resolve-${type}`,
+  name: "via pointer",
+  tasks: [{ id: "r1", description: "resolve", resolver: "impulse-resolve", config: { pointer: { type } }, outputShapes: ["writeAttempt"] }],
+});
+
+describe("write door, impulse-resolve pointer", () => {
+  test("must-fail: an impulse-resolve task whose pointer.type is a write is skipped with WRITE_DOOR_SKIP_REASON", async () => {
+    const { calls, events, executor } = setup();
+    const trace = await executor.execute(viaPointer("concept_write"), NOT_ADMITTED);
+    expect(calls).toEqual([]);
+    expect(trace.tasks[0]!.skipped).toBe(true);
+    expect(trace.tasks[0]!.skipReason).toBe(ias.WRITE_DOOR_SKIP_REASON);
+    expect(events.ofType("task.skipped").map((e) => (e.data as { refusedShapes?: string[] }).refusedShapes)).toEqual([["concept_write"]]);
+  });
+
+  test("control: an impulse-resolve read runs on a dispatch not admitted; a write runs with no door", async () => {
+    const { calls, executor } = setup();
+    await executor.execute(viaPointer("resolver_pattern_report"), NOT_ADMITTED);
+    await executor.execute(viaPointer("concept_write"), {});
+    expect(calls).toEqual(["impulse-resolve", "impulse-resolve"]);
   });
 });
