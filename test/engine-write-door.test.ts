@@ -10,6 +10,7 @@ import { ActivityApiAdapter, type RecommendResponse } from "../src/adapters/acti
 import { GoalHost } from "../src/hosts/goal-host";
 import { makeActivityResolver } from "../src/resolvers/activity";
 import { makeIterationResolver } from "../src/resolvers/iteration";
+import { makeImpulseResolveResolver } from "../src/resolvers/impulse-resolve";
 import { EventSinkSpy, SequentialRandom, SteppingClock, TraceSinkSpy } from "./fakes";
 
 const GOVERNS = (s: string) => /_write$/.test(s) || s === "code_modification_proposal";
@@ -308,4 +309,65 @@ describe("write door, impulse-resolve pointer", () => {
     await executor.execute(viaPointer("concept_write"), {});
     expect(calls).toEqual(["impulse-resolve", "impulse-resolve"]);
   });
+});
+
+// The pointer type the engine checks may not be the type that is sent: a {{impulse:…}} placeholder is interpolated after
+// the check, and pointerFromImpulseSlots merges fields inside the resolver. The resolver checks the FINAL type.
+function pointerRig() {
+  const runtime = new ias.ExecutionRuntime({ random: new SequentialRandom(), clock: new SteppingClock(), eventSink: new EventSinkSpy() });
+  runtime.resolvers.register({
+    id: "emit_type",
+    tier: "pattern",
+    async resolve(ctx) {
+      const type = String((ctx.task.config as { type?: unknown } | undefined)?.type);
+      return [{ id: ctx.random.id("t"), pointer: { type: "memo" }, metadata: { shape: "pointerTypeName" }, loaded: true, content: type }];
+    },
+  } as Resolver);
+  runtime.resolvers.register(makeImpulseResolveResolver({ activityApiEndpoint: "http://act.test", activityApiKey: "k" }));
+  const tpl = (type: string, how: "placeholder" | "slot"): ActivityTemplate => ({
+    id: `pointer-${how}`,
+    name: how,
+    tasks: [
+      { id: "p", description: "name the type", resolver: "emit_type", config: { type }, outputShapes: ["pointerTypeName"], outputImpulses: ["slotT"] },
+      how === "placeholder"
+        ? { id: "w", description: "resolve", resolver: "impulse-resolve", dependencies: ["p"], config: { pointer: { type: "{{impulse:slotT}}" } }, outputShapes: ["writeAttempt"] }
+        : { id: "w", description: "resolve", resolver: "impulse-resolve", dependencies: ["p"], inputImpulses: ["slotT"], config: { pointer: { type: "resolver_pattern_report" }, pointerFromImpulseSlots: { type: "slotT" } }, outputShapes: ["writeAttempt"] },
+    ],
+  } as ActivityTemplate);
+  return { runtime, executor: new ias.ActivityExecutor(runtime), tpl };
+}
+
+describe("write door, impulse-resolve final pointer type", () => {
+  let realFetch: typeof globalThis.fetch;
+  let posted: string[] = [];
+  beforeEach(() => {
+    realFetch = globalThis.fetch;
+    posted = [];
+    globalThis.fetch = (async (_u: string | URL | Request, init?: RequestInit) => {
+      posted.push((JSON.parse(init?.body as string) as { pointer: { type: string } }).pointer.type);
+      return new Response(JSON.stringify({ content: { ok: true } }), { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+  const refusal = (runtime: ias.ExecutionRuntime) =>
+    runtime.store.all().find((i) => i.metadata.source === "impulse-resolve")?.content as Record<string, unknown> | undefined;
+
+  for (const how of ["placeholder", "slot"] as const) {
+    test(`must-fail: a write pointer type supplied by ${how === "placeholder" ? "a {{impulse:slotT}} placeholder" : "pointerFromImpulseSlots"} is refused when not admitted`, async () => {
+      const { runtime, executor, tpl } = pointerRig();
+      await executor.execute(tpl("concept_write", how), NOT_ADMITTED);
+      expect(posted).toEqual([]);
+      expect(refusal(runtime)).toEqual({ skipped: true, skipReason: ias.WRITE_DOOR_SKIP_REASON, refusedShapes: ["concept_write"] });
+    });
+
+    test(`control (${how}): admitted sends the write; a read type is sent when not admitted; no door sends the write`, async () => {
+      for (const [type, opts] of [["concept_write", { writeDoor: { admitted: true, governs: GOVERNS } }], ["resolver_pattern_report", NOT_ADMITTED], ["concept_write", {}]] as const) {
+        const { executor, tpl } = pointerRig();
+        await executor.execute(tpl(type, how), opts as unknown as ExecuteOptions);
+      }
+      expect(posted).toEqual(["concept_write", "resolver_pattern_report", "concept_write"]);
+    });
+  }
 });

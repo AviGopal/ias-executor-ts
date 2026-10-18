@@ -28,6 +28,7 @@ const LLM_ENVELOPE_META = new Set(["model","requested_model","fallback_from","pr
  */
 
 import type { Resolver, ResolverContext } from "../resolvers";
+import { noteTaskWriteDrop, refusedTaskWrites, WRITE_DOOR_SKIP_REASON } from "../write-door";
 import type { Impulse } from "../ontology";
 
 interface ImpulseResolveConfig {
@@ -122,6 +123,30 @@ export function makeImpulseResolveResolver(options: {
             );
           }
           pointer[field] = parseSlotContent(imp.content);
+        }
+      }
+      // WRITE DOOR (write-door.ts) on the FINAL pointer type. The engine's task check runs before interpolation, so a
+      // {{impulse:…}} type or one merged from pointerFromImpulseSlots above first exists here. A refused write is not
+      // sent; the result records the skip as the iteration resolver's refused element does.
+      if (typeof pointer.type === "string") {
+        const refused = refusedTaskWrites({ resolver: pointer.type }, context.writeDoor);
+        if (refused.length > 0) {
+          console.log(noteTaskWriteDrop(refused));
+          return [
+            {
+              id: context.random.id(`resolve:${pointer.type}`),
+              pointer: { type: "memo" },
+              metadata: {
+                shape: pointer.type,
+                summary: `impulse-resolve: write door refused ${pointer.type} (dispatch not admitted)`,
+                source: "impulse-resolve",
+                degraded: true,
+                skipReason: WRITE_DOOR_SKIP_REASON,
+              },
+              loaded: true,
+              content: { skipped: true, skipReason: WRITE_DOOR_SKIP_REASON, refusedShapes: refused },
+            },
+          ];
         }
       }
       const endpoint = config.activityApiEndpoint ?? options.activityApiEndpoint ?? "";
