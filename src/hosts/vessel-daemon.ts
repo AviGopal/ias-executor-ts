@@ -184,6 +184,7 @@ export class VesselDaemon {
   private identityDownUntil = 0;
   private readonly policyDiscovery: HttpDiscoveryAdapter | undefined;
   private lastKnownMode: DaemonAuthMode | null = null;
+  private lastModeState = "";
   private policyCheckedAt = Number.NEGATIVE_INFINITY;
   private policyReadOk = false;
   private policyInflight: Promise<DaemonAuthMode> | null = null;
@@ -429,13 +430,24 @@ export class VesselDaemon {
         const r = await this.readPolicy();
         this.policyCheckedAt = Date.now();
         this.policyReadOk = r.ok;
+        const was = this.lastKnownMode;
+        let reason: "row" | "last-known" | "never-read";
         if (r.ok) {
-          if (r.mode !== this.lastKnownMode) console.log(`[daemon-auth] MODE node=${field(this.node)} vessel=${field(this.config.vesselId)} mode=${r.mode} was=${this.lastKnownMode ?? "unread"}`);
           this.lastKnownMode = r.mode;
+          reason = "row";
         } else {
           console.warn(`[daemon-auth] POLICY-UNREADABLE node=${field(this.node)} vessel=${field(this.config.vesselId)} keeping=${this.lastKnownMode ?? "report(never-read)"} why=${field(r.why)}`);
+          reason = this.lastKnownMode ? "last-known" : "never-read";
         }
-        return this.lastKnownMode ?? "report";
+        const mode = this.lastKnownMode ?? "report";
+        // WHY the mode is what it is: a post-restart report (never-read) must read differently from a
+        // deliberate one (row), and a kept enforce (last-known) from a freshly read one. One line per change.
+        const state = `${mode}/${reason}`;
+        if (state !== this.lastModeState) {
+          this.lastModeState = state;
+          console.log(`[daemon-auth] MODE node=${field(this.node)} vessel=${field(this.config.vesselId)} mode=${mode} reason=${reason} was=${was ?? "unread"}`);
+        }
+        return mode;
       })().finally(() => { this.policyInflight = null; });
     }
     return this.policyInflight;

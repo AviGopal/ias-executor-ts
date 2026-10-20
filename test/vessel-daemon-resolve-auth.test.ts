@@ -492,6 +492,49 @@ describe("the mode row: verified, local, and never silently downgraded", () => {
   });
 });
 
+describe("the MODE line says why", () => {
+  const modeLines = () => tagged("MODE");
+  it("a pool unreachable from the start reports with reason=never-read", async () => {
+    pool = { up: false };
+    expect((await resolve(makeDaemon(), "shell")).status).toBe(200);
+    const m = modeLines();
+    expect(m).toHaveLength(1);
+    expect(m[0]).toContain("mode=report reason=never-read");
+  });
+
+  it("a verified report row reports with reason=row (a deliberate report, distinguishable from never-read)", async () => {
+    pool = { mode: "report" };
+    expect((await resolve(makeDaemon(), "shell")).status).toBe(200);
+    expect(modeLines()).toHaveLength(1);
+    expect(modeLines()[0]).toContain("mode=report reason=row");
+  });
+
+  it("enforce read, then the pool unreachable: mode=enforce reason=last-known", async () => {
+    const t0 = new Date("2026-01-01T00:00:00Z").getTime();
+    setSystemTime(new Date(t0));
+    const d = makeDaemon();
+    expect((await resolve(d, "shell")).status).toBe(401);
+    pool = { up: false };
+    setSystemTime(new Date(t0 + POLICY_TTL_MS + 1));
+    expect((await resolve(d, "shell")).status).toBe(401);
+    const m = modeLines();
+    expect(m).toHaveLength(2);
+    expect(m[0]).toContain("mode=enforce reason=row");
+    expect(m[1]).toContain("mode=enforce reason=last-known");
+  });
+
+  it("an unchanged mode and reason logs no further MODE line", async () => {
+    const t0 = new Date("2026-01-01T00:00:00Z").getTime();
+    setSystemTime(new Date(t0));
+    const d = makeDaemon();
+    await resolve(d, "shell");
+    setSystemTime(new Date(t0 + POLICY_TTL_MS + 1));
+    await resolve(d, "shell");
+    expect(poolReads).toBe(2);
+    expect(modeLines()).toHaveLength(1);
+  });
+});
+
 describe("log hygiene", () => {
   it("a presented key never appears in any log line, and every line is one line", async () => {
     const FAKE = "mb-FAKEKEY-do-not-log-7f3a9c";
