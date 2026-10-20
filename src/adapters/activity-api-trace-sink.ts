@@ -82,6 +82,7 @@ export class TranslatingTraceSink implements TraceSink {
   private readonly fetch: FetchPort;
 
   private replayInFlight = false;
+  private replayStarted = false;
 
   constructor(
     private readonly endpoint: string,
@@ -113,9 +114,20 @@ export class TranslatingTraceSink implements TraceSink {
     } catch {
       // Environments that forbid function patching: ignore and proceed without stamping.
     }
+    // No spool replay here: constructing a sink touches neither the spool nor the network. A module that builds one at
+    // load (goal-host's index.ts, through GoalHost's adapter) is imported by tests and lane checks, and a replay started
+    // here ran against the LIVE spool from every one of them. The replay starts at the first record() or at start().
+  }
+
+  /**
+   * Start the spool replay: one pass now, then one every 5 s (a one-shot replay would miss files spooled later).
+   * Idempotent. record() calls it, so a sink that records drains as before; a service that must drain a backlog left by
+   * a restart before its first record calls it at boot.
+   */
+  start(): void {
+    if (this.replayStarted) return;
+    this.replayStarted = true;
     this._maybeStartSpoolReplayInternal();
-    // Start a periodic background scan to replay any spooled traces written after construction.
-    // A one-shot replay risks missing files created later; a short interval keeps it draining.
     try {
       const iv = setInterval(() => { this._maybeStartSpoolReplayInternal(); }, 5000) as unknown as { unref?: () => void };
       // iv.unref?.(); // Keep process alive to allow spool replay timer to fire.
@@ -281,6 +293,7 @@ export class TranslatingTraceSink implements TraceSink {
   }
 
   async record(trace: ExecutionTrace): Promise<void> {
+    this.start();
     this._maybeStartSpoolReplayInternal();
 
     // 2026-05-20 bug fix: StoreExecutionTraceRequestSchema's status enum is
