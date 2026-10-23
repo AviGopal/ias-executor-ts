@@ -4,7 +4,7 @@
   "description": "Replays goal-host's closed, append-only verdict corpus against the live in-process judge entries, publishes the verdictCorpusStatus record the credit hold reads, records a traced verdictCorpusReport, and files one gap per red case. Started by the time-shaped verdict-corpus rhythm and once at goal-host boot. Bootstrap tier: a containment check cannot be earned before it exists, so this template is seeded rather than extracted.",
   "category": "meta",
   "version": "0.1.0",
-  "tags": ["lifecycle", "meta", "judge", "verdict-corpus"],
+  "tags": ["lifecycle", "meta", "judge", "verdict.corpus"],
   "input_shapes": ["verdictCorpusRun"],
   "output_shapes": ["verdictCorpusReport"],
   "variables": [
