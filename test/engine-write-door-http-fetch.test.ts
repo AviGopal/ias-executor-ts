@@ -114,6 +114,26 @@ describe("write door, http_fetch POST to a resolve endpoint", () => {
     expect(out.map((r) => r.refusedShapes)).toEqual([["substrateGap_write"], ["substrateGap_write"]]);
   });
 
+  test("must-fail: a resolve URL with a query, a trailing slash or a fragment, and discovery's bare /resolve, are judged", async () => {
+    for (const url of [`${RESOLVE}?x=1`, `${RESOLVE}/`, `${RESOLVE}#f`, "http://127.0.0.1:8100/resolve"]) {
+      const { sent, events, executor } = setup();
+      await executor.execute(one(fetchTask(post(GAP_BODY, url))), NOT_ADMITTED);
+      expect({ url, sent: sent.length }).toEqual({ url, sent: 0 });
+      expect(refusedOf(events)).toEqual([["substrateGap_write"]]);
+    }
+  });
+
+  test("must-fail: a POST whose url is not a string (object, array, an unbound {{…}}) is opaque, never a fall-through to config", async () => {
+    for (const url of [{ href: RESOLVE }, [RESOLVE], "{{resolveUrl}}"]) {
+      const { sent, events, executor } = setup();
+      // config.url is a harmless non-resolve URL: falling through to it would send the POST.
+      const config = { type: "http_fetch", url: "http://127.0.0.1:8080/health", pointer: { type: "http_fetch", method: "POST", url, body: GAP_BODY } };
+      await executor.execute(one(fetchTask(config)), NOT_ADMITTED);
+      expect({ url, sent: sent.length }).toEqual({ url, sent: 0 });
+      expect(refusedOf(events)).toEqual([[OPAQUE]]);
+    }
+  });
+
   test("control: a GET (explicit or the default) to the resolve URL runs on a read goal", async () => {
     const { sent, executor } = setup();
     await executor.execute(one(fetchTask({ type: "http_fetch", method: "GET", url: RESOLVE })), NOT_ADMITTED);
@@ -125,6 +145,14 @@ describe("write door, http_fetch POST to a resolve endpoint", () => {
     const { sent, executor } = setup();
     await executor.execute(one(fetchTask(post(GAP_BODY, "http://127.0.0.1:8080/v2/activities/discover-by-shapes"))), NOT_ADMITTED);
     expect(sent.length).toBe(1);
+  });
+
+  test("control: a POST to a path that only contains resolve (resolver, resolved, /resolve/x) is not judged", async () => {
+    const { sent, executor } = setup();
+    for (const url of ["http://127.0.0.1:8080/v2/resolver", "http://127.0.0.1:8080/v2/impulses/resolved", "http://127.0.0.1:8080/resolve/extra"]) {
+      await executor.execute(one(fetchTask(post(GAP_BODY, url))), NOT_ADMITTED);
+    }
+    expect(sent.length).toBe(3);
   });
 
   test("control: a resolve POST of a read type runs, including a read type bound from a {{…}} variable", async () => {
