@@ -64,6 +64,55 @@ export function refusedTaskWrites(task: Pick<ActivityTask, "resolver" | "outputS
   return [...new Set(shapes)].filter((s) => door.governs(s));
 }
 
+/** The marker refused for a resolve POST whose body names no literal impulse type (goal-host's door uses the same). */
+export const OPAQUE_RESOLVE_WRITE = "opaque_resolve_write";
+
+/** The shapes an http_fetch task's POST to an impulse resolve endpoint would write that the door refuses; empty when it
+ *  runs. Such a task writes whatever impulse its BODY names, so its resolver id, pointer type and outputs say nothing of
+ *  it. The same classification as goal-host's door, judged here on the BOUND config (call it after template binding):
+ *  - an http_fetch task: resolver (less its `/kind`), config.type or config.pointer.type is `http_fetch`; the request is
+ *    config.pointer when that carries the url, else config;
+ *  - GET/HEAD (the http_fetch default) and a POST to a URL whose path does not end in `/resolve` (`/v2/impulses/resolve`
+ *    included) are not judged; any host counts, since a remote resolve POST writes too;
+ *  - the body's impulse.type, impulse.pointer.type, pointer.type and type are judged like a native task's shape;
+ *  - a missing or unparseable body, one naming no literal type, or one still holding `{{` is OPAQUE_RESOLVE_WRITE,
+ *    refused without asking governs (fail closed). */
+export function refusedResolvePostWrites(task: Pick<ActivityTask, "resolver" | "config">, door: WriteDoorOption | undefined): string[] {
+  if (!door || door.admitted === true || typeof door.governs !== "function") return [];
+  const field = (o: unknown, k: string): unknown => (o && typeof o === "object" ? (o as Record<string, unknown>)[k] : undefined);
+  const config = task.config;
+  const pointer = field(config, "pointer");
+  const isFetch =
+    (typeof task.resolver === "string" && servedShape(task.resolver) === "http_fetch") ||
+    field(config, "type") === "http_fetch" ||
+    field(pointer, "type") === "http_fetch";
+  if (!isFetch) return [];
+  const request = typeof field(pointer, "url") === "string" ? pointer : config;
+  const url = field(request, "url");
+  if (typeof url !== "string") return [];
+  const method = field(request, "method");
+  const verb = typeof method === "string" ? method.toUpperCase() : "GET";
+  if (verb === "GET" || verb === "HEAD") return [];
+  if (!url.split(/[?#]/)[0]!.replace(/\/+$/, "").endsWith("/resolve")) return [];
+  const raw = field(request, "body");
+  let body: unknown = raw;
+  if (typeof raw === "string") {
+    if (raw.includes("{{")) return [OPAQUE_RESOLVE_WRITE];
+    try {
+      body = JSON.parse(raw);
+    } catch {
+      return [OPAQUE_RESOLVE_WRITE];
+    }
+  } else if (raw && typeof raw === "object" && JSON.stringify(raw).includes("{{")) {
+    return [OPAQUE_RESOLVE_WRITE];
+  }
+  const impulse = field(body, "impulse");
+  const types = [field(impulse, "type"), field(field(impulse, "pointer"), "type"), field(field(body, "pointer"), "type"), field(body, "type")]
+    .filter((s): s is string => typeof s === "string" && s.length > 0);
+  if (types.length === 0) return [OPAQUE_RESOLVE_WRITE];
+  return [...new Set(types)].filter((s) => door.governs(s));
+}
+
 /** Count one skipped task and return its tagged line. */
 export function noteTaskWriteDrop(refused: readonly string[]): string {
   counters.dropped_tasks++;

@@ -7,7 +7,7 @@ import { VesselResolver } from "./adapters/vessel-resolver";
 import { classifyShape } from "./shape-lifecycle";
 import { ORIGIN_RANK, provenanceLedger, type BindingScope } from "./impulse-provenance";
 import type { ConsumedImpulseProvenance } from "./ontology";
-import { noteTaskWriteDrop, refusedTaskWrites, servedShape, WRITE_DOOR_SKIP_REASON, type WriteDoorOption } from "./write-door";
+import { noteTaskWriteDrop, refusedResolvePostWrites, refusedTaskWrites, servedShape, WRITE_DOOR_SKIP_REASON, type WriteDoorOption } from "./write-door";
 
 /**
  * Leaf-LLM cost pricing — MEASUREMENT SEAM.
@@ -721,6 +721,14 @@ export class ActivityExecutor {
             });
             throw interpErr;
           }
+        }
+        // WRITE DOOR on the BOUND config (write-door.ts refusedResolvePostWrites): a POST to an impulse resolve endpoint
+        // writes the type its body names, which only exists once a `{{…}}` body or type is bound.
+        const refusedPosts = refusedResolvePostWrites(task, options.writeDoor);
+        if (refusedPosts.length > 0) {
+          console.log(noteTaskWriteDrop(refusedPosts));
+          await recordSkip(WRITE_DOOR_SKIP_REASON, refusedPosts);
+          continue;
         }
         if (budget?.maxTaskCount !== undefined && taskRecords.length >= budget.maxTaskCount) {
           throw new BudgetExceededError("task_count", taskRecords.length, budget.maxTaskCount);
