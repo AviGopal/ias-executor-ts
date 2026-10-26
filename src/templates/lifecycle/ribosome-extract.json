@@ -176,7 +176,7 @@
           "type": "activityTemplate_write",
           "operation": "create",
           "goalSignature": "{{lifecycle.goalSignature}}",
-          "anchor": "{{anchor}}",
+          "anchor": "{{lifecycle.executionId}}",
           "live_execution": true
         },
         "pointerFromImpulseSlots": {
@@ -189,7 +189,7 @@
       "outputImpulses": [
         "write_result"
       ],
-      "notes": "Persists the synthesized template via the `activityTemplate_write` write resolver advertised by activity-api. CONDITIONAL: gated on `applyExtraction` variable (default false). When the resolver fails (network, validation, etc.), the chain still completes - extract is best-effort. KNOWN-LIMITATION: activityTemplate_write requires admin scope per CLAUDE.md; canary keys are read,write only, so 401/403 is expected until operator action is taken (next gap if reached). The http_fetch resolver auto-attaches METABOB_API_KEY for substrate-local hosts but the key's scope may not include admin. The anchor field is required by the write resolver contract to prevent anchor_not_found errors; live_execution=true ensures the write occurs on a live execution path. WRITE CONTRACT: the write sends validated_template (the proposal after validate_proposal's normalisation), and is gated on proposal_validation.passed, so a refused proposal is never sent."
+      "notes": "Persists the synthesized template via the `activityTemplate_write` write resolver advertised by activity-api. CONDITIONAL: gated on `applyExtraction` variable (default false). When the resolver fails (network, validation, etc.), the chain still completes - extract is best-effort. KNOWN-LIMITATION: activityTemplate_write requires admin scope per CLAUDE.md; canary keys are read,write only, so 401/403 is expected until operator action is taken (next gap if reached). The http_fetch resolver auto-attaches METABOB_API_KEY for substrate-local hosts but the key's scope may not include admin. The anchor field is required by the write resolver contract to prevent anchor_not_found errors; live_execution=true ensures the write occurs on a live execution path. ANCHOR SOURCE (fixed 2026-10-25): `anchor` is NOT a declared template variable and the lifecycle-subscriber dispatcher never supplies one — `{{anchor}}` was a silently-unbound placeholder shipping its own literal text into every real activityTemplate_write call (the same ghost-write class the engine's unbound_template_variable gate now catches, which is why this field had to move). The triggering parent execution's id (`{{lifecycle.executionId}}`, the same value acquire_trace_signature already keys its own read on, above) is the one identifier this chain genuinely has for \"the live execution this extraction is anchored to\" — it satisfies live_execution=true's contract without inventing a new input. WRITE CONTRACT: the write sends validated_template (the proposal after validate_proposal's normalisation), and is gated on proposal_validation.passed, so a refused proposal is never sent."
     },
     {
       "id": "dispatch_write_succeeded",
