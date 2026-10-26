@@ -651,100 +651,49 @@ export class ActivityExecutor {
         // dispatch sees it. Unresolvable ⇒ structured UNRESOLVABLE_PLACEHOLDER
         // throw — the literal placeholder string never reaches a resolver.
         let task: ActivityTask = rawTask;
-        // Plain {{name}} references the TEMPLATE AUTHOR wrote in this task's config,
-        // collected from the raw config BEFORE any substitution (see the fail-closed
-        // check below). A bound value may itself carry {{...}} text — a drafted
-        // activity template, a fetched page, handlebars code, an LLM answer quoting a
-        // template — and that text is data, not an unbound reference, so it must
-        // never be judged. Neither the lifecycle.* nor the impulse:* pass mints a
-        // plain reference of its own (each only replaces its own namespace), so the
-        // raw config is exactly the set the author asked to be bound.
-        const plainRunVariableRefs: string[] = [];
+        // Plain {{name}} occurrences the template author wrote that this task's binding
+        // pass could not bind (see bindTemplateTokens and the fail-closed check below).
+        let unboundPlainNames: string[] = [];
         if (rawTask.config) {
           try {
-            for (const m of JSON.stringify(rawTask.config).matchAll(/\{\{\s*([^{}]+?)\s*\}\}/g)) {
-              const name = m[1]!.trim();
-              if (name.startsWith("lifecycle.") || name.startsWith("impulse:")) continue;
-              if (!plainRunVariableRefs.includes(name)) plainRunVariableRefs.push(name);
-            }
-          } catch { /* unserializable config: nothing to judge */ }
-        }
-        if (rawTask.config) {
-          try {
-            // This pass resolves {{impulse:<slot>}} and {{impulse:<slot>.<field>}} placeholders in the task config into their concrete values.
-    const interpolateImpulseRefs = (value: unknown): unknown => {
-              if (typeof value === "string") {
-                return value.replace(/\{\{\s*impulse:([^}]+?)\s*\}\}/g, (m, slot) => {
-                  const r = resolveImpulseSlot(String(slot).trim());
-                  return r === undefined ? m : r;
-                });
-              }
-              if (Array.isArray(value)) {
-                return value.map(interpolateImpulseRefs);
-              }
-              if (value && typeof value === "object") {
-                const out: Record<string, unknown> = {};
-                for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-                  out[k] = interpolateImpulseRefs(v);
-                }
-                return out;
-              }
-              return value;
-            };
-            // Plain {{<name>}} substitution from the run's variables (accumulatedVariables
-            // / context.variables — the SAME map resolvers read as ctx.variables, and the
-            // convention documented above at `<taskId>_text` etc.). Runs AFTER the
-            // lifecycle.*/impulse:* passes (so those namespaces are untouched here) and
-            // BEFORE any resolver sees the config — including a leaf task's `config.prompt`
-            // (e.g. llm_completion_dispatch's prompt text), which previously shipped with
-            // `{{analyze_text}}`/`{{qualityThreshold}}`-style tokens still literal because
-            // nothing ever substituted them (the measured ghost-write: a VesselResolver
-            // forwards task.config AS-IS, so the literal token became the written/sent
-            // content itself). Skipped entirely for dispatcher-style resolvers whose config
-            // carries a NESTED sub-task/sub-template spec resolved later, in a different
-            // context: llm-prompt (its own task.prompt.template interpolation),
-            // compose/compose_parallel (a recursive executor.execute on a sub-template),
-            // iteration (its own per-element `_interpolate` on `body.config`), and activity
-            // (config.variables feeds a recursive executor.execute). A WHOLE-string match
-            // (the value is exactly "{{name}}", nothing else) preserves the bound value's
-            // type (object/array/number survive, not just their JSON.stringify'd form);
-            // a partial/inline match stringifies, mirroring resolveLifecyclePlaceholders'
-            // WHOLE_LIFECYCLE_RE / INLINE_LIFECYCLE_RE split above.
-            const substituteRunVariables = (value: unknown): unknown => {
-              if (typeof value === "string") {
-                const whole = /^\{\{\s*([^{}]+?)\s*\}\}$/.exec(value);
-                if (whole) {
-                  const key = whole[1]!.trim();
-                  if (key.startsWith("lifecycle.") || key.startsWith("impulse:")) return value;
-                  if (!Object.prototype.hasOwnProperty.call(accumulatedVariables, key)) return value;
-                  const v = accumulatedVariables[key];
-                  return v === undefined || v === null ? value : v;
-                }
-                return value.replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (m, name: string) => {
-                  const key = name.trim();
-                  if (key.startsWith("lifecycle.") || key.startsWith("impulse:")) return m;
-                  if (!Object.prototype.hasOwnProperty.call(accumulatedVariables, key)) return m;
-                  const v = accumulatedVariables[key];
-                  if (v === undefined || v === null) return m;
-                  return typeof v === "string" ? v : JSON.stringify(v);
-                });
-              }
-              if (Array.isArray(value)) return value.map(substituteRunVariables);
-              if (value && typeof value === "object") {
-                const out: Record<string, unknown> = {};
-                for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-                  out[k] = substituteRunVariables(v);
-                }
-                return out;
-              }
-              return value;
-            };
+            // ONE binding pass over the RAW config (engine.interpolation.ts bindTemplateTokens):
+            // every {{lifecycle.*}}, {{impulse:<slot>[.<field>]}} and plain {{<name>}} token
+            // OCCURRENCE in the template text is resolved by its own namespace and spliced in,
+            // and no replacement text is ever rescanned. Sequential passes rescanned each
+            // other's output, so data that itself carries {{...}} text was re-bound: an
+            // impulse resolving to "PAGE says {{analyze_text}}" got the run variable
+            // substituted inside it, and a lifecycle or run-variable value holding
+            // "{{impulse:x}}" got the impulse expanded inside it. Positional, not by name:
+            // the same name written raw AND arriving inside injected data binds only at the
+            // raw occurrence.
+            //
+            // Plain {{<name>}} reads the run's variables (accumulatedVariables — the SAME map
+            // resolvers read as ctx.variables, `<taskId>_text` etc.). It is NOT applied:
+            // - for dispatcher-style resolvers whose config carries a NESTED sub-task/sub-
+            //   template spec resolved later, in a different context: llm-prompt (its own
+            //   task.prompt.template interpolation), compose/compose_parallel (a recursive
+            //   executor.execute on a sub-template), iteration (its own per-element
+            //   `_interpolate` on `body.config`), activity (config.variables feeds a
+            //   recursive executor.execute);
+            // - to the prompt-text fields of an llm_completion_dispatch task (prompt, system,
+            //   system_prompt, messages): drafting prompts ship as authored, byte-identical
+            //   to the engine before plain substitution existed. lifecycle/impulse tokens
+            //   there bind as before.
             const DISPATCHER_RESOLVERS_FOR_VAR_SUB = new Set(["llm-prompt", "compose", "compose_parallel", "iteration", "activity"]);
-            const preBound = interpolateImpulseRefs(resolveLifecyclePlaceholders(rawTask.config, lifecycleContext, rawTask.id));
-            const boundConfig =
-              typeof rawTask.resolver === "string" && DISPATCHER_RESOLVERS_FOR_VAR_SUB.has(rawTask.resolver)
-                ? preBound
-                : substituteRunVariables(preBound);
+            const LLM_PROMPT_TEXT_FIELDS: ReadonlySet<string> = new Set(["prompt", "system", "system_prompt", "messages"]);
+            const isLlmCompletionDispatch =
+              rawTask.resolver === "llm_completion_dispatch" ||
+              (rawTask.config as Record<string, unknown>)["type"] === "llm_completion_dispatch";
+            const binding = bindTemplateTokens(rawTask.config, {
+              taskId: rawTask.id,
+              lifecycleData: lifecycleContext,
+              resolveImpulseSlot,
+              variables: accumulatedVariables,
+              bindPlainNames: !(typeof rawTask.resolver === "string" && DISPATCHER_RESOLVERS_FOR_VAR_SUB.has(rawTask.resolver)),
+              ...(isLlmCompletionDispatch ? { plainExcludedTopLevelKeys: LLM_PROMPT_TEXT_FIELDS } : {}),
+            });
+            unboundPlainNames = binding.unboundPlainNames;
+            const boundConfig = binding.config;
             task = {
               ...rawTask,
               config: boundConfig as Record<string, unknown>,
@@ -890,9 +839,10 @@ export class ActivityExecutor {
 
         // FAIL CLOSED on an unresolved required template variable (ghost-write class,
         // measured on development-vessel's draft-gap-closing-activity, 2026-10-25).
-        // The pass above now substitutes every plain {{name}} it can resolve from the
-        // run's variables, including inside config.prompt — so anything still literal
-        // here is a GENUINE unbound binding: either a name absent from accumulatedVariables
+        // The binding pass above substitutes every plain {{name}} occurrence it was asked
+        // to bind and can resolve from the run's variables (not llm_completion_dispatch
+        // prompt text, not dispatcher configs) — so any it reports is a GENUINE unbound
+        // binding: either a name absent from accumulatedVariables
         // (a cross-task `<taskId>_text` reference whose producer never ran, or a request-
         // level variable nobody supplied), or an `{{impulse:<slot>}}` reference whose slot
         // was never bound (interpolateImpulseRefs leaves those literal on a miss, by design,
@@ -922,14 +872,10 @@ export class ActivityExecutor {
           typeof task.resolver === "string" &&
           !DISPATCHER_RESOLVERS_FOR_UNBOUND_CHECK.has(task.resolver)
         ) {
-          // Judge the RAW config's plain references (collected above, before any
-          // substitution) against the run's variables — never rescan the substituted
-          // output, whose bound values may legitimately contain {{...}} text.
-          const unboundMatch = plainRunVariableRefs.find((name) => {
-            if (!Object.prototype.hasOwnProperty.call(accumulatedVariables, name)) return true;
-            const v = accumulatedVariables[name];
-            return v === undefined || v === null;
-          });
+          // Judged on the RAW config's own plain occurrences (reported by the binding pass
+          // above) — never by rescanning the bound output, whose values may legitimately
+          // contain {{...}} text.
+          const unboundMatch = unboundPlainNames[0];
           if (unboundMatch !== undefined) {
             const unboundName = unboundMatch;
             taskRecords.push({
@@ -2246,6 +2192,6 @@ export class ActivityExecutor {
 }
 
 // --- parity-gated seam extraction: moved decls now live in ./engine.interpolation ---
-import { capForAccumulator, evaluateConditionalGate, isParseableJsonArtifact, resolveLifecyclePlaceholders, structuredError } from "./engine.interpolation";
+import { bindTemplateTokens, capForAccumulator, evaluateConditionalGate, isParseableJsonArtifact, resolveLifecyclePlaceholders, structuredError } from "./engine.interpolation";
 export { evaluateConditionalGate, isParseableJsonArtifact, resolveLifecyclePlaceholders } from "./engine.interpolation";
 export type { GateEvaluationContext } from "./engine.interpolation";

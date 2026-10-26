@@ -241,3 +241,110 @@ export function evaluateConditionalGate(
   }
   return true;
 }
+
+/** Any `{{<token>}}` occurrence; the token's namespace is decided per occurrence. */
+const TEMPLATE_TOKEN_RE = /\{\{\s*([^{}]+?)\s*\}\}/g;
+const WHOLE_TEMPLATE_TOKEN_RE = /^\{\{\s*([^{}]+?)\s*\}\}$/;
+const LIFECYCLE_TOKEN_NAME_RE = /^lifecycle\.([^{}\s]+)$/;
+
+export interface TemplateTokenBindingContext {
+  taskId: string;
+  /** Triggering lifecycle impulse data; an unresolvable `{{lifecycle.*}}` throws UNRESOLVABLE_PLACEHOLDER. */
+  lifecycleData: Record<string, unknown>;
+  /** Resolve an `{{impulse:<slot>}}` reference; undefined leaves the token literal. */
+  resolveImpulseSlot: (slot: string) => string | undefined;
+  /** The run's variables (accumulatedVariables), read for plain `{{name}}` tokens. */
+  variables: Record<string, unknown>;
+  /** False: plain `{{name}}` tokens are not this layer's to bind anywhere in the config. */
+  bindPlainNames: boolean;
+  /** Top-level config keys whose subtree keeps plain `{{name}}` tokens literal (LLM prompt text). */
+  plainExcludedTopLevelKeys?: ReadonlySet<string>;
+}
+
+export interface TemplateTokenBinding {
+  config: Record<string, unknown>;
+  /** Plain names, in first-occurrence order, of raw-config tokens this pass was asked to bind and could not. */
+  unboundPlainNames: string[];
+}
+
+/**
+ * Bind every `{{lifecycle.*}}`, `{{impulse:*}}` and plain `{{name}}` token in ONE pass over
+ * the RAW task config. Each token OCCURRENCE the template author wrote is resolved by its
+ * own namespace and spliced in; the replacement text is never rescanned, so a bound value
+ * that itself carries `{{...}}` text (a drafted template, a fetched page, an LLM answer
+ * quoting a template, a run variable holding "{{impulse:x}}") is data and stays verbatim.
+ *
+ * Namespace contracts kept from the separate passes this replaces:
+ * - lifecycle: a whole-string token keeps the value's type, an inline one is stringified;
+ *   unresolvable throws; subtrees under `_`-prefixed keys are not lifecycle-bound.
+ * - impulse: resolves to the slot's string; a miss leaves the token literal.
+ * - plain: an own, non-null variable binds (whole keeps type; inline stringifies strings
+ *   as-is, anything else as JSON); otherwise the token stays literal and is reported in
+ *   `unboundPlainNames`. Skipped entirely when `bindPlainNames` is false, and under
+ *   `plainExcludedTopLevelKeys`.
+ */
+export function bindTemplateTokens(
+  config: Record<string, unknown>,
+  ctx: TemplateTokenBindingContext,
+): TemplateTokenBinding {
+  const unbound: string[] = [];
+  const NONE = Symbol("unbound");
+  const resolveToken = (rawName: string, whole: boolean, lifecycle: boolean, plain: boolean): unknown => {
+    const name = rawName.trim();
+    if (name.startsWith("lifecycle.")) {
+      const lc = LIFECYCLE_TOKEN_NAME_RE.exec(name);
+      if (!lifecycle || !lc) return NONE;
+      const path = lc[1]!;
+      const res = resolveDottedPath(ctx.lifecycleData, path);
+      if (!res.found) {
+        throw structuredError(
+          "UNRESOLVABLE_PLACEHOLDER",
+          `UNRESOLVABLE_PLACEHOLDER: task '${ctx.taskId}': unresolvable placeholder {{lifecycle.${path}}} — ` +
+            `path not present in the triggering lifecycle impulse data`,
+          { code: "UNRESOLVABLE_PLACEHOLDER", taskId: ctx.taskId, placeholder: `{{lifecycle.${path}}}` },
+        );
+      }
+      return whole ? res.value : stringifyForInline(res.value);
+    }
+    if (name.startsWith("impulse:")) {
+      const r = ctx.resolveImpulseSlot(name.slice("impulse:".length).trim());
+      return r === undefined ? NONE : r;
+    }
+    if (!plain) return NONE;
+    const v = Object.prototype.hasOwnProperty.call(ctx.variables, name) ? ctx.variables[name] : undefined;
+    if (v === undefined || v === null) {
+      if (!unbound.includes(name)) unbound.push(name);
+      return NONE;
+    }
+    if (whole) return v;
+    return typeof v === "string" ? v : JSON.stringify(v);
+  };
+  const walk = (value: unknown, lifecycle: boolean, plain: boolean): unknown => {
+    if (typeof value === "string") {
+      const whole = WHOLE_TEMPLATE_TOKEN_RE.exec(value);
+      if (whole) {
+        const r = resolveToken(whole[1]!, true, lifecycle, plain);
+        return r === NONE ? value : r;
+      }
+      return value.replace(TEMPLATE_TOKEN_RE, (m, name: string) => {
+        const r = resolveToken(name, false, lifecycle, plain);
+        return r === NONE ? m : (r as string);
+      });
+    }
+    if (Array.isArray(value)) return value.map((v) => walk(v, lifecycle, plain));
+    if (value !== null && typeof value === "object") {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        out[k] = walk(v, lifecycle && !k.startsWith("_"), plain);
+      }
+      return out;
+    }
+    return value;
+  };
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(config)) {
+    const plain = ctx.bindPlainNames && !(ctx.plainExcludedTopLevelKeys?.has(k) ?? false);
+    out[k] = walk(v, !k.startsWith("_"), plain);
+  }
+  return { config: out, unboundPlainNames: unbound };
+}

@@ -11,8 +11,9 @@
  * AS-IS (vessel-resolver.ts), so the literal survived all the way into the
  * real write/send. engine.ts's pre-dispatch pass now substitutes plain
  * `{{name}}` tokens from accumulatedVariables (the SAME map every resolver
- * reads as `ctx.variables`) into task.config, including `config.prompt` —
- * BEFORE any resolver runs. `{{lifecycle.*}}` and `{{impulse:*}}` keep their
+ * reads as `ctx.variables`) into task.config BEFORE any resolver runs — except
+ * an llm_completion_dispatch task's prompt-text fields (prompt, system,
+ * system_prompt, messages), which ship as authored. `{{lifecycle.*}}` and `{{impulse:*}}` keep their
  * own existing resolution; dispatcher-style resolvers (llm-prompt, compose,
  * compose_parallel, iteration, activity) keep their nested spec untouched.
  */
@@ -32,7 +33,7 @@ function makeRuntime() {
 }
 
 describe("plain {{name}} substitution from run variables, pre-dispatch", () => {
-  test("must-fail: a draft-gap-closing-shaped chain substitutes analyze's prompt AND write_report's content from prior task outputs (not the literal placeholders)", async () => {
+  test("must-fail: a draft-gap-closing-shaped chain substitutes write_report's content from prior task outputs; analyze's LLM prompt text ships as authored", async () => {
     const analyzeCalls: unknown[] = [];
     const writeCalls: unknown[] = [];
     const runtime = makeRuntime();
@@ -96,8 +97,10 @@ describe("plain {{name}} substitution from run variables, pre-dispatch", () => {
     const trace = await executor.execute(template, {});
 
     expect(trace.status).toBe("completed");
+    // Prompt-text fields of llm_completion_dispatch are excluded from plain-name
+    // substitution (qa ruling): drafting prompts reach the LLM vessel as authored.
     expect(analyzeCalls).toEqual([
-      { type: "llm_completion_dispatch", prompt: "Scenario: SCENARIO_DATA\nTraces: TRACE_DATA" },
+      { type: "llm_completion_dispatch", prompt: "Scenario: {{read_scenario_text}}\nTraces: {{fetch_traces_text}}" },
     ]);
     expect(writeCalls).toEqual([
       { type: "fs_write", path: "/workspace/proposals/x-report.json", content: "ANALYSIS_RESULT" },
