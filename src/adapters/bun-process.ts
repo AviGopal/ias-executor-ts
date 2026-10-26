@@ -1,5 +1,12 @@
 import type { ProcessPort } from "../ports";
 
+function releaseStream(stream: ReadableStream | null | undefined): void {
+  if (!stream || stream.locked || typeof stream.cancel !== "function") return;
+  try {
+    void Promise.resolve(stream.cancel()).catch(() => { /* swallow */ });
+  } catch { /* swallow */ }
+}
+
 /**
  * Bun-backed process adapter.
  * Satisfies ProcessPort using Bun.spawn().
@@ -46,8 +53,11 @@ export class BunProcessAdapter implements ProcessPort {
       // hold native pipe FDs + buffers. Explicit cancel + await exited
       // releases them. Idempotent on the success path (streams already
       // closed). See `concept_response_pattern_oom_cascade_solved`.
-      try { (proc.stdout as ReadableStream | null)?.cancel?.(); } catch { /* swallow */ }
-      try { (proc.stderr as ReadableStream | null)?.cancel?.(); } catch { /* swallow */ }
+      // cancel() on a LOCKED stream (its Response reader still holds it) does not throw: it returns a rejected
+      // promise, which a try/catch cannot see, so it surfaced as an unhandled rejection failing whichever test was
+      // running. A locked stream belongs to its reader and is skipped; an async rejection is swallowed too.
+      releaseStream(proc.stdout as ReadableStream | null);
+      releaseStream(proc.stderr as ReadableStream | null);
       try { await proc.exited; } catch { /* swallow */ }
     }
   }
