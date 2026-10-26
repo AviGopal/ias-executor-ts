@@ -673,9 +673,63 @@ export class ActivityExecutor {
               }
               return value;
             };
+            // Plain {{<name>}} substitution from the run's variables (accumulatedVariables
+            // / context.variables — the SAME map resolvers read as ctx.variables, and the
+            // convention documented above at `<taskId>_text` etc.). Runs AFTER the
+            // lifecycle.*/impulse:* passes (so those namespaces are untouched here) and
+            // BEFORE any resolver sees the config — including a leaf task's `config.prompt`
+            // (e.g. llm_completion_dispatch's prompt text), which previously shipped with
+            // `{{analyze_text}}`/`{{qualityThreshold}}`-style tokens still literal because
+            // nothing ever substituted them (the measured ghost-write: a VesselResolver
+            // forwards task.config AS-IS, so the literal token became the written/sent
+            // content itself). Skipped entirely for dispatcher-style resolvers whose config
+            // carries a NESTED sub-task/sub-template spec resolved later, in a different
+            // context: llm-prompt (its own task.prompt.template interpolation),
+            // compose/compose_parallel (a recursive executor.execute on a sub-template),
+            // iteration (its own per-element `_interpolate` on `body.config`), and activity
+            // (config.variables feeds a recursive executor.execute). A WHOLE-string match
+            // (the value is exactly "{{name}}", nothing else) preserves the bound value's
+            // type (object/array/number survive, not just their JSON.stringify'd form);
+            // a partial/inline match stringifies, mirroring resolveLifecyclePlaceholders'
+            // WHOLE_LIFECYCLE_RE / INLINE_LIFECYCLE_RE split above.
+            const substituteRunVariables = (value: unknown): unknown => {
+              if (typeof value === "string") {
+                const whole = /^\{\{\s*([^{}]+?)\s*\}\}$/.exec(value);
+                if (whole) {
+                  const key = whole[1]!.trim();
+                  if (key.startsWith("lifecycle.") || key.startsWith("impulse:")) return value;
+                  if (!Object.prototype.hasOwnProperty.call(accumulatedVariables, key)) return value;
+                  const v = accumulatedVariables[key];
+                  return v === undefined || v === null ? value : v;
+                }
+                return value.replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (m, name: string) => {
+                  const key = name.trim();
+                  if (key.startsWith("lifecycle.") || key.startsWith("impulse:")) return m;
+                  if (!Object.prototype.hasOwnProperty.call(accumulatedVariables, key)) return m;
+                  const v = accumulatedVariables[key];
+                  if (v === undefined || v === null) return m;
+                  return typeof v === "string" ? v : JSON.stringify(v);
+                });
+              }
+              if (Array.isArray(value)) return value.map(substituteRunVariables);
+              if (value && typeof value === "object") {
+                const out: Record<string, unknown> = {};
+                for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+                  out[k] = substituteRunVariables(v);
+                }
+                return out;
+              }
+              return value;
+            };
+            const DISPATCHER_RESOLVERS_FOR_VAR_SUB = new Set(["llm-prompt", "compose", "compose_parallel", "iteration", "activity"]);
+            const preBound = interpolateImpulseRefs(resolveLifecyclePlaceholders(rawTask.config, lifecycleContext, rawTask.id));
+            const boundConfig =
+              typeof rawTask.resolver === "string" && DISPATCHER_RESOLVERS_FOR_VAR_SUB.has(rawTask.resolver)
+                ? preBound
+                : substituteRunVariables(preBound);
             task = {
               ...rawTask,
-              config: interpolateImpulseRefs(resolveLifecyclePlaceholders(rawTask.config, lifecycleContext, rawTask.id)) as Record<string, unknown>,
+              config: boundConfig as Record<string, unknown>,
             };
           } catch (interpErr) {
             taskRecords.push({
