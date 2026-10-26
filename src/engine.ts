@@ -870,6 +870,70 @@ export class ActivityExecutor {
           }
         }
 
+        // FAIL CLOSED on an unresolved required template variable (ghost-write class,
+        // measured on development-vessel's draft-gap-closing-activity, 2026-10-25).
+        // The pass above now substitutes every plain {{name}} it can resolve from the
+        // run's variables, including inside config.prompt — so anything still literal
+        // here is a GENUINE unbound binding: either a name absent from accumulatedVariables
+        // (a cross-task `<taskId>_text` reference whose producer never ran, or a request-
+        // level variable nobody supplied), or an `{{impulse:<slot>}}` reference whose slot
+        // was never bound (interpolateImpulseRefs leaves those literal on a miss, by design,
+        // rather than throwing). Previously this literal token shipped straight to whatever
+        // dispatched the task — a VesselResolver forwards task.config AS-IS
+        // (vessel-resolver.ts), so the literal became the real written/sent artifact
+        // content, and the only existing guard (convergent_validity[json_artifact] below)
+        // caught it only AFTER that ghost write already happened. Catch it here instead,
+        // before the resolver ever runs. Skipped for dispatcher-style resolvers whose
+        // config carries a nested spec resolved later in a different context (same set as
+        // the substitution pass above): llm-prompt, compose, compose_parallel, iteration,
+        // activity — their nested `{{...}}` tokens are not meant to be bound at this layer.
+        //
+        // `{{impulse:<slot>}}` (and `{{lifecycle.*}}`, unreachable here since that pass
+        // throws on a miss) are EXCLUDED from this check: a dangling `{{impulse:<slot>}}`
+        // left literal on a miss is pre-existing, documented, graceful-degradation
+        // behaviour (interpolateImpulseRefs above returns the literal rather than
+        // throwing) — ribosome-extract's emit_summary prompt relies on exactly this to
+        // describe an optional upstream artifact ("write result (only when
+        // applyExtraction=true): {{impulse:write_result}}") that legitimately may not
+        // exist. That is a materially different contract than a plain `{{name}}` that was
+        // NEVER EVEN ATTEMPTED to be substituted — the ghost-write class this check exists
+        // to catch — so only plain names fail closed here.
+        const DISPATCHER_RESOLVERS_FOR_UNBOUND_CHECK = new Set(["llm-prompt", "compose", "compose_parallel", "iteration", "activity"]);
+        if (
+          task.config &&
+          typeof task.resolver === "string" &&
+          !DISPATCHER_RESOLVERS_FOR_UNBOUND_CHECK.has(task.resolver)
+        ) {
+          const unboundMatch = [...JSON.stringify(task.config).matchAll(/\{\{\s*([^{}]+?)\s*\}\}/g)]
+            .map((m) => m[1]!.trim())
+            .find((name) => !name.startsWith("impulse:") && !name.startsWith("lifecycle."));
+          if (unboundMatch !== undefined) {
+            const unboundName = unboundMatch;
+            taskRecords.push({
+              taskId: task.id,
+              description: task.description,
+              resolverId: task.resolver,
+              resolverTier: undefined,
+              resolvedConfig: redactResolvedConfig(task.config),
+              inputImpulseIds: inputImpulses.map((imp) => imp.id),
+              consumedProvenance: consumedProvenanceOf(inputImpulses),
+              outputImpulseIds: [],
+              inputShapes: [
+                ...new Set([
+                  ...declaredInputShapeNames,
+                  ...inputImpulses.map((imp) => getImpulseShape(imp) || imp.pointer.type).filter(Boolean),
+                  ...placeholderConsumedShapes,
+                ]),
+              ],
+              outputShapes: [],
+              success: false,
+              error: `unbound_template_variable:${unboundName}`,
+              consumedFromTaskIds: placeholderConsumedFrom,
+            });
+            throw new Error(`unbound_template_variable:${unboundName}`);
+          }
+        }
+
         let storedOutputs: Impulse[];
         let taskCostUsd: number | undefined;
         let childExecutionId: string | undefined;
