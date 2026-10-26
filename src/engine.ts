@@ -651,6 +651,24 @@ export class ActivityExecutor {
         // dispatch sees it. Unresolvable ⇒ structured UNRESOLVABLE_PLACEHOLDER
         // throw — the literal placeholder string never reaches a resolver.
         let task: ActivityTask = rawTask;
+        // Plain {{name}} references the TEMPLATE AUTHOR wrote in this task's config,
+        // collected from the raw config BEFORE any substitution (see the fail-closed
+        // check below). A bound value may itself carry {{...}} text — a drafted
+        // activity template, a fetched page, handlebars code, an LLM answer quoting a
+        // template — and that text is data, not an unbound reference, so it must
+        // never be judged. Neither the lifecycle.* nor the impulse:* pass mints a
+        // plain reference of its own (each only replaces its own namespace), so the
+        // raw config is exactly the set the author asked to be bound.
+        const plainRunVariableRefs: string[] = [];
+        if (rawTask.config) {
+          try {
+            for (const m of JSON.stringify(rawTask.config).matchAll(/\{\{\s*([^{}]+?)\s*\}\}/g)) {
+              const name = m[1]!.trim();
+              if (name.startsWith("lifecycle.") || name.startsWith("impulse:")) continue;
+              if (!plainRunVariableRefs.includes(name)) plainRunVariableRefs.push(name);
+            }
+          } catch { /* unserializable config: nothing to judge */ }
+        }
         if (rawTask.config) {
           try {
             // This pass resolves {{impulse:<slot>}} and {{impulse:<slot>.<field>}} placeholders in the task config into their concrete values.
@@ -904,9 +922,14 @@ export class ActivityExecutor {
           typeof task.resolver === "string" &&
           !DISPATCHER_RESOLVERS_FOR_UNBOUND_CHECK.has(task.resolver)
         ) {
-          const unboundMatch = [...JSON.stringify(task.config).matchAll(/\{\{\s*([^{}]+?)\s*\}\}/g)]
-            .map((m) => m[1]!.trim())
-            .find((name) => !name.startsWith("impulse:") && !name.startsWith("lifecycle."));
+          // Judge the RAW config's plain references (collected above, before any
+          // substitution) against the run's variables — never rescan the substituted
+          // output, whose bound values may legitimately contain {{...}} text.
+          const unboundMatch = plainRunVariableRefs.find((name) => {
+            if (!Object.prototype.hasOwnProperty.call(accumulatedVariables, name)) return true;
+            const v = accumulatedVariables[name];
+            return v === undefined || v === null;
+          });
           if (unboundMatch !== undefined) {
             const unboundName = unboundMatch;
             taskRecords.push({
