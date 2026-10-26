@@ -59,6 +59,7 @@ describe("unbound check — a bound value carrying its own placeholders is data"
     expect(rec?.error).toBeUndefined();
     expect(trace.status).toBe("completed");
     expect(calls).toEqual([{ type: "fs_write", path: "/workspace/proposals/draft.json", content: draft }]);
+    expect(rec?.unboundTemplateVariables).toBeUndefined();
   });
 
   test("an inline (partial-string) binding of the same value also dispatches verbatim", async () => {
@@ -87,7 +88,7 @@ describe("unbound check — a bound value carrying its own placeholders is data"
     expect(calls).toEqual([{ type: "fs_write", path: "/workspace/proposals/draft.txt", content: `draft: ${draft}` }]);
   });
 
-  test("control: a raw reference whose variable is bound to null still fails closed", async () => {
+  test("control: a raw reference whose variable is bound to null is counted as unbound and dispatches literal", async () => {
     const calls: unknown[] = [];
     const runtime = makeRuntime();
     runtime.resolvers.register(fsWriteRecorder(calls));
@@ -108,8 +109,8 @@ describe("unbound check — a bound value carrying its own placeholders is data"
 
     const trace = await executor.execute(template, { variables: { draft_text: null } });
 
-    expect(calls).toEqual([]);
-    expect(trace.status).toBe("failed");
-    expect(trace.tasks.find((t) => t.taskId === "write_draft")?.error).toBe("unbound_template_variable:draft_text");
+    expect(trace.status).toBe("completed");
+    expect(calls).toEqual([{ type: "fs_write", path: "/workspace/proposals/draft.json", content: "{{draft_text}}" }]);
+    expect(trace.tasks.find((t) => t.taskId === "write_draft")?.unboundTemplateVariables).toEqual(["draft_text"]);
   });
 });

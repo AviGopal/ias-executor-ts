@@ -1,16 +1,13 @@
 /**
- * Commit B — FAIL CLOSED on whatever {{name}} remains unbound after commit A's
- * substitution pass, BEFORE any resolver dispatches.
+ * Unbound plain {{name}} template variables are COUNTED, not refused.
  *
- * Commit A substitutes every plain {{name}} it can resolve from the run's
- * variables (accumulatedVariables), including inside config.prompt. Anything
- * still literal after that is a genuine unbound binding — a cross-task
- * `<taskId>_text` reference whose producer never ran (or never produced
- * output), or a request-level variable nobody supplied. Previously that
- * literal token shipped straight to the resolver: a VesselResolver-routed
- * task forwards task.config AS-IS, so the literal became real written/sent
- * content. This closes the task BEFORE dispatch instead, with
- * `unbound_template_variable:<name>`.
+ * A plain {{name}} the template author wrote that cannot be bound before dispatch
+ * (a cross-task `<taskId>_text` reference whose producer never ran, or a request-level
+ * variable nobody supplied) is recorded on the task's ExecutionTaskRecord as
+ * `unboundTemplateVariables`. Dispatch proceeds as it did before plain substitution
+ * existed, with the token literal, so a reach judge or the ribosome grades the run
+ * rather than the engine refusing it. (This file previously asserted a fail-closed
+ * throw; qa ruled count-don't-throw.)
  */
 import { describe, expect, test } from "bun:test";
 import { ActivityExecutor } from "../src/engine";
@@ -28,7 +25,7 @@ function makeRuntime() {
 }
 
 describe("unbound required template variable — fail closed before dispatch", () => {
-  test("must-fail: write_report-style fs_write task whose content is {{analyze_text}} (truly unbound — no analyze task ran) fails closed and never calls fs_write", async () => {
+  test("must-fail: a write_report-style fs_write task whose content is {{analyze_text}} (truly unbound) dispatches with the token literal and records unboundTemplateVariables", async () => {
     const calls: unknown[] = [];
     const runtime = makeRuntime();
     const fsWrite: Resolver = {
@@ -50,19 +47,20 @@ describe("unbound required template variable — fail closed before dispatch", (
           id: "write_report",
           description: "write the analysis report",
           resolver: "fs_write_fake",
-          config: { type: "fs_write", path: "/workspace/proposals/x-report.json", content: "{{analyze_text}}" },
+          config: { type: "fs_write", path: "/workspace/proposals/x-report.json", content: "{{analyze_text}} / {{missing_too}} / {{analyze_text}}" },
         },
       ],
     };
 
     const trace = await executor.execute(template, {});
 
-    // fs_write was NEVER invoked — the literal placeholder never reached the resolver.
-    expect(calls).toEqual([]);
-    expect(trace.status).toBe("failed");
+    expect(trace.status).toBe("completed");
+    expect(calls).toEqual([
+      { type: "fs_write", path: "/workspace/proposals/x-report.json", content: "{{analyze_text}} / {{missing_too}} / {{analyze_text}}" },
+    ]);
     const rec = trace.tasks.find((t) => t.taskId === "write_report");
-    expect(rec?.success).toBe(false);
-    expect(rec?.error).toBe("unbound_template_variable:analyze_text");
+    expect(rec?.success).toBe(true);
+    expect(rec?.unboundTemplateVariables).toEqual(["analyze_text", "missing_too"]);
   });
 
   test("control: an {{impulse:<slot>}} placeholder that IS bound still interpolates exactly as before and dispatches", async () => {
@@ -113,5 +111,6 @@ describe("unbound required template variable — fail closed before dispatch", (
     expect(calls).toEqual([
       { type: "fs_write", path: "/workspace/proposals/x-report.json", content: "the real analysis text" },
     ]);
+    expect(trace.tasks.every((t) => t.unboundTemplateVariables === undefined)).toBe(true);
   });
 });

@@ -361,6 +361,15 @@ export class ActivityExecutor {
     });
 
     const taskRecords: ExecutionTaskRecord[] = [];
+    // Per-task unbound plain template variables (see the binding pass in the task loop),
+    // stamped onto every record of that task when the trace is finalized.
+    const unboundTemplateVariablesByTask = new Map<string, string[]>();
+    const stampUnboundTemplateVariables = (): void => {
+      for (const rec of taskRecords) {
+        const names = unboundTemplateVariablesByTask.get(rec.taskId);
+        if (names && rec.unboundTemplateVariables === undefined) rec.unboundTemplateVariables = names;
+      }
+    };
     // M1 general close-on-failure: track the task currently in-flight so the outer
     // catch can record it as a MEASURED failed task (closure) on ANY throw path
     // (validity-check failure, resolver error, etc.) instead of leaving tasks=null.
@@ -837,70 +846,21 @@ export class ActivityExecutor {
           }
         }
 
-        // FAIL CLOSED on an unresolved required template variable (ghost-write class,
-        // measured on development-vessel's draft-gap-closing-activity, 2026-10-25).
-        // The binding pass above substitutes every plain {{name}} occurrence it was asked
-        // to bind and can resolve from the run's variables (not llm_completion_dispatch
-        // prompt text, not dispatcher configs) — so any it reports is a GENUINE unbound
-        // binding: either a name absent from accumulatedVariables
-        // (a cross-task `<taskId>_text` reference whose producer never ran, or a request-
-        // level variable nobody supplied), or an `{{impulse:<slot>}}` reference whose slot
-        // was never bound (interpolateImpulseRefs leaves those literal on a miss, by design,
-        // rather than throwing). Previously this literal token shipped straight to whatever
-        // dispatched the task — a VesselResolver forwards task.config AS-IS
-        // (vessel-resolver.ts), so the literal became the real written/sent artifact
-        // content, and the only existing guard (convergent_validity[json_artifact] below)
-        // caught it only AFTER that ghost write already happened. Catch it here instead,
-        // before the resolver ever runs. Skipped for dispatcher-style resolvers whose
-        // config carries a nested spec resolved later in a different context (same set as
-        // the substitution pass above): llm-prompt, compose, compose_parallel, iteration,
-        // activity — their nested `{{...}}` tokens are not meant to be bound at this layer.
-        //
-        // `{{impulse:<slot>}}` (and `{{lifecycle.*}}`, unreachable here since that pass
-        // throws on a miss) are EXCLUDED from this check: a dangling `{{impulse:<slot>}}`
-        // left literal on a miss is pre-existing, documented, graceful-degradation
-        // behaviour (interpolateImpulseRefs above returns the literal rather than
-        // throwing) — ribosome-extract's emit_summary prompt relies on exactly this to
-        // describe an optional upstream artifact ("write result (only when
-        // applyExtraction=true): {{impulse:write_result}}") that legitimately may not
-        // exist. That is a materially different contract than a plain `{{name}}` that was
-        // NEVER EVEN ATTEMPTED to be substituted — the ghost-write class this check exists
-        // to catch — so only plain names fail closed here.
-        const DISPATCHER_RESOLVERS_FOR_UNBOUND_CHECK = new Set(["llm-prompt", "compose", "compose_parallel", "iteration", "activity"]);
-        if (
-          task.config &&
-          typeof task.resolver === "string" &&
-          !DISPATCHER_RESOLVERS_FOR_UNBOUND_CHECK.has(task.resolver)
-        ) {
-          // Judged on the RAW config's own plain occurrences (reported by the binding pass
-          // above) — never by rescanning the bound output, whose values may legitimately
-          // contain {{...}} text.
-          const unboundMatch = unboundPlainNames[0];
-          if (unboundMatch !== undefined) {
-            const unboundName = unboundMatch;
-            taskRecords.push({
-              taskId: task.id,
-              description: task.description,
-              resolverId: task.resolver,
-              resolverTier: undefined,
-              resolvedConfig: redactResolvedConfig(task.config),
-              inputImpulseIds: inputImpulses.map((imp) => imp.id),
-              consumedProvenance: consumedProvenanceOf(inputImpulses),
-              outputImpulseIds: [],
-              inputShapes: [
-                ...new Set([
-                  ...declaredInputShapeNames,
-                  ...inputImpulses.map((imp) => getImpulseShape(imp) || imp.pointer.type).filter(Boolean),
-                  ...placeholderConsumedShapes,
-                ]),
-              ],
-              outputShapes: [],
-              success: false,
-              error: `unbound_template_variable:${unboundName}`,
-              consumedFromTaskIds: placeholderConsumedFrom,
-            });
-            throw new Error(`unbound_template_variable:${unboundName}`);
-          }
+        // COUNT, DON'T THROW: plain {{name}} occurrences the template author wrote that the
+        // binding pass above was asked to bind and could not (a name absent from the run's
+        // variables, or bound to null/undefined — e.g. a cross-task `<taskId>_text` whose
+        // producer never ran). Dispatch proceeds exactly as before plain substitution
+        // existed, with the token left literal; the names are recorded on this task's
+        // ExecutionTaskRecord as `unboundTemplateVariables` (stamped at trace finalization,
+        // so every record path — success, failure, close-on-failure — carries it), where a
+        // reach judge or the ribosome can grade the run instead of the engine refusing it.
+        // Judged on the RAW config's own occurrences, never by rescanning bound output.
+        // `{{impulse:<slot>}}` misses are not counted: leaving them literal is documented
+        // graceful degradation (ribosome-extract's emit_summary describes an optional
+        // upstream artifact that way). Dispatcher-style resolvers bind no plain names here,
+        // so they never report any.
+        if (unboundPlainNames.length > 0) {
+          unboundTemplateVariablesByTask.set(task.id, [...unboundPlainNames]);
         }
 
         let storedOutputs: Impulse[];
@@ -1590,6 +1550,7 @@ export class ActivityExecutor {
       }
 
       const totalDurationMs = this.runtime.clock.now() - startedAt;
+      stampUnboundTemplateVariables();
       const trace: ExecutionTrace = {
         id: executionId,
         templateId: template.id,
@@ -1711,6 +1672,7 @@ export class ActivityExecutor {
         });
       }
 
+      stampUnboundTemplateVariables();
       const trace: ExecutionTrace = {
         id: executionId,
         templateId: template.id,

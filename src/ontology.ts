@@ -215,6 +215,12 @@ export interface ExecutionTaskRecord {
    *  actualPrompt has placeholders already substituted by persist time, so this
    *  cannot be recovered reconcile-side. */
   consumedFromTaskIds?: string[];
+  /** Plain `{{name}}` template occurrences the author wrote in this task's config that the
+   *  engine could not bind before dispatch — the name was absent from the run's variables
+   *  or bound to null/undefined. The task still dispatched with the token literal; this is
+   *  the countable signal (a reach judge or the ribosome grades it), not a refusal.
+   *  Absent when every plain name bound. */
+  unboundTemplateVariables?: string[];
   /** When this task dispatched a sub-activity (resolver "compose" /
    *  "compose_parallel" or an activities-as-resolvers id), the dispatched
    *  activity's template id. Lets the composition-edge reconcile map a consumed
