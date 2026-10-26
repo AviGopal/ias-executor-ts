@@ -389,6 +389,13 @@ export class TranslatingTraceSink implements TraceSink {
                 })),
               }
             : {}),
+          // Plain {{name}} tokens the engine could not bind before dispatch (engine.ts stamps them on the
+          // task record). This sink projects an explicit key set, so without this line the names never
+          // leave the host and activity-api's normalizePersistedTask has nothing to keep. Sent only when
+          // non-empty: absent means every plain name bound, so an empty array would say nothing new.
+          ...(Array.isArray(t.unboundTemplateVariables) && t.unboundTemplateVariables.length > 0
+            ? { unbound_template_variables: [...t.unboundTemplateVariables] }
+            : {}),
           error: t.error,
           // Keep nested result block too for any reader expecting the legacy shape.
           result: {
