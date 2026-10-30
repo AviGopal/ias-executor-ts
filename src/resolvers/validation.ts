@@ -174,13 +174,63 @@ export const ACTIVITY_TEMPLATE_WRITE_CONTRACT = {
 } as const;
 
 /**
+ * A learned template's tasks carry SLOTS, not the run they were extracted from. The trace the
+ * ribosome synthesizes from records each task's BOUND config, so a proposal can still carry that
+ * run: a run id, an upstream impulse's payload inlined under its shape's name (where an
+ * {{impulse:<shape>}} slot belongs), a literal content field on a *_write task (replayed, it
+ * re-writes the old record), or a key built from the goal sentence. The same structural rules as
+ * the consumer's lint (goal-host-vessel src/template-instance-lint.ts, which refuses to select such
+ * a template); keep the two in step. A string carrying a {{...}} slot is a slot. Only `config`
+ * and `pointer` are read. Returns `kind@path` per finding; empty means slot-level.
+ */
+const SLOT = /\{\{[^}]+\}\}/;
+const RUN_ID_KEYS = new Set(["dispatch_id", "dispatchId", "execution_id", "executionId", "trace_id", "traceId", "request_id", "lease_id"]);
+const WRITE_CONTENT_KEYS = new Set(["title", "body", "content", "text", "note", "summary", "path"]);
+function goalDerivedKey(k: string): boolean {
+  const words = k.split(/[_\-]+/).filter((w) => w.length > 0);
+  return words.length >= 5 || (k.length > 32 && words.length >= 3);
+}
+function isImpulsePayload(v: unknown): boolean {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+  const o = v as Record<string, unknown>;
+  return typeof o["shape"] === "string" && ("success" in o || "body" in o || "exit_code" in o || "stdout" in o);
+}
+function templateInstanceLiterals(tasks: unknown[]): string[] {
+  const out: string[] = [];
+  tasks.forEach((raw, i) => {
+    if (!raw || typeof raw !== "object") return;
+    const t = raw as Record<string, unknown>;
+    const taskId = String(t["id"] ?? `#${i}`);
+    const resolver = String(t["resolver"] ?? (t["config"] as Record<string, unknown> | undefined)?.["type"] ?? "");
+    const isWrite = /_write$/.test(resolver);
+    const walk = (v: unknown, path: string, depth: number) => {
+      if (depth > 8 || !v || typeof v !== "object") return;
+      if (Array.isArray(v)) { v.forEach((x, j) => walk(x, `${path}[${j}]`, depth + 1)); return; }
+      for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+        const p = `${path}.${k}`;
+        if (goalDerivedKey(k)) out.push(`goal-derived-key@${p}`);
+        if (typeof val === "string" && !SLOT.test(val)) {
+          if (RUN_ID_KEYS.has(k) && val.length > 0) { out.push(`run-id@${p}`); continue; }
+          if (isWrite && depth === 0 && WRITE_CONTENT_KEYS.has(k) && val.trim().length > 0) { out.push(`write-content-literal@${p}`); continue; }
+        }
+        if (isImpulsePayload(val)) { out.push(`inlined-impulse@${p}`); continue; }
+        walk(val, p, depth + 1);
+      }
+    };
+    for (const key of ["config", "pointer"]) if (t[key] !== undefined) walk(t[key], `${taskId}.${key}`, 0);
+  });
+  return out;
+}
+
+/**
  * Checks a synthesized template proposal against the activityTemplate_write
  * contract BEFORE the write, so a proposal the store would 400 never reaches it.
  * Repairs only what can be repaired without inventing content: tags are
  * lowercased and the ones still outside the contract are dropped, a category
  * outside the enum is dropped. A missing description (or a task missing its
  * description / resolver) is a refusal with a structured reason — never filled
- * in. The extract chain's own rules (id form, recursion-safe author, declared
+ * in. A task that still carries its source run (templateInstanceLiterals) is a
+ * refusal too. The extract chain's own rules (id form, recursion-safe author, declared
  * shapes) are recorded as evidence rows but do not refuse: the store accepts them.
  */
 function checkActivityTemplateWriteContract(
@@ -262,6 +312,9 @@ function checkActivityTemplateWriteContract(
       .map(({ i, t }) => (t && typeof t.id === "string" ? t.id : `#${i}`));
     row("tasks_conform", tasks !== null && badTasks.length === 0,
       tasks === null ? "tasks is not an array" : `tasks missing id, description, or prompt/resolver: ${badTasks.join(", ")}`);
+    // A task still carrying its source run is refused: replayed on a new goal it re-runs the old one.
+    const literals = templateInstanceLiterals(tasks ?? []);
+    row("tasks_slot_level", literals.length === 0, `tasks carry instance values where slots belong: ${literals.join("; ")}`);
   }
 
   // Extract-chain rules: advisory evidence, not the store's contract.
