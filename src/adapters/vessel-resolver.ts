@@ -116,6 +116,33 @@ export class VesselResolver implements Resolver {
       throw new Error(`VesselResolver(${this.id}): vessel returned error — ${body.error ?? res.status}`);
     }
 
+    // A shell-primitive step (local-tools shell / bash / bounded_shell) returns
+    // { shape: "boundedShellResult", stdout, stderr, exit_code } inside a
+    // success:true envelope. The envelope's success flag says the RESOLVER ran,
+    // not that the COMMAND succeeded: a non-zero exit_code is a failed step.
+    // Judge it here, or a guard written as an exit code reads green.
+    const shellResult = (() => {
+      const candidates: unknown[] = [resolvedContent, body.body, body];
+      for (const candidate of candidates) {
+        if (candidate && typeof candidate === "object") {
+          const record = candidate as Record<string, unknown>;
+          const shapeName = record["shape"];
+          if (shapeName === "boundedShellResult" || shapeName === "bounded_shell" || shapeName === "bash") {
+            return record;
+          }
+        }
+      }
+      return undefined;
+    })();
+    if (shellResult) {
+      const exitCode = shellResult["exit_code"];
+      if (typeof exitCode === "number" && exitCode !== 0) {
+        const stderrValue = shellResult["stderr"];
+        const stderrText = typeof stderrValue === "string" ? stderrValue : "";
+        throw new Error(`VesselResolver(${this.id}): shell step failed with exit_code ${exitCode}${stderrText ? ` - ${stderrText}` : ""}`);
+      }
+    }
+
     const summary = typeof resolvedContent === "string"
       ? resolvedContent.slice(0, 120)
       : JSON.stringify(resolvedContent ?? "").slice(0, 120);
