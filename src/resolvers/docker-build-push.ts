@@ -46,12 +46,12 @@ export function makeDockerBuildPushResolver(docker: DockerPort): Resolver {
       }
       const specShape = String(specObj.shape ?? specObj.vesselSpec?.shape ?? context.variables["missingShape"] ?? "forged");
 
-      // Generate tag: metabobapp/forge-{shape}:{timestamp}-{short-uuid}
-      // Shape name sanitized: underscores → dashes, lowercase
-      const safeShape = specShape.replace(/_/g, "-").toLowerCase();
+      // Generate tag: metabobapp/forge-{shape}-{short-uuid}:{timestamp}
+      // Shape name is lowercased; underscores are preserved (valid in Docker repo names)
+      const safeShape = specShape.toLowerCase();
       const uuid = context.random.id("v").split("_")[1] ?? context.random.id("v");
       const timestamp = context.clock.now();
-      const tag = `metabobapp/forge-${safeShape}:${timestamp}-${uuid}`;
+      const tag = `metabobapp/forge-${safeShape}-${uuid}:${timestamp}`;
 
       // Build
       await docker.build(scaffold.path, tag);
