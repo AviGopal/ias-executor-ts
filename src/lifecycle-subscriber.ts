@@ -155,6 +155,28 @@ export const HIGH_FREQUENCY_SHAPES = new Set<string>([
 export const HIGH_FREQUENCY_TOP_K = 1;
 export const ONE_SHOT_TOP_K = 3;
 
+/**
+ * Terminal execution events are completion boundaries. The emitting execution
+ * has already finished its task loop, so awaiting the subscribers here cannot
+ * stall later tasks (the reason task-level dispatch is fire-and-forget). It
+ * does guarantee that subscriber work (nested child executions, cleanup,
+ * compensation) has run before the terminal event is forwarded downstream and
+ * before the parent's execute() resolves. This covers every terminal outcome,
+ * not only success.
+ */
+export const EXECUTION_COMPLETION_BOUNDARY_SHAPES = new Set<string>([
+  "lifecycle:execution:succeeded",
+  "lifecycle:execution:failed",
+  "lifecycle:execution:cancelled",
+  "lifecycle:execution:completed",
+  "lifecycle:execution:aborted",
+  "lifecycle:execution:timed_out",
+]);
+
+export function isExecutionCompletionBoundary(shape: string): boolean {
+  return EXECUTION_COMPLETION_BOUNDARY_SHAPES.has(shape);
+}
+
 export function defaultTopKForShape(shape: string): number {
   return HIGH_FREQUENCY_SHAPES.has(shape)
     ? HIGH_FREQUENCY_TOP_K
@@ -426,6 +448,8 @@ export class LifecycleSubscriberVessel implements EventSink {
     if (!templates || templates.length === 0) return;
 
     const payload = (event.data ?? {}) as Record<string, unknown>;
+    const awaitCompletion = isExecutionCompletionBoundary(event.type);
+    const completionDispatches: Promise<void>[] = [];
     // Self-subscription guard (spec §E.2; lifecycle-subscriptions.ts:312-315):
     // when the event payload identifies the emitting template, skip it.
     const emittingTemplateId =
@@ -504,6 +528,14 @@ export class LifecycleSubscriberVessel implements EventSink {
       void dispatchTask.finally(() => {
         inflight.delete(dispatchTask);
       });
+      if (awaitCompletion) completionDispatches.push(dispatchTask);
+    }
+    // Completion boundary: finish this terminal event's subscriber dispatches
+    // (e.g. a child run via executor.execute carrying the parent's
+    // executionId in compositionChain) before emit() forwards the event
+    // downstream. dispatchTask never rejects, because errors are isolated above.
+    if (completionDispatches.length > 0) {
+      await Promise.all(completionDispatches);
     }
   }
 
