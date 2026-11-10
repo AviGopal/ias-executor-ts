@@ -1,5 +1,7 @@
 import { describe, it, expect, afterEach } from "bun:test";
 import { DiscoveryRegistrationLoop } from "../src/hosts/discovery-registration-loop";
+import { VesselDaemon } from "../src/hosts/vessel-daemon";
+import type { ActivityExecutor } from "../src/engine";
 
 const originalFetch = globalThis.fetch;
 afterEach(() => {
@@ -82,5 +84,58 @@ describe("DiscoveryRegistrationLoop V12 re-register on heartbeat 404", () => {
     // 500 → no re-register; failureCount increments.
     expect(calls).toEqual(["register", "heartbeat"]);
     expect(p.failureCount).toBe(1);
+  });
+});
+
+describe("DiscoveryRegistrationLoop advertised resolve_timeout_ms", () => {
+  const registered = async (extra: Record<string, unknown>): Promise<Record<string, unknown>> => {
+    let body: Record<string, unknown> = {};
+    globalThis.fetch = (async (_input: string | URL, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response("ok", { status: 200 });
+    }) as unknown as typeof fetch;
+    const loop = new DiscoveryRegistrationLoop({
+      discoveryEndpoint: "http://discovery.test",
+      vesselId: "test-vessel-1",
+      vesselName: "test-vessel",
+      shapes: ["test_shape"],
+      resolveEndpoint: "http://localhost:9999/resolve",
+      apiKey: "test-key",
+      port: 9999,
+      ...extra,
+    });
+    await (loop as unknown as { register(): Promise<void> }).register();
+    return body;
+  };
+
+  it("keeps the 10 s default when a vessel declares none", async () => {
+    expect((await registered({})).resolve_timeout_ms).toBe(10_000);
+  });
+
+  it("advertises the bound a vessel declares", async () => {
+    expect((await registered({ resolveTimeoutMs: 300_000 })).resolve_timeout_ms).toBe(300_000);
+  });
+});
+
+describe("VesselDaemon resolveTimeoutMs", () => {
+  const loopOf = (extra: Record<string, unknown>) =>
+    (new VesselDaemon({
+      port: 0,
+      vesselId: "test-daemon",
+      vesselName: "Test Daemon",
+      shapes: ["test_shape"],
+      executor: {} as ActivityExecutor,
+      resolvers: new Map(),
+      apiKey: "test-key",
+      discoveryEndpoint: "http://discovery.test",
+      ...extra,
+    }) as unknown as { discoveryLoop: { config: { resolveTimeoutMs?: number } } }).discoveryLoop.config;
+
+  it("passes a declared bound to its discovery registration", () => {
+    expect(loopOf({ resolveTimeoutMs: 300_000 }).resolveTimeoutMs).toBe(300_000);
+  });
+
+  it("passes nothing when none is declared, so the loop keeps its default", () => {
+    expect("resolveTimeoutMs" in loopOf({})).toBe(false);
   });
 });

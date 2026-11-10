@@ -30,6 +30,12 @@ export interface DiscoveryRegistrationLoopConfig {
    * queries. Vessels without orgId AND without systemVessel=true are invisible.
    */
   systemVessel?: boolean;
+  /**
+   * How long discovery holds a call it forwards to this vessel, in ms (advertised as resolve_timeout_ms). Default
+   * 10_000. A vessel whose answers take longer (an LLM completion) declares its own bound, or discovery cuts its
+   * calls at the default.
+   */
+  resolveTimeoutMs?: number;
 }
 
 export class DiscoveryRegistrationLoop {
@@ -112,7 +118,7 @@ export class DiscoveryRegistrationLoop {
       resolve_endpoint: this.config.resolveEndpoint,
       resolve_request_format: "pointer",
       auth_scheme: "ApiKey",
-      resolve_timeout_ms: 10_000,
+      resolve_timeout_ms: this.config.resolveTimeoutMs ?? 10_000,
       port: this.config.port,
       ...(this.config.systemVessel ? { systemVessel: true } : {}),
     };

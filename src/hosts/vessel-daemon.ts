@@ -64,6 +64,11 @@ export interface VesselDaemonConfig {
    */
   systemVessel?: boolean;
   /**
+   * How long discovery holds a call it forwards to this vessel, in ms. Propagated to DiscoveryRegistrationLoop and
+   * advertised as resolve_timeout_ms; default 10_000 there.
+   */
+  resolveTimeoutMs?: number;
+  /**
    * Shapes this vessel serves that change state, in addition to
    * DEFAULT_MUTATING_SHAPES and every `*_write` shape. A mutating shape is
    * resolved only for a caller mayResolveMutating admits.
@@ -213,6 +218,7 @@ export class VesselDaemon {
         apiKey: config.apiKey,
         port: config.port,
         ...(config.systemVessel ? { systemVessel: true } : {}),
+        ...(config.resolveTimeoutMs !== undefined ? { resolveTimeoutMs: config.resolveTimeoutMs } : {}),
       });
 
       this.discoveryLoop.onUnhealthy(() => {
