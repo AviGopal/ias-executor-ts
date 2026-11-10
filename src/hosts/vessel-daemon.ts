@@ -68,6 +68,10 @@ export interface VesselDaemonConfig {
    * advertised as resolve_timeout_ms; default 10_000 there.
    */
   resolveTimeoutMs?: number;
+  /** Per-shape one-line descriptions, advertised as shape_descriptions (see DiscoveryRegistrationLoop). */
+  shapeDescriptions?: Record<string, string>;
+  /** Per-shape input schemas, advertised as shape_inputs (see DiscoveryRegistrationLoop). */
+  shapeInputs?: Record<string, Record<string, unknown>>;
   /**
    * Shapes this vessel serves that change state, in addition to
    * DEFAULT_MUTATING_SHAPES and every `*_write` shape. A mutating shape is
@@ -219,6 +223,8 @@ export class VesselDaemon {
         port: config.port,
         ...(config.systemVessel ? { systemVessel: true } : {}),
         ...(config.resolveTimeoutMs !== undefined ? { resolveTimeoutMs: config.resolveTimeoutMs } : {}),
+        ...(config.shapeDescriptions ? { shapeDescriptions: config.shapeDescriptions } : {}),
+        ...(config.shapeInputs ? { shapeInputs: config.shapeInputs } : {}),
       });
 
       this.discoveryLoop.onUnhealthy(() => {

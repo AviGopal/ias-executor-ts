@@ -36,6 +36,17 @@ export interface DiscoveryRegistrationLoopConfig {
    * calls at the default.
    */
   resolveTimeoutMs?: number;
+  /**
+   * One line per shape: what it produces and when to use it (advertised as shape_descriptions). The vessel that serves a
+   * shape describes it; discovery prefers this to any learned wording.
+   */
+  shapeDescriptions?: Record<string, string>;
+  /**
+   * Per shape, the JSON Schema of the pointer fields a caller sends (advertised as shape_inputs), declared next to the
+   * handler. A producer that has to fill a pointer reads these through discovery's shapeDescriptions; a shape without
+   * them can only be named, not filled.
+   */
+  shapeInputs?: Record<string, Record<string, unknown>>;
 }
 
 export class DiscoveryRegistrationLoop {
@@ -119,6 +130,8 @@ export class DiscoveryRegistrationLoop {
       resolve_request_format: "pointer",
       auth_scheme: "ApiKey",
       resolve_timeout_ms: this.config.resolveTimeoutMs ?? 10_000,
+      ...(this.config.shapeDescriptions ? { shape_descriptions: this.config.shapeDescriptions } : {}),
+      ...(this.config.shapeInputs ? { shape_inputs: this.config.shapeInputs } : {}),
       port: this.config.port,
       ...(this.config.systemVessel ? { systemVessel: true } : {}),
     };

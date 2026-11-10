@@ -139,3 +139,65 @@ describe("VesselDaemon resolveTimeoutMs", () => {
     expect("resolveTimeoutMs" in loopOf({})).toBe(false);
   });
 });
+
+describe("DiscoveryRegistrationLoop advertised shape descriptions and inputs", () => {
+  const INPUTS = { test_shape: { type: "object", required: ["path"], properties: { path: { type: "string" } } } };
+  const registered = async (extra: Record<string, unknown>): Promise<Record<string, unknown>> => {
+    let body: Record<string, unknown> = {};
+    globalThis.fetch = (async (_input: string | URL, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response("ok", { status: 200 });
+    }) as unknown as typeof fetch;
+    const loop = new DiscoveryRegistrationLoop({
+      discoveryEndpoint: "http://discovery.test",
+      vesselId: "test-vessel-1",
+      vesselName: "test-vessel",
+      shapes: ["test_shape"],
+      resolveEndpoint: "http://localhost:9999/resolve",
+      apiKey: "test-key",
+      port: 9999,
+      ...extra,
+    });
+    await (loop as unknown as { register(): Promise<void> }).register();
+    return body;
+  };
+
+  it("advertises what a vessel declares", async () => {
+    const body = await registered({ shapeDescriptions: { test_shape: "Reads a test." }, shapeInputs: INPUTS });
+    expect(body.shape_descriptions).toEqual({ test_shape: "Reads a test." });
+    expect(body.shape_inputs).toEqual(INPUTS);
+  });
+
+  it("sends neither field when a vessel declares none", async () => {
+    const body = await registered({});
+    expect("shape_descriptions" in body).toBe(false);
+    expect("shape_inputs" in body).toBe(false);
+  });
+});
+
+describe("VesselDaemon shape descriptions and inputs", () => {
+  const loopOf = (extra: Record<string, unknown>) =>
+    (new VesselDaemon({
+      port: 0,
+      vesselId: "test-daemon",
+      vesselName: "Test Daemon",
+      shapes: ["test_shape"],
+      executor: {} as ActivityExecutor,
+      resolvers: new Map(),
+      apiKey: "test-key",
+      discoveryEndpoint: "http://discovery.test",
+      ...extra,
+    }) as unknown as { discoveryLoop: { config: Record<string, unknown> } }).discoveryLoop.config;
+
+  it("passes declared descriptions and inputs to its discovery registration", () => {
+    const config = loopOf({ shapeDescriptions: { test_shape: "x" }, shapeInputs: { test_shape: { type: "object" } } });
+    expect(config.shapeDescriptions).toEqual({ test_shape: "x" });
+    expect(config.shapeInputs).toEqual({ test_shape: { type: "object" } });
+  });
+
+  it("passes neither when none is declared", () => {
+    const config = loopOf({});
+    expect("shapeDescriptions" in config).toBe(false);
+    expect("shapeInputs" in config).toBe(false);
+  });
+});
