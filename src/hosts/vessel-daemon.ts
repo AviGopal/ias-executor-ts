@@ -22,7 +22,7 @@
 import type { ActivityTemplate } from "../ontology";
 import type { ExecuteOptions } from "../engine";
 import { ActivityExecutor } from "../engine";
-import { ResolverServer } from "./resolver-server";
+import { ResolverServer, statusOf } from "./resolver-server";
 import type { ResolverHandler } from "./resolver-server";
 import { DiscoveryRegistrationLoop } from "./discovery-registration-loop";
 import { createHash, timingSafeEqual } from "node:crypto";
@@ -400,7 +400,7 @@ export class VesselDaemon {
         latencyMs: Date.now() - startedAt,
         success: false,
       });
-      return Response.json({ error: (err as Error).message }, { status: 500 });
+      return Response.json({ error: (err as Error).message }, { status: statusOf(err) });
     }
   }
 

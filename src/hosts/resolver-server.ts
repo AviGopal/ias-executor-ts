@@ -23,6 +23,16 @@ export interface ResolverContext {
 /** Handler for a single resolver. Receives the parsed request body. Returns a JSON-serialisable response. */
 export type ResolverHandler = (ctx: ResolverContext) => Promise<unknown>;
 
+/**
+ * The status a resolver's thrown error is answered with. A resolver that refuses the request itself (a missing
+ * directory, a field it cannot use) throws with a 4xx `status`: the caller's request was at fault, and the status says
+ * so, so a caller that learns from failures can tell it from an outage. Anything else is a 500.
+ */
+export function statusOf(err: unknown): number {
+  const status = (err as { status?: unknown } | null)?.status;
+  return typeof status === "number" && status >= 400 && status < 500 ? status : 500;
+}
+
 export interface ResolverServerConfig {
   port: number;
   version?: string;
@@ -119,11 +129,9 @@ export class ResolverServer {
       const result = await handler({ body, pointerType, headers });
       return Response.json(result);
     } catch (err) {
-      console.error(`[ResolverServer] resolver '${pointerType}' error:`, err);
-      return Response.json(
-        { error: (err as Error).message ?? "resolver error" },
-        { status: 500 },
-      );
+      const status = statusOf(err);
+      if (status === 500) console.error(`[ResolverServer] resolver '${pointerType}' error:`, err);
+      return Response.json({ error: (err as Error).message ?? "resolver error" }, { status });
     }
   }
 }
