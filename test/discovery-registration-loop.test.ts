@@ -172,6 +172,12 @@ describe("DiscoveryRegistrationLoop advertised shape descriptions and inputs", (
     const body = await registered({});
     expect("shape_descriptions" in body).toBe(false);
     expect("shape_inputs" in body).toBe(false);
+    expect("shape_answers" in body).toBe(false);
+  });
+
+  it("[MUST-FAIL] advertises the shape each call answers with, as the vessel declares it", async () => {
+    const body = await registered({ shapeAnswers: { test_shape: "testResult" } });
+    expect(body.shape_answers).toEqual({ test_shape: "testResult" });
   });
 });
 
@@ -199,5 +205,10 @@ describe("VesselDaemon shape descriptions and inputs", () => {
     const config = loopOf({});
     expect("shapeDescriptions" in config).toBe(false);
     expect("shapeInputs" in config).toBe(false);
+    expect("shapeAnswers" in config).toBe(false);
+  });
+
+  it("[MUST-FAIL] passes declared answers to its discovery registration", () => {
+    expect(loopOf({ shapeAnswers: { test_shape: "testResult" } }).shapeAnswers).toEqual({ test_shape: "testResult" });
   });
 });

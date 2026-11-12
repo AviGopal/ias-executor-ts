@@ -47,6 +47,11 @@ export interface DiscoveryRegistrationLoopConfig {
    * them can only be named, not filled.
    */
   shapeInputs?: Record<string, Record<string, unknown>>;
+  /**
+   * Per shape, the shape of the row a call of it answers with (advertised as shape_answers), declared next to the
+   * handler: what a reader follows to find the call that makes a row it needs.
+   */
+  shapeAnswers?: Record<string, string>;
 }
 
 export class DiscoveryRegistrationLoop {
@@ -132,6 +137,7 @@ export class DiscoveryRegistrationLoop {
       resolve_timeout_ms: this.config.resolveTimeoutMs ?? 10_000,
       ...(this.config.shapeDescriptions ? { shape_descriptions: this.config.shapeDescriptions } : {}),
       ...(this.config.shapeInputs ? { shape_inputs: this.config.shapeInputs } : {}),
+      ...(this.config.shapeAnswers ? { shape_answers: this.config.shapeAnswers } : {}),
       port: this.config.port,
       ...(this.config.systemVessel ? { systemVessel: true } : {}),
     };

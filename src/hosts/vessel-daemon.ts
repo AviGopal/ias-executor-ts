@@ -72,6 +72,8 @@ export interface VesselDaemonConfig {
   shapeDescriptions?: Record<string, string>;
   /** Per-shape input schemas, advertised as shape_inputs (see DiscoveryRegistrationLoop). */
   shapeInputs?: Record<string, Record<string, unknown>>;
+  /** Per-shape answer shapes, advertised as shape_answers (see DiscoveryRegistrationLoop). */
+  shapeAnswers?: Record<string, string>;
   /**
    * Shapes this vessel serves that change state, in addition to
    * DEFAULT_MUTATING_SHAPES and every `*_write` shape. A mutating shape is
@@ -225,6 +227,7 @@ export class VesselDaemon {
         ...(config.resolveTimeoutMs !== undefined ? { resolveTimeoutMs: config.resolveTimeoutMs } : {}),
         ...(config.shapeDescriptions ? { shapeDescriptions: config.shapeDescriptions } : {}),
         ...(config.shapeInputs ? { shapeInputs: config.shapeInputs } : {}),
+        ...(config.shapeAnswers ? { shapeAnswers: config.shapeAnswers } : {}),
       });
 
       this.discoveryLoop.onUnhealthy(() => {
