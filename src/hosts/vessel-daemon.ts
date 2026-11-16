@@ -186,6 +186,16 @@ const field = (v: unknown): string => String(v ?? "-").replace(/\s+/g, "_").slic
 
 const sha256 = (s: string): Buffer => createHash("sha256").update(s).digest();
 
+/** A thrown error's message for a log line: bounded, with credential-looking values (provider keys, key ids, bearer and
+ * ApiKey values, JWTs) removed. */
+export function redactedMessage(err: unknown): string {
+  const m = err instanceof Error ? err.message : String(err);
+  return m
+    .replace(/\b(sk-[A-Za-z0-9_-]{6,}|key_+[A-Za-z0-9]{4,}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9._-]+)/g, "[redacted]")
+    .replace(/\b(Bearer|ApiKey)\s+\S+/gi, "$1 [redacted]")
+    .slice(0, 300);
+}
+
 export class VesselDaemon {
   private readonly resolverServer: ResolverServer;
   private readonly discoveryLoop: DiscoveryRegistrationLoop | undefined;
@@ -397,6 +407,9 @@ export class VesselDaemon {
       });
       return Response.json(result);
     } catch (err) {
+      // A resolver that throws was answered 500 with nothing in the journal, so the cause was invisible from the node
+      // (agf_o3dz0xrrhz30: the hub's fast 500s). Say it once, the message only, with anything credential-like removed.
+      console.error(`[vessel-daemon] resolver '${pointerType}' threw: ${redactedMessage(err)}`);
       this.emitResolveTrace({
         pointerType,
         result: { error: (err as Error).message },
