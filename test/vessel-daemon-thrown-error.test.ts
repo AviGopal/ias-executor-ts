@@ -54,6 +54,11 @@ describe("a resolver that throws", () => {
       expect([fake, redactedMessage(new Error(`rejected ${fake} now`))]).toEqual([fake, "rejected [redacted] now"]);
     }
     expect(redactedMessage(new Error("a risk-free task"))).toBe("a risk-free task");
+    // whatever the case (deployment)
+    for (const fake of ["Key_" + "_Ab12", "KEY_" + "_AB12", "SK-" + "FAKE1", "Gsk_" + "FAKE2"]) {
+      expect([fake, redactedMessage(new Error(`rejected ${fake} now`))]).toEqual([fake, "rejected [redacted] now"]);
+    }
+    expect(redactedMessage(new Error("the Keyboard broke"))).toBe("the Keyboard broke");
   });
 
   it("[MUST-FAIL] credentials are removed by their form, whatever the provider (qa's six shapes, fake values)", () => {
