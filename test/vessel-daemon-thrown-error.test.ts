@@ -31,16 +31,41 @@ describe("a resolver that throws", () => {
   });
 
   it("[MUST-FAIL] a credential-looking value in the message never reaches the log", async () => {
-    await call(daemonThrowing("auth failed for sk-or-v1-abcdef123456 with key_" + "_AbCdEf123 and Bearer eyJhbGciOiJ.payload.sig"));
+    await call(daemonThrowing("auth failed for sk-or-v1-abcdef123456 with key_" + "_AbCdEf1234567890xyzQ and Bearer eyJhbGciOiJ.payload.sig"));
     const line = lines.find((l) => l.includes("threw:")) ?? "";
     expect(line).toContain("[redacted]");
     expect(line).not.toContain("abcdef123456");
-    expect(line).not.toContain("AbCdEf123");
+    expect(line).not.toContain("AbCdEf1234567890xyzQ");
     expect(line).not.toContain("eyJhbGciOiJ");
   });
 
   it("the redaction is bounded and leaves ordinary words", () => {
-    expect(redactedMessage(new Error("x".repeat(500))).length).toBe(300);
+    expect(redactedMessage(new Error("word ".repeat(100))).length).toBe(300);
     expect(redactedMessage(new Error("no such file"))).toBe("no such file");
+  });
+
+  it("[MUST-FAIL] credentials are removed by their form, whatever the provider (qa's six shapes, fake values)", () => {
+    const cases: Array<[string, string]> = [
+      ["GET https://api.example.test/v1/models?key=AIzaFAKEFAKEFAKEFAKE123 failed", "AIzaFAKE"],
+      ["provider said: invalid gsk_FAKEfake1234567890abcdefghij", "gsk_FAKE"],
+      ["request header x-api-key: fakeplainvalue failed", "fakeplainvalue"],
+      ["Authorization: Basic ZmFrZTpmYWtl rejected", "ZmFrZTpmYWtl"],
+      ["fetch https://user:FAKEPASSWORD@host.test/x failed", "FAKEPASSWORD"],
+      ["callback with token=abc123fake rejected", "abc123fake"],
+    ];
+    for (const [message, secret] of cases) {
+      const out = redactedMessage(new Error(message));
+      expect([message, out.includes(secret)]).toEqual([message, false]);
+    }
+    expect(redactedMessage(new Error("no such file"))).toBe("no such file");
+  });
+
+  it("[MUST-FAIL] the resolve trace gets the redacted message too", async () => {
+    const d = daemonThrowing("auth failed with token=abc123fake");
+    const traced: Array<Record<string, unknown>> = [];
+    (d as unknown as { emitResolveTrace: (t: Record<string, unknown>) => void }).emitResolveTrace = (t) => { traced.push(t); };
+    await call(d);
+    expect(JSON.stringify(traced)).not.toContain("abc123fake");
+    expect(JSON.stringify(traced)).toContain("[redacted]");
   });
 });

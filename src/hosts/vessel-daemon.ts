@@ -186,13 +186,17 @@ const field = (v: unknown): string => String(v ?? "-").replace(/\s+/g, "_").slic
 
 const sha256 = (s: string): Buffer => createHash("sha256").update(s).digest();
 
-/** A thrown error's message for a log line: bounded, with credential-looking values (provider keys, key ids, bearer and
- * ApiKey values, JWTs) removed. */
+/** A thrown error's message for a log line or a trace: bounded, with anything credential-like removed by its form, not by a
+ * list of known prefixes (qa: a prefix list misses the next provider): the value after any key, token, secret, password,
+ * apikey or authorization name (a query parameter, a header, a field); the value after an auth scheme (Bearer, Basic,
+ * ApiKey); URL userinfo; and any run of 20 or more key-like characters. */
 export function redactedMessage(err: unknown): string {
   const m = err instanceof Error ? err.message : String(err);
   return m
-    .replace(/\b(sk-[A-Za-z0-9_-]{6,}|key_+[A-Za-z0-9]{4,}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9._-]+)/g, "[redacted]")
-    .replace(/\b(Bearer|ApiKey)\s+\S+/gi, "$1 [redacted]")
+    .replace(/:\/\/[^\s/@]+@/g, "://[redacted]@")
+    .replace(/\b(Bearer|Basic|ApiKey)\s+\S+/gi, "$1 [redacted]")
+    .replace(/((?:api[_-]?key|key|token|secret|password|passwd|authorization)["']?\s*[=:]\s*)(?!\[redacted\])["']?[^\s"'&,;]+/gi, "$1[redacted]")
+    .replace(/[A-Za-z0-9_\-]{20,}/g, "[redacted]")
     .slice(0, 300);
 }
 
@@ -412,7 +416,8 @@ export class VesselDaemon {
       console.error(`[vessel-daemon] resolver '${pointerType}' threw: ${redactedMessage(err)}`);
       this.emitResolveTrace({
         pointerType,
-        result: { error: (err as Error).message },
+        // the trace store reaches further than the journal: the same redaction (qa)
+        result: { error: redactedMessage(err) },
         latencyMs: Date.now() - startedAt,
         success: false,
       });
