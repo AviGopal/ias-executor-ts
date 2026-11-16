@@ -44,6 +44,13 @@ describe("a resolver that throws", () => {
     expect(redactedMessage(new Error("no such file"))).toBe("no such file");
   });
 
+  it("[MUST-FAIL] this fleet's key id form is removed at any length, in plain prose (deployment)", () => {
+    const out = redactedMessage(new Error("key_" + "_Ab3dEf9 failed"));
+    expect(out).toBe("[redacted] failed");
+    expect(redactedMessage(new Error("upstream rejected key_" + "_abcd1234 now"))).toBe("upstream rejected [redacted] now");
+    expect(redactedMessage(new Error("the keyboard broke"))).toBe("the keyboard broke");
+  });
+
   it("[MUST-FAIL] credentials are removed by their form, whatever the provider (qa's six shapes, fake values)", () => {
     const cases: Array<[string, string]> = [
       ["GET https://api.example.test/v1/models?key=AIzaFAKEFAKEFAKEFAKE123 failed", "AIzaFAKE"],

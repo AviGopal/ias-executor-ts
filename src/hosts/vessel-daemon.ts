@@ -189,13 +189,15 @@ const sha256 = (s: string): Buffer => createHash("sha256").update(s).digest();
 /** A thrown error's message for a log line or a trace: bounded, with anything credential-like removed by its form, not by a
  * list of known prefixes (qa: a prefix list misses the next provider): the value after any key, token, secret, password,
  * apikey or authorization name (a query parameter, a header, a field); the value after an auth scheme (Bearer, Basic,
- * ApiKey); URL userinfo; and any run of 20 or more key-like characters. */
+ * ApiKey); URL userinfo; this fleet's key ids at any length; and any run of 20 or more key-like characters. */
 export function redactedMessage(err: unknown): string {
   const m = err instanceof Error ? err.message : String(err);
   return m
     .replace(/:\/\/[^\s/@]+@/g, "://[redacted]@")
     .replace(/\b(Bearer|Basic|ApiKey)\s+\S+/gi, "$1 [redacted]")
     .replace(/((?:api[_-]?key|key|token|secret|password|passwd|authorization)["']?\s*[=:]\s*)(?!\[redacted\])["']?[^\s"'&,;]+/gi, "$1[redacted]")
+    // this fleet's own key ids (key_ then one or more underscores and its characters), at any length
+    .replace(/\bkey_+[A-Za-z0-9]+/g, "[redacted]")
     .replace(/[A-Za-z0-9_\-]{20,}/g, "[redacted]")
     .slice(0, 300);
 }
