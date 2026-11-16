@@ -89,4 +89,9 @@ describe("a resolver that throws", () => {
     expect(JSON.stringify(traced)).not.toContain("abc123fake");
     expect(JSON.stringify(traced)).toContain("[redacted]");
   });
+
+  it("[MUST-FAIL] is the package's own export, so another vessel redacts with this one function (research)", async () => {
+    const pkg = await import("../src/index");
+    expect(pkg.redactedMessage).toBe(redactedMessage);
+  });
 });
