@@ -196,8 +196,9 @@ export function redactedMessage(err: unknown): string {
     .replace(/:\/\/[^\s/@]+@/g, "://[redacted]@")
     .replace(/\b(Bearer|Basic|ApiKey)\s+\S+/gi, "$1 [redacted]")
     .replace(/((?:api[_-]?key|key|token|secret|password|passwd|authorization)["']?\s*[=:]\s*)(?!\[redacted\])["']?[^\s"'&,;]+/gi, "$1[redacted]")
-    // this fleet's own key ids (key_ then one or more underscores and its characters), at any length
-    .replace(/\bkey_+[A-Za-z0-9]+/g, "[redacted]")
+    // a token that starts with a credential-name word and a separator (this fleet's key ids, key_…; provider keys sk-…,
+    // gsk_…, pk_…, rk_…), at any length: such tokens are sensitive whatever their length (qa)
+    .replace(/\b(?:key|sk|gsk|pk|rk)[-_]+[A-Za-z0-9][A-Za-z0-9_-]*/g, "[redacted]")
     .replace(/[A-Za-z0-9_\-]{20,}/g, "[redacted]")
     .slice(0, 300);
 }

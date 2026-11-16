@@ -49,6 +49,11 @@ describe("a resolver that throws", () => {
     expect(out).toBe("[redacted] failed");
     expect(redactedMessage(new Error("upstream rejected key_" + "_abcd1234 now"))).toBe("upstream rejected [redacted] now");
     expect(redactedMessage(new Error("the keyboard broke"))).toBe("the keyboard broke");
+    // qa's fakes: short key ids, and short provider-prefixed keys, in prose
+    for (const fake of ["key_" + "_FAKEab12", "key_" + "_FAKEFAKE12345", "sk-" + "FAKE1", "gsk_" + "FAKE2", "pk_" + "FAKE3", "rk_" + "FAKE4"]) {
+      expect([fake, redactedMessage(new Error(`rejected ${fake} now`))]).toEqual([fake, "rejected [redacted] now"]);
+    }
+    expect(redactedMessage(new Error("a risk-free task"))).toBe("a risk-free task");
   });
 
   it("[MUST-FAIL] credentials are removed by their form, whatever the provider (qa's six shapes, fake values)", () => {
