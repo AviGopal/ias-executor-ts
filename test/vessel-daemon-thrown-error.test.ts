@@ -61,6 +61,10 @@ describe("a resolver that throws", () => {
     expect(redactedMessage(new Error("the Keyboard broke"))).toBe("the Keyboard broke");
   });
 
+  it("[MUST-FAIL] a bare key with no prefix and no name before it is redacted by its length (qa)", () => {
+    expect(redactedMessage(new Error("invalid FAKEPLAIN0123456789abcdefXYZ for model"))).toBe("invalid [redacted] for model");
+  });
+
   it("[MUST-FAIL] credentials are removed by their form, whatever the provider (qa's six shapes, fake values)", () => {
     const cases: Array<[string, string]> = [
       ["GET https://api.example.test/v1/models?key=AIzaFAKEFAKEFAKEFAKE123 failed", "AIzaFAKE"],
