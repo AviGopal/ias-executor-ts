@@ -9,10 +9,7 @@ export * from "./lifecycle-subscriber";
 export * from "./templates";
 export * from "./write-door";
 
-// hosts/ — VesselDaemon toolkit (Phase 0). GoalHost canonical location is
-// src/hosts/goal-host.ts. The examples/goal-host.ts copy is kept for
-// backward compat but is no longer re-exported here (would shadow the
-// updated hosts/ version and lose new opts like `tags`).
+// hosts/ — VesselDaemon toolkit (Phase 0). GoalHost lives in src/hosts/goal-host.ts.
 export * from "./hosts";
 
 // Activity-api adapters — exposed at the top level so hosts can compose
